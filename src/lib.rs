@@ -1,18 +1,19 @@
 use fluent_uri::Uri;
 
+pub mod at_uri;
+
 #[derive(Debug, PartialEq)]
 pub enum Link {
     AtUri(String),
     Uri(String),
 }
 
-// normalizing is a bit opinionated
-pub fn parse_at_uri(_s: &str) -> Option<String> {
-    // TODO
-    None
+// normalizing is a bit opinionated but ehhh
+pub fn parse_at_uri(s: &str) -> Option<String> {
+    at_uri::parse_at_uri(s)
 }
 
-// normalizing is a bit opinionated
+// normalizing is a bit opinionated but eh
 pub fn parse_uri(s: &str) -> Option<String> {
     Uri::parse(s).map(|u| u.normalize().into_string()).ok()
 }
