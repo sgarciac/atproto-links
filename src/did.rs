@@ -115,7 +115,7 @@ mod tests {
     #[test]
     fn test_doc_exmples_atproto() {
         // https://atproto.com/specs/did#at-protocol-did-identifier-syntax
-        for case in vec!["did:plc:z72i7hdynmk6r22z27h6tvur", "did:web:blueskyweb.xyz"] {
+        for case in ["did:plc:z72i7hdynmk6r22z27h6tvur", "did:web:blueskyweb.xyz"] {
             assert!(parse_did(case).is_some(), "should pass: {case}")
         }
     }
@@ -123,7 +123,7 @@ mod tests {
     #[test]
     fn test_doc_exmples_lexicon() {
         // https://atproto.com/specs/did#at-protocol-did-identifier-syntax
-        for case in vec![
+        for case in [
             "did:method:val:two",
             "did:m:v",
             "did:method::::val",
@@ -137,7 +137,7 @@ mod tests {
     #[test]
     fn test_doc_exmples_invalid() {
         // https://atproto.com/specs/did#at-protocol-did-identifier-syntax
-        for case in vec![
+        for case in [
             "did:METHOD:val",
             "did:m123:val",
             "DID:method:val",
