@@ -1,16 +1,13 @@
 use fluent_uri::Uri;
 
 pub mod at_uri;
+pub mod did;
 
 #[derive(Debug, PartialEq)]
 pub enum Link {
     AtUri(String),
     Uri(String),
-}
-
-// normalizing is a bit opinionated but ehhh
-pub fn parse_at_uri(s: &str) -> Option<String> {
-    at_uri::parse_at_uri(s)
+    Did(String),
 }
 
 // normalizing is a bit opinionated but eh
@@ -19,9 +16,11 @@ pub fn parse_uri(s: &str) -> Option<String> {
 }
 
 pub fn parse_any(s: &str) -> Option<Link> {
-    parse_at_uri(s)
-        .map(Link::AtUri)
-        .or_else(|| parse_uri(s).map(Link::Uri))
+    at_uri::parse_at_uri(s).map(Link::AtUri).or_else(|| {
+        did::parse_did(s)
+            .map(Link::Did)
+            .or_else(|| parse_uri(s).map(Link::Uri))
+    })
 }
 
 #[cfg(test)]
@@ -60,5 +59,10 @@ mod tests {
                 "at://did:plc:44ybard66vv44zksje25o7dz/app.bsky.feed.post/3jwdwj2ctlk26".into()
             )),
         );
+
+        assert_eq!(
+            parse_any("did:plc:44ybard66vv44zksje25o7dz"),
+            Some(Link::Did("did:plc:44ybard66vv44zksje25o7dz".into()))
+        )
     }
 }

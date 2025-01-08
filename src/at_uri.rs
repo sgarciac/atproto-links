@@ -17,10 +17,6 @@ pub fn parse_at_uri(s: &str) -> Option<String> {
     if !s.is_ascii() {
         return None;
     }
-    // // A-Za-z0-9 . - _ ~
-    // if !s.chars().all(|c| matches!(c, 'A'..='Z' | 'a'..='z' | '0'..='9' | '.' | '-' | '_' | '~')) {
-    //     return None
-    // }
 
     // Maximum overall length is 8 kilobytes (which may be shortened in the future)
     if s.len() > (8 * 2_usize.pow(10)) {
@@ -59,7 +55,7 @@ pub fn parse_at_uri(s: &str) -> Option<String> {
 
     // The URI scheme is `at`, and an authority part preceded with double slashes is always
     // required, so the URI always starts at://
-    // -> the spec doesn't explicitly say, but it seems like uri schemes are case-insensitive
+    // -> the spec doesn't explicitly say, but uri schemes can be case-insensitive?
     let (proto, rest) = s.split_at_checked(5)?;
     if !proto.eq_ignore_ascii_case("at://") {
         return None;
@@ -225,7 +221,7 @@ mod tests {
             (
                 "at://bad-example.com/a/../b",
                 Some("at://bad-example.com/b"),
-                "paths have traversals resolved (oof)",
+                "paths have traversals resolved (oof)", // reminder to self: we are normalizing, not sanitizing
             ),
             (
                 "at://bad-example.com/../",
