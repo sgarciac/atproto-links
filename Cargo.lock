@@ -25,6 +25,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "link_aggregator"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "links",
+ "tinyjson",
+]
+
+[[package]]
 name = "links"
 version = "0.1.0"
 dependencies = [

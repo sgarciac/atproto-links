@@ -1,8 +1,8 @@
 use tinyjson::JsonValue;
 
-use crate::parse_any_link;
+use crate::{parse_any_link, CollectedLink};
 
-pub fn walk_record(path: &str, v: &JsonValue, found: &mut Vec<(String, String)>) {
+pub fn walk_record(path: &str, v: &JsonValue, found: &mut Vec<CollectedLink>) {
     match v {
         JsonValue::Object(o) => {
             for (key, child) in o {
@@ -17,16 +17,19 @@ pub fn walk_record(path: &str, v: &JsonValue, found: &mut Vec<(String, String)>)
         }
         JsonValue::String(s) => {
             if let Some(link) = parse_any_link(s) {
-                found.push((path.to_string(), link.into_string()));
+                found.push(CollectedLink {
+                    path: path.to_string(),
+                    target: link.into_string(),
+                });
             }
         }
         _ => {}
     }
 }
 
-pub fn collect_links(v: JsonValue) -> Vec<(String, String)> {
+pub fn collect_links(v: &JsonValue) -> Vec<CollectedLink> {
     let mut found = vec![];
-    walk_record("", &v, &mut found);
+    walk_record("", v, &mut found);
     found
 }
 
@@ -34,11 +37,18 @@ pub fn collect_links(v: JsonValue) -> Vec<(String, String)> {
 mod tests {
     use super::*;
 
+    fn l(path: &str, target: &str) -> CollectedLink {
+        CollectedLink {
+            path: path.into(),
+            target: target.into(),
+        }
+    }
+
     #[test]
     fn test_collect_links() {
         let rec = r#"{"a": "https://example.com", "b": "not a link"}"#;
-        let json = collect_links(rec.parse().unwrap());
-        assert_eq!(json, vec![(".a".into(), "https://example.com".into())]);
+        let json = collect_links(&rec.parse().unwrap());
+        assert_eq!(json, vec![l(".a", "https://example.com")]);
     }
 
     #[test]
@@ -61,18 +71,18 @@ mod tests {
             },
             "text": "Yup!"
         }"#;
-        let mut json = collect_links(rec.parse().unwrap());
-        json.sort();
+        let mut json = collect_links(&rec.parse().unwrap());
+        json.sort_by_key(|c| (c.path.clone(), c.target.clone()));
         assert_eq!(
             json,
             vec![
-                (
-                    ".reply.parent.uri".into(),
-                    "at://did:plc:b3rzzkblqsxhr3dgcueymkqe/app.bsky.feed.post/3lf6yc4drhk2f".into()
+                l(
+                    ".reply.parent.uri",
+                    "at://did:plc:b3rzzkblqsxhr3dgcueymkqe/app.bsky.feed.post/3lf6yc4drhk2f"
                 ),
-                (
-                    ".reply.root.uri".into(),
-                    "at://did:plc:b3rzzkblqsxhr3dgcueymkqe/app.bsky.feed.post/3lf6yc4drhk2f".into()
+                l(
+                    ".reply.root.uri",
+                    "at://did:plc:b3rzzkblqsxhr3dgcueymkqe/app.bsky.feed.post/3lf6yc4drhk2f"
                 ),
             ]
         )
@@ -118,18 +128,18 @@ mod tests {
             ],
             "text": "youtu.be/oKXm4szEP1Q?..."
         }"#;
-        let mut json = collect_links(rec.parse().unwrap());
-        json.sort();
+        let mut json = collect_links(&rec.parse().unwrap());
+        json.sort_by_key(|c| (c.path.clone(), c.target.clone()));
         assert_eq!(
             json,
             vec![
-                (
-                    ".embed.external.uri".into(),
-                    "https://youtu.be/oKXm4szEP1Q?si=_0n_uPu4qNKokMnq".into()
+                l(
+                    ".embed.external.uri",
+                    "https://youtu.be/oKXm4szEP1Q?si=_0n_uPu4qNKokMnq"
                 ),
-                (
-                    ".facets[].features[].uri".into(),
-                    "https://youtu.be/oKXm4szEP1Q?si=_0n_uPu4qNKokMnq".into()
+                l(
+                    ".facets[].features[].uri",
+                    "https://youtu.be/oKXm4szEP1Q?si=_0n_uPu4qNKokMnq"
                 ),
             ]
         )

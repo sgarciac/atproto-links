@@ -23,6 +23,12 @@ impl Link {
     }
 }
 
+#[derive(Debug, PartialEq)]
+pub struct CollectedLink {
+    pub path: String,
+    pub target: String,
+}
+
 // normalizing is a bit opinionated but eh
 pub fn parse_uri(s: &str) -> Option<String> {
     Uri::parse(s).map(|u| u.normalize().into_string()).ok()

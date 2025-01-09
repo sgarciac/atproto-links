@@ -1,0 +1,9 @@
+[package]
+name = "link_aggregator"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0.95"
+links = { path = "../links" }
+tinyjson = "2.5.1"

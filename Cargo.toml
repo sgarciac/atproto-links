@@ -2,4 +2,5 @@
 resolver = "2"
 members = [
     "links",
+    "link_aggregator",
 ]
