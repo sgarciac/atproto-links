@@ -30,6 +30,7 @@ async fn hello() -> &'static str {
 #[derive(Deserialize)]
 struct GetLinksQuery {
     target: String,
+    collection: String,
     path: String,
 }
 
@@ -37,7 +38,12 @@ fn count_links(
     query: Query<GetLinksQuery>,
     store: Arc<Mutex<impl LinkStorage>>,
 ) -> Result<String, http::StatusCode> {
-    { store.lock().unwrap().get_count(&query.target, &query.path) }
-        .map(|c| c.to_string())
-        .map_err(|_| http::StatusCode::INTERNAL_SERVER_ERROR)
+    {
+        store
+            .lock()
+            .unwrap()
+            .get_count(&query.target, &query.collection, &query.path)
+    }
+    .map(|c| c.to_string())
+    .map_err(|_| http::StatusCode::INTERNAL_SERVER_ERROR)
 }

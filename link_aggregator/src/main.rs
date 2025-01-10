@@ -76,7 +76,8 @@ mod tests {
             storage
                 .get_count(
                     "at://did:plc:lphckw3dz4mnh3ogmfpdgt6z/app.bsky.feed.post/3lfdau5f7wk23",
-                    "app.bsky.feed.like$.subject.uri"
+                    "app.bsky.feed.like",
+                    ".subject.uri"
                 )
                 .unwrap(),
             1

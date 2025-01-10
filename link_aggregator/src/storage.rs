@@ -4,15 +4,16 @@ use std::collections::HashMap;
 
 pub trait LinkStorage {
     fn push(&mut self, event: &ActionableEvent) -> Result<()>;
-    fn get_count(&self, target: &str, path: &str) -> Result<u64>;
+    fn get_count(&self, target: &str, collection: &str, path: &str) -> Result<u64>;
 }
 
 // hopefully-correct simple hashmap version, intended only for tests to verify disk impl
 #[derive(Debug)]
 pub struct MemStorage {
     dids: HashMap<String, bool>, // bool: active or nah
-    targets: HashMap<String, HashMap<String, Vec<String>>>, // target -> path -> did[]
-    links: HashMap<String, HashMap<String, Vec<(String, String)>>>, // did -> collection:rkey -> (target, path)[]
+    targets: HashMap<String, HashMap<(String, String), Vec<String>>>, // target -> (collection, path) -> did[]
+    #[allow(clippy::type_complexity)]
+    links: HashMap<String, HashMap<String, Vec<(String, String, String)>>>, // did -> collection:rkey -> (target, collection, path)[]
 }
 
 impl MemStorage {
@@ -45,10 +46,6 @@ impl MemStorage {
     fn _col_rkey(collection: &str, rkey: &str) -> String {
         [collection, rkey].join(":")
     }
-
-    fn _col_path(collection: &str, path: &str) -> String {
-        [collection, path].join("$")
-    }
 }
 
 impl LinkStorage for MemStorage {
@@ -67,7 +64,7 @@ impl LinkStorage for MemStorage {
                     self.targets
                         .entry(link.target.clone())
                         .or_default()
-                        .entry(Self::_col_path(collection, &link.path))
+                        .entry((collection.clone(), link.path.clone()))
                         .or_default()
                         .push(did.clone());
                     self.links
@@ -75,7 +72,7 @@ impl LinkStorage for MemStorage {
                         .or_default()
                         .entry(Self::_col_rkey(collection, rkey))
                         .or_insert(Vec::with_capacity(1))
-                        .push((link.target.clone(), Self::_col_path(collection, &link.path)))
+                        .push((link.target.clone(), collection.clone(), link.path.clone()))
                 }
                 Ok(())
             },
@@ -96,11 +93,11 @@ impl LinkStorage for MemStorage {
             } => {
                 let col_rkey = Self::_col_rkey(collection, rkey);
                 if let Some(Some(targets)) = self.links.get(did).map(|cr| cr.get(&col_rkey)) {
-                    for (target, col_path) in targets {
+                    for (target, collection, path) in targets {
                         let dids = self.targets
                             .get_mut(target)
                             .expect("must have the target if we have a link saved")
-                            .get_mut(col_path)
+                            .get_mut(&(collection.clone(), path.clone()))
                             .expect("must have the target at this path if we have a link to it saved");
                         // search from the end: more likely to be visible and deletes are usually soon after creates
                         // only delete one instance: a user can create multiple links to something, we're only deleting one
@@ -127,10 +124,10 @@ impl LinkStorage for MemStorage {
             ActionableEvent::DeleteAccount { did } => {
                 if let Some(links) = self.links.get(did) {
                     for targets in links.values() {
-                        for (target, col_path) in targets {
+                        for (target, collection, path) in targets {
                             self.targets.get_mut(target)
                                 .expect("must have the target if we have a link saved")
-                                .get_mut(col_path)
+                                .get_mut(&(collection.clone(), path.clone()))
                                 .expect("must have the target at this path if we have a link to it saved")
                                 .retain(|d| d != did);
                         }
@@ -142,11 +139,11 @@ impl LinkStorage for MemStorage {
             },
         }
     }
-    fn get_count(&self, target: &str, path: &str) -> Result<u64> {
+    fn get_count(&self, target: &str, collection: &str, path: &str) -> Result<u64> {
         let Some(paths) = self.targets.get(target) else {
             return Ok(0);
         };
-        let Some(dids) = paths.get(path) else {
+        let Some(dids) = paths.get(&(collection.to_string(), path.to_string())) else {
             return Ok(0);
         };
         let count = dids.len().try_into()?;
@@ -201,12 +198,13 @@ mod tests {
     #[test]
     fn test_mem_empty() {
         let storage = MemStorage::new();
-        assert_eq!(storage.get_count("", "").unwrap(), 0);
-        assert_eq!(storage.get_count("a", "b").unwrap(), 0);
+        assert_eq!(storage.get_count("", "", "").unwrap(), 0);
+        assert_eq!(storage.get_count("a", "b", "c").unwrap(), 0);
         assert_eq!(
             storage
                 .get_count(
                     "at://did:plc:b3rzzkblqsxhr3dgcueymkqe/app.bsky.feed.post/3lf6yc4drhk2f",
+                    "app.test.collection",
                     ".reply.parent.uri"
                 )
                 .unwrap(),
@@ -230,19 +228,19 @@ mod tests {
             .unwrap();
         assert_eq!(
             storage
-                .get_count("e.com", "app.test.collection$.abc.uri")
+                .get_count("e.com", "app.test.collection", ".abc.uri")
                 .unwrap(),
             1
         );
         assert_eq!(
             storage
-                .get_count("bad.com", "app.test.collection$.abc.uri")
+                .get_count("bad.com", "app.test.collection", ".abc.uri")
                 .unwrap(),
             0
         );
         assert_eq!(
             storage
-                .get_count("e.com", "app.test.collection$.def.uri")
+                .get_count("e.com", "app.test.collection", ".def.uri")
                 .unwrap(),
             0
         );
@@ -257,7 +255,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             storage
-                .get_count("e.com", "app.test.collection$.abc.uri")
+                .get_count("e.com", "app.test.collection", ".abc.uri")
                 .unwrap(),
             1
         );
@@ -272,7 +270,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             storage
-                .get_count("e.com", "app.test.collection$.abc.uri")
+                .get_count("e.com", "app.test.collection", ".abc.uri")
                 .unwrap(),
             1
         );
@@ -287,7 +285,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             storage
-                .get_count("e.com", "app.test.collection$.abc.uri")
+                .get_count("e.com", "app.test.collection", ".abc.uri")
                 .unwrap(),
             0
         );
@@ -306,7 +304,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             storage
-                .get_count("e.com", "app.test.collection$.abc.uri")
+                .get_count("e.com", "app.test.collection", ".abc.uri")
                 .unwrap(),
             1
         );
@@ -325,7 +323,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             storage
-                .get_count("e.com", "app.test.collection$.abc.uri")
+                .get_count("e.com", "app.test.collection", ".abc.uri")
                 .unwrap(),
             2
         );
@@ -344,7 +342,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             storage
-                .get_count("e.com", "app.test.collection$.abc.uri")
+                .get_count("e.com", "app.test.collection", ".abc.uri")
                 .unwrap(),
             3
         );
@@ -359,7 +357,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             storage
-                .get_count("e.com", "app.test.collection$.abc.uri")
+                .get_count("e.com", "app.test.collection", ".abc.uri")
                 .unwrap(),
             2
         );
@@ -383,7 +381,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             storage
-                .get_count("e.com", "app.test.collection$.abc.uri")
+                .get_count("e.com", "app.test.collection", ".abc.uri")
                 .unwrap(),
             1
         );
@@ -402,7 +400,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             storage
-                .get_count("e.com", "app.test.collection$.abc.uri")
+                .get_count("e.com", "app.test.collection", ".abc.uri")
                 .unwrap(),
             2
         );
@@ -418,7 +416,7 @@ mod tests {
 
         assert_eq!(
             storage
-                .get_count("e.com", "app.test.collection$.abc.uri")
+                .get_count("e.com", "app.test.collection", ".abc.uri")
                 .unwrap(),
             1
         );
@@ -453,13 +451,13 @@ mod tests {
             .unwrap();
         assert_eq!(
             storage
-                .get_count("a.com", "app.test.collection$.abc.uri")
+                .get_count("a.com", "app.test.collection", ".abc.uri")
                 .unwrap(),
             1
         );
         assert_eq!(
             storage
-                .get_count("b.com", "app.test.collection$.abc.uri")
+                .get_count("b.com", "app.test.collection", ".abc.uri")
                 .unwrap(),
             1
         );
@@ -478,7 +476,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             storage
-                .get_count("a.com", "app.test.collection$.abc.uri")
+                .get_count("a.com", "app.test.collection", ".abc.uri")
                 .unwrap(),
             2
         );
@@ -491,13 +489,13 @@ mod tests {
             .unwrap();
         assert_eq!(
             storage
-                .get_count("a.com", "app.test.collection$.abc.uri")
+                .get_count("a.com", "app.test.collection", ".abc.uri")
                 .unwrap(),
             1
         );
         assert_eq!(
             storage
-                .get_count("b.com", "app.test.collection$.abc.uri")
+                .get_count("b.com", "app.test.collection", ".abc.uri")
                 .unwrap(),
             0
         );
@@ -529,19 +527,19 @@ mod tests {
             .unwrap();
         assert_eq!(
             storage
-                .get_count("e.com", "app.test.collection$.abc.uri")
+                .get_count("e.com", "app.test.collection", ".abc.uri")
                 .unwrap(),
             1
         );
         assert_eq!(
             storage
-                .get_count("f.com", "app.test.collection$.xyz[].uri")
+                .get_count("f.com", "app.test.collection", ".xyz[].uri")
                 .unwrap(),
             1
         );
         assert_eq!(
             storage
-                .get_count("g.com", "app.test.collection$.xyz[].uri")
+                .get_count("g.com", "app.test.collection", ".xyz[].uri")
                 .unwrap(),
             1
         );
@@ -555,19 +553,19 @@ mod tests {
             .unwrap();
         assert_eq!(
             storage
-                .get_count("e.com", "app.test.collection$.abc.uri")
+                .get_count("e.com", "app.test.collection", ".abc.uri")
                 .unwrap(),
             0
         );
         assert_eq!(
             storage
-                .get_count("f.com", "app.test.collection$.xyz[].uri")
+                .get_count("f.com", "app.test.collection", ".xyz[].uri")
                 .unwrap(),
             0
         );
         assert_eq!(
             storage
-                .get_count("g.com", "app.test.collection$.xyz[].uri")
+                .get_count("g.com", "app.test.collection", ".xyz[].uri")
                 .unwrap(),
             0
         );
