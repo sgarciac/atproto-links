@@ -45,6 +45,10 @@ impl MemStorage {
     fn _col_rkey(collection: &str, rkey: &str) -> String {
         [collection, rkey].join(":")
     }
+
+    fn _col_path(collection: &str, path: &str) -> String {
+        [collection, path].join("$")
+    }
 }
 
 impl LinkStorage for MemStorage {
@@ -63,7 +67,7 @@ impl LinkStorage for MemStorage {
                     self.targets
                         .entry(link.target.clone())
                         .or_default()
-                        .entry(link.path.clone())
+                        .entry(Self::_col_path(collection, &link.path))
                         .or_default()
                         .push(did.clone());
                     self.links
@@ -71,7 +75,7 @@ impl LinkStorage for MemStorage {
                         .or_default()
                         .entry(Self::_col_rkey(collection, rkey))
                         .or_insert(Vec::with_capacity(1))
-                        .push((link.target.clone(), link.path.clone()))
+                        .push((link.target.clone(), Self::_col_path(collection, &link.path)))
                 }
                 Ok(())
             },
@@ -92,11 +96,11 @@ impl LinkStorage for MemStorage {
             } => {
                 let col_rkey = Self::_col_rkey(collection, rkey);
                 if let Some(Some(targets)) = self.links.get(did).map(|cr| cr.get(&col_rkey)) {
-                    for (target, path) in targets {
+                    for (target, col_path) in targets {
                         let dids = self.targets
                             .get_mut(target)
                             .expect("must have the target if we have a link saved")
-                            .get_mut(path)
+                            .get_mut(col_path)
                             .expect("must have the target at this path if we have a link to it saved");
                         // search from the end: more likely to be visible and deletes are usually soon after creates
                         // only delete one instance: a user can create multiple links to something, we're only deleting one
@@ -123,10 +127,10 @@ impl LinkStorage for MemStorage {
             ActionableEvent::DeleteAccount { did } => {
                 if let Some(links) = self.links.get(did) {
                     for targets in links.values() {
-                        for (target, path) in targets {
+                        for (target, col_path) in targets {
                             self.targets.get_mut(target)
                                 .expect("must have the target if we have a link saved")
-                                .get_mut(path)
+                                .get_mut(col_path)
                                 .expect("must have the target at this path if we have a link to it saved")
                                 .retain(|d| d != did);
                         }
@@ -224,9 +228,24 @@ mod tests {
                 }],
             })
             .unwrap();
-        assert_eq!(storage.get_count("e.com", ".abc.uri").unwrap(), 1);
-        assert_eq!(storage.get_count("bad.com", ".abc.uri").unwrap(), 0);
-        assert_eq!(storage.get_count("e.com", ".def.uri").unwrap(), 0);
+        assert_eq!(
+            storage
+                .get_count("e.com", "app.test.collection$.abc.uri")
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            storage
+                .get_count("bad.com", "app.test.collection$.abc.uri")
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            storage
+                .get_count("e.com", "app.test.collection$.def.uri")
+                .unwrap(),
+            0
+        );
 
         // delete under the wrong collection
         storage
@@ -236,7 +255,12 @@ mod tests {
                 rkey: "fdsa".into(),
             })
             .unwrap();
-        assert_eq!(storage.get_count("e.com", ".abc.uri").unwrap(), 1);
+        assert_eq!(
+            storage
+                .get_count("e.com", "app.test.collection$.abc.uri")
+                .unwrap(),
+            1
+        );
 
         // delete under the wrong rkey
         storage
@@ -246,7 +270,12 @@ mod tests {
                 rkey: "wrongkey".into(),
             })
             .unwrap();
-        assert_eq!(storage.get_count("e.com", ".abc.uri").unwrap(), 1);
+        assert_eq!(
+            storage
+                .get_count("e.com", "app.test.collection$.abc.uri")
+                .unwrap(),
+            1
+        );
 
         // finally actually delete it
         storage
@@ -256,7 +285,12 @@ mod tests {
                 rkey: "fdsa".into(),
             })
             .unwrap();
-        assert_eq!(storage.get_count("e.com", ".abc.uri").unwrap(), 0);
+        assert_eq!(
+            storage
+                .get_count("e.com", "app.test.collection$.abc.uri")
+                .unwrap(),
+            0
+        );
 
         // put it back
         storage
@@ -270,7 +304,12 @@ mod tests {
                 }],
             })
             .unwrap();
-        assert_eq!(storage.get_count("e.com", ".abc.uri").unwrap(), 1);
+        assert_eq!(
+            storage
+                .get_count("e.com", "app.test.collection$.abc.uri")
+                .unwrap(),
+            1
+        );
 
         // add another link from this user
         storage
@@ -284,7 +323,12 @@ mod tests {
                 }],
             })
             .unwrap();
-        assert_eq!(storage.get_count("e.com", ".abc.uri").unwrap(), 2);
+        assert_eq!(
+            storage
+                .get_count("e.com", "app.test.collection$.abc.uri")
+                .unwrap(),
+            2
+        );
 
         // add a link from someone else
         storage
@@ -298,7 +342,12 @@ mod tests {
                 }],
             })
             .unwrap();
-        assert_eq!(storage.get_count("e.com", ".abc.uri").unwrap(), 3);
+        assert_eq!(
+            storage
+                .get_count("e.com", "app.test.collection$.abc.uri")
+                .unwrap(),
+            3
+        );
 
         // aaaand delete the first one again
         storage
@@ -308,7 +357,12 @@ mod tests {
                 rkey: "fdsa".into(),
             })
             .unwrap();
-        assert_eq!(storage.get_count("e.com", ".abc.uri").unwrap(), 2);
+        assert_eq!(
+            storage
+                .get_count("e.com", "app.test.collection$.abc.uri")
+                .unwrap(),
+            2
+        );
     }
 
     #[test]
@@ -327,7 +381,12 @@ mod tests {
                 }],
             })
             .unwrap();
-        assert_eq!(storage.get_count("e.com", ".abc.uri").unwrap(), 1);
+        assert_eq!(
+            storage
+                .get_count("e.com", "app.test.collection$.abc.uri")
+                .unwrap(),
+            1
+        );
 
         // create the second link (same user, different rkey)
         storage
@@ -341,7 +400,12 @@ mod tests {
                 }],
             })
             .unwrap();
-        assert_eq!(storage.get_count("e.com", ".abc.uri").unwrap(), 2);
+        assert_eq!(
+            storage
+                .get_count("e.com", "app.test.collection$.abc.uri")
+                .unwrap(),
+            2
+        );
 
         // aaaand delete the first link
         storage
@@ -352,7 +416,12 @@ mod tests {
             })
             .unwrap();
         // println!("{:?}", storage);
-        assert_eq!(storage.get_count("e.com", ".abc.uri").unwrap(), 1);
+        assert_eq!(
+            storage
+                .get_count("e.com", "app.test.collection$.abc.uri")
+                .unwrap(),
+            1
+        );
     }
 
     #[test]
@@ -382,8 +451,18 @@ mod tests {
                 }],
             })
             .unwrap();
-        assert_eq!(storage.get_count("a.com", ".abc.uri").unwrap(), 1);
-        assert_eq!(storage.get_count("b.com", ".abc.uri").unwrap(), 1);
+        assert_eq!(
+            storage
+                .get_count("a.com", "app.test.collection$.abc.uri")
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            storage
+                .get_count("b.com", "app.test.collection$.abc.uri")
+                .unwrap(),
+            1
+        );
 
         // and a third from a different account
         storage
@@ -397,7 +476,9 @@ mod tests {
                 }],
             })
             .unwrap();
-        let n = storage.get_count("a.com", ".abc.uri").unwrap();
+        let n = storage
+            .get_count("a.com", "app.test.collection$.abc.uri")
+            .unwrap();
         assert_eq!(n, 2);
 
         // delete the first account
@@ -406,8 +487,18 @@ mod tests {
                 did: "did:plc:asdf".into(),
             })
             .unwrap();
-        assert_eq!(storage.get_count("a.com", ".abc.uri").unwrap(), 1);
-        assert_eq!(storage.get_count("b.com", ".abc.uri").unwrap(), 0);
+        assert_eq!(
+            storage
+                .get_count("a.com", "app.test.collection$.abc.uri")
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            storage
+                .get_count("b.com", "app.test.collection$.abc.uri")
+                .unwrap(),
+            0
+        );
     }
 
     #[test]
@@ -434,9 +525,24 @@ mod tests {
                 ],
             })
             .unwrap();
-        assert_eq!(storage.get_count("e.com", ".abc.uri").unwrap(), 1);
-        assert_eq!(storage.get_count("f.com", ".xyz[].uri").unwrap(), 1);
-        assert_eq!(storage.get_count("g.com", ".xyz[].uri").unwrap(), 1);
+        assert_eq!(
+            storage
+                .get_count("e.com", "app.test.collection$.abc.uri")
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            storage
+                .get_count("f.com", "app.test.collection$.xyz[].uri")
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            storage
+                .get_count("g.com", "app.test.collection$.xyz[].uri")
+                .unwrap(),
+            1
+        );
 
         storage
             .push(&ActionableEvent::DeleteRecord {
@@ -445,8 +551,23 @@ mod tests {
                 rkey: "fdsa".into(),
             })
             .unwrap();
-        assert_eq!(storage.get_count("e.com", ".abc.uri").unwrap(), 0);
-        assert_eq!(storage.get_count("f.com", ".xyz[].uri").unwrap(), 0);
-        assert_eq!(storage.get_count("g.com", ".xyz[].uri").unwrap(), 0);
+        assert_eq!(
+            storage
+                .get_count("e.com", "app.test.collection$.abc.uri")
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            storage
+                .get_count("f.com", "app.test.collection$.xyz[].uri")
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            storage
+                .get_count("g.com", "app.test.collection$.xyz[].uri")
+                .unwrap(),
+            0
+        );
     }
 }
