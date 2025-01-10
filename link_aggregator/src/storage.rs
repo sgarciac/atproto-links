@@ -415,7 +415,7 @@ mod tests {
                 rkey: "A".into(),
             })
             .unwrap();
-        // println!("{:?}", storage);
+
         assert_eq!(
             storage
                 .get_count("e.com", "app.test.collection$.abc.uri")
@@ -476,10 +476,12 @@ mod tests {
                 }],
             })
             .unwrap();
-        let n = storage
-            .get_count("a.com", "app.test.collection$.abc.uri")
-            .unwrap();
-        assert_eq!(n, 2);
+        assert_eq!(
+            storage
+                .get_count("a.com", "app.test.collection$.abc.uri")
+                .unwrap(),
+            2
+        );
 
         // delete the first account
         storage
