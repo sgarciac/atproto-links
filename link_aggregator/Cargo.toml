@@ -5,6 +5,12 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.95"
+axum = "0.8.1"
 links = { path = "../links" }
 rocksdb = "0.23.0"
+serde = { version = "1.0.215", features = ["derive"] }
 tinyjson = "2.5.1"
+
+[dependencies.tokio]
+version = "1.41"
+features = ["full"]

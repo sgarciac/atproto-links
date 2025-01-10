@@ -1,6 +1,5 @@
 use anyhow::Result;
 use link_aggregator::ActionableEvent;
-use links::CollectedLink;
 use std::collections::HashMap;
 
 pub trait LinkStorage {
@@ -172,6 +171,7 @@ impl LinkStorage for MemStorage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use links::CollectedLink;
 
     #[test]
     fn test_mem_empty() {

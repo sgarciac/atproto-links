@@ -1,5 +1,5 @@
 use link_aggregator::ActionableEvent;
-use links::{collect_links, CollectedLink};
+use links::collect_links;
 use tinyjson::JsonValue;
 
 pub fn get_actionable(event: &JsonValue) -> Option<ActionableEvent> {
@@ -71,6 +71,7 @@ pub fn get_actionable(event: &JsonValue) -> Option<ActionableEvent> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use links::CollectedLink;
 
     #[test]
     fn test_create_like() {

@@ -1,11 +1,27 @@
 mod consumer;
+mod server;
 mod storage;
 
-// use storage::{LinkStorage, RocksStorage};
+use anyhow::Result;
+use std::sync::Arc;
+use tokio::runtime;
 
-fn main() {
-    // let _s = RocksStorage::new();
-    println!("Hello, world!");
+use server::serve;
+use storage::MemStorage;
+
+fn main() -> Result<()> {
+    println!("starting...");
+
+    let storage = Arc::new(MemStorage::new());
+
+    runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .max_blocking_threads(2)
+        .enable_all()
+        .build()?
+        .block_on(async { serve(storage, "127.0.0.1:6789").await })?;
+
+    unreachable!();
 }
 
 #[cfg(test)]
