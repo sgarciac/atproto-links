@@ -120,3 +120,10 @@ there should be a few async functions available to canonicalize already-parsed l
     - might come back to these
 
 
+-------
+
+rocks
+
+```bash
+ROCKSDB_LIB_DIR=/nix/store/z2chn0hsik0clridr8mlprx1cngh1g3c-rocksdb-9.7.3/lib/ cargo build
+```

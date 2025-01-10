@@ -10,7 +10,7 @@ pub trait LinkStorage {
 
 // hopefully-correct simple hashmap version, intended only for tests to verify disk impl
 #[derive(Debug)]
-struct MemStorage {
+pub struct MemStorage {
     dids: HashMap<String, bool>, // bool: active or nah
     targets: HashMap<String, HashMap<String, Vec<String>>>, // target -> path -> did[]
     links: HashMap<String, HashMap<String, Vec<(String, String)>>>, // did -> collection:rkey -> (target, path)[]
@@ -387,5 +387,45 @@ mod tests {
             .unwrap();
         assert_eq!(storage.get_count("a.com", ".abc.uri").unwrap(), 1);
         assert_eq!(storage.get_count("b.com", ".abc.uri").unwrap(), 0);
+    }
+
+    #[test]
+    fn test_multi_link() {
+        let mut storage = MemStorage::new();
+        storage
+            .push(&ActionableEvent::CreateLinks {
+                did: "did:plc:asdf".into(),
+                collection: "app.test.collection".into(),
+                rkey: "fdsa".into(),
+                links: vec![
+                    CollectedLink {
+                        target: "e.com".into(),
+                        path: ".abc.uri".into(),
+                    },
+                    CollectedLink {
+                        target: "f.com".into(),
+                        path: ".xyz[].uri".into(),
+                    },
+                    CollectedLink {
+                        target: "g.com".into(),
+                        path: ".xyz[].uri".into(),
+                    },
+                ],
+            })
+            .unwrap();
+        assert_eq!(storage.get_count("e.com", ".abc.uri").unwrap(), 1);
+        assert_eq!(storage.get_count("f.com", ".xyz[].uri").unwrap(), 1);
+        assert_eq!(storage.get_count("g.com", ".xyz[].uri").unwrap(), 1);
+
+        storage
+            .push(&ActionableEvent::DeleteRecord {
+                did: "did:plc:asdf".into(),
+                collection: "app.test.collection".into(),
+                rkey: "fdsa".into(),
+            })
+            .unwrap();
+        assert_eq!(storage.get_count("e.com", ".abc.uri").unwrap(), 0);
+        assert_eq!(storage.get_count("f.com", ".xyz[].uri").unwrap(), 0);
+        assert_eq!(storage.get_count("g.com", ".xyz[].uri").unwrap(), 0);
     }
 }
