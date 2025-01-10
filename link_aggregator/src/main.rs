@@ -1,9 +1,9 @@
 mod consumer;
 mod storage;
 
-use storage::Storage;
+// use storage::{LinkStorage, RocksStorage};
 
 fn main() {
-    let _s = Storage::new();
+    // let _s = RocksStorage::new();
     println!("Hello, world!");
 }
