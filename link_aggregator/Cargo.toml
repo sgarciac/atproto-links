@@ -6,11 +6,17 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0.95"
 axum = "0.8.1"
+flume = { version = "0.11.1", default-features = false }
 links = { path = "../links" }
 rocksdb = "0.23.0"
 serde = { version = "1.0.215", features = ["derive"] }
 tinyjson = "2.5.1"
+zstd = "0.13.2"
 
 [dependencies.tokio]
 version = "1.41"
 features = ["full"]
+
+[dependencies.tungstenite]
+version = "0.24"
+features = ["native-tls"]

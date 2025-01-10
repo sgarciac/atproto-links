@@ -1,18 +1,44 @@
 mod consumer;
+mod jetstream;
 mod server;
 mod storage;
 
 use anyhow::Result;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time;
 use tokio::runtime;
 
+use consumer::consume;
 use server::serve;
 use storage::MemStorage;
 
 fn main() -> Result<()> {
     println!("starting...");
 
-    let storage = Arc::new(MemStorage::new());
+    let storage = Arc::new(Mutex::new(MemStorage::new()));
+
+    let qsize = Arc::new(AtomicU32::new(0));
+
+    thread::spawn({
+        let storage = storage.clone();
+        let qsize = qsize.clone();
+        move || consume(storage, qsize)
+    });
+
+    thread::spawn({
+        let storage = storage.clone();
+        move || loop {
+            {
+                storage
+                    .lock()
+                    .unwrap()
+                    .summarize(qsize.load(Ordering::Relaxed));
+            }
+            thread::sleep(time::Duration::from_secs(3));
+        }
+    });
 
     runtime::Builder::new_multi_thread()
         .worker_threads(1)

@@ -24,6 +24,24 @@ impl MemStorage {
         }
     }
 
+    pub fn summarize(&self, qsize: u32) {
+        let dids = self.dids.len();
+        let targets = self.targets.len();
+        let target_paths: usize = self.targets.values().map(|paths| paths.len()).sum();
+        let links = self.links.len();
+
+        let sample_target = self.targets.keys().nth({
+            let l = self.targets.len();
+            if l == 0 {
+                0
+            } else {
+                l - 1
+            }
+        });
+        let sample_path = sample_target.and_then(|t| self.targets.get(t).unwrap().keys().next());
+        println!("queue: {qsize}. {dids} dids, {targets} targets from {target_paths} paths, {links} links. sample: {sample_target:?} {sample_path:?}");
+    }
+
     fn _col_rkey(collection: &str, rkey: &str) -> String {
         [collection, rkey].join(":")
     }
@@ -63,7 +81,10 @@ impl LinkStorage for MemStorage {
                 // collection,
                 // rkey,
                 // new_links,
-            } => unimplemented!(), // for mem version probably delete old then add new?
+            } => {
+                // eprintln!("storage: ignoring update event for now...");
+                Ok(())
+            } //unimplemented!(), // for mem version probably delete old then add new?
             ActionableEvent::DeleteRecord {
                 did,
                 collection,
