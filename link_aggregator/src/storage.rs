@@ -1,15 +1,19 @@
 use anyhow::Result;
 use link_aggregator::ActionableEvent;
 use std::collections::HashMap;
+use std::sync::Mutex;
 
 pub trait LinkStorage {
-    fn push(&mut self, event: &ActionableEvent) -> Result<()>;
+    fn push(&self, event: &ActionableEvent) -> Result<()>;
     fn get_count(&self, target: &str, collection: &str, path: &str) -> Result<u64>;
 }
 
 // hopefully-correct simple hashmap version, intended only for tests to verify disk impl
 #[derive(Debug)]
-pub struct MemStorage {
+pub struct MemStorage(Mutex<MemStorageData>);
+
+#[derive(Debug, Default)]
+struct MemStorageData {
     dids: HashMap<String, bool>, // bool: active or nah
     targets: HashMap<String, HashMap<(String, String), Vec<String>>>, // target -> (collection, path) -> did[]
     #[allow(clippy::type_complexity)]
@@ -18,28 +22,25 @@ pub struct MemStorage {
 
 impl MemStorage {
     pub fn new() -> Self {
-        Self {
-            dids: HashMap::new(),
-            targets: HashMap::new(),
-            links: HashMap::new(),
-        }
+        Self(Mutex::new(MemStorageData::default()))
     }
 
     pub fn summarize(&self, qsize: u32) {
-        let dids = self.dids.len();
-        let targets = self.targets.len();
-        let target_paths: usize = self.targets.values().map(|paths| paths.len()).sum();
-        let links = self.links.len();
+        let data = self.0.lock().unwrap();
+        let dids = data.dids.len();
+        let targets = data.targets.len();
+        let target_paths: usize = data.targets.values().map(|paths| paths.len()).sum();
+        let links = data.links.len();
 
-        let sample_target = self.targets.keys().nth({
-            let l = self.targets.len();
+        let sample_target = data.targets.keys().nth({
+            let l = data.targets.len();
             if l == 0 {
                 0
             } else {
                 l - 1
             }
         });
-        let sample_path = sample_target.and_then(|t| self.targets.get(t).unwrap().keys().next());
+        let sample_path = sample_target.and_then(|t| data.targets.get(t).unwrap().keys().next());
         println!("queue: {qsize}. {dids} dids, {targets} targets from {target_paths} paths, {links} links. sample: {sample_target:?} {sample_path:?}");
     }
 
@@ -49,7 +50,8 @@ impl MemStorage {
 }
 
 impl LinkStorage for MemStorage {
-    fn push(&mut self, event: &ActionableEvent) -> Result<()> {
+    fn push(&self, event: &ActionableEvent) -> Result<()> {
+        let mut data = self.0.lock().unwrap();
         match event {
             ActionableEvent::CreateLinks {
                 did,
@@ -58,16 +60,16 @@ impl LinkStorage for MemStorage {
                 links,
             } => {
                 for link in links {
-                    self.dids
+                    data.dids
                         .entry(did.clone())
                         .or_insert(true); // if they are inserting a link, presumably they are active
-                    self.targets
+                    data.targets
                         .entry(link.target.clone())
                         .or_default()
                         .entry((collection.clone(), link.path.clone()))
                         .or_default()
                         .push(did.clone());
-                    self.links
+                    data.links
                         .entry(did.clone())
                         .or_default()
                         .entry(Self::_col_rkey(collection, rkey))
@@ -92,10 +94,11 @@ impl LinkStorage for MemStorage {
                 rkey,
             } => {
                 let col_rkey = Self::_col_rkey(collection, rkey);
-                if let Some(Some(targets)) = self.links.get(did).map(|cr| cr.get(&col_rkey)) {
-                    for (target, collection, path) in targets {
-                        let dids = self.targets
-                            .get_mut(target)
+                if let Some(Some(link_targets)) = data.links.get(did).map(|cr| cr.get(&col_rkey)) {
+                    let link_targets = link_targets.clone(); // satisfy borrowck
+                    for (target, collection, path) in link_targets {
+                        let dids = data.targets
+                            .get_mut(&target)
                             .expect("must have the target if we have a link saved")
                             .get_mut(&(collection.clone(), path.clone()))
                             .expect("must have the target at this path if we have a link to it saved");
@@ -106,26 +109,27 @@ impl LinkStorage for MemStorage {
                         dids.remove(pos);
                     }
                 }
-                self.links.get_mut(did).map(|cr| cr.remove(&col_rkey));
+                data.links.get_mut(did).map(|cr| cr.remove(&col_rkey));
                 Ok(())
             },
             ActionableEvent::ActivateAccount { did } => {
-                if let Some(account) = self.dids.get_mut(did) { // only act if we have any records by this account
+                if let Some(account) = data.dids.get_mut(did) { // only act if we have any records by this account
                     *account = true;
                 }
                 Ok(())
             },
             ActionableEvent::DeactivateAccount { did } => {
-                if let Some(account) = self.dids.get_mut(did) { // ignore deactivating unknown accounts should be ok
+                if let Some(account) = data.dids.get_mut(did) { // ignore deactivating unknown accounts should be ok
                     *account = false;
                 }
                 Ok(())
             },
             ActionableEvent::DeleteAccount { did } => {
-                if let Some(links) = self.links.get(did) {
+                if let Some(links) = data.links.get(did) {
+                    let links = links.clone();
                     for targets in links.values() {
                         for (target, collection, path) in targets {
-                            self.targets.get_mut(target)
+                            data.targets.get_mut(target)
                                 .expect("must have the target if we have a link saved")
                                 .get_mut(&(collection.clone(), path.clone()))
                                 .expect("must have the target at this path if we have a link to it saved")
@@ -133,14 +137,15 @@ impl LinkStorage for MemStorage {
                         }
                     }
                 }
-                self.links.remove(did);
-                self.dids.remove(did);
+                data.links.remove(did);
+                data.dids.remove(did);
                 Ok(())
             },
         }
     }
     fn get_count(&self, target: &str, collection: &str, path: &str) -> Result<u64> {
-        let Some(paths) = self.targets.get(target) else {
+        let data = self.0.lock().unwrap();
+        let Some(paths) = data.targets.get(target) else {
             return Ok(0);
         };
         let Some(dids) = paths.get(&(collection.to_string(), path.to_string())) else {
@@ -214,7 +219,7 @@ mod tests {
 
     #[test]
     fn test_mem_links() {
-        let mut storage = MemStorage::new();
+        let storage = MemStorage::new();
         storage
             .push(&ActionableEvent::CreateLinks {
                 did: "did:plc:asdf".into(),
@@ -365,7 +370,7 @@ mod tests {
 
     #[test]
     fn test_mem_two_user_links_delete_one() {
-        let mut storage = MemStorage::new();
+        let storage = MemStorage::new();
 
         // create the first link
         storage
@@ -424,7 +429,7 @@ mod tests {
 
     #[test]
     fn test_mem_accounts() {
-        let mut storage = MemStorage::new();
+        let storage = MemStorage::new();
 
         // create two links
         storage
@@ -503,7 +508,7 @@ mod tests {
 
     #[test]
     fn test_multi_link() {
-        let mut storage = MemStorage::new();
+        let storage = MemStorage::new();
         storage
             .push(&ActionableEvent::CreateLinks {
                 did: "did:plc:asdf".into(),

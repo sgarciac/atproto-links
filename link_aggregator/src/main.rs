@@ -5,7 +5,7 @@ mod storage;
 
 use anyhow::Result;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::thread;
 use std::time;
 use tokio::runtime;
@@ -17,7 +17,7 @@ use storage::MemStorage;
 fn main() -> Result<()> {
     println!("starting...");
 
-    let storage = Arc::new(Mutex::new(MemStorage::new()));
+    let storage = Arc::new(MemStorage::new());
 
     let qsize = Arc::new(AtomicU32::new(0));
 
@@ -30,12 +30,7 @@ fn main() -> Result<()> {
     thread::spawn({
         let storage = storage.clone();
         move || loop {
-            {
-                storage
-                    .lock()
-                    .unwrap()
-                    .summarize(qsize.load(Ordering::Relaxed));
-            }
+            storage.summarize(qsize.load(Ordering::Relaxed));
             thread::sleep(time::Duration::from_secs(3));
         }
     });
@@ -57,7 +52,7 @@ mod tests {
 
     #[test]
     fn test_create_like_integrated() {
-        let mut storage = MemStorage::new();
+        let storage = MemStorage::new();
 
         let rec = r#"{
             "did":"did:plc:icprmty6ticzracr5urz4uum",

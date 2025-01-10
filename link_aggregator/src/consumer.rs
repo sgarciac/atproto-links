@@ -3,7 +3,7 @@ use crate::storage::LinkStorage;
 use link_aggregator::ActionableEvent;
 use links::collect_links;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::thread;
 use tinyjson::JsonValue;
 
@@ -73,7 +73,7 @@ pub fn get_actionable(event: &JsonValue) -> Option<ActionableEvent> {
     }
 }
 
-pub fn consume<S: LinkStorage>(store: Arc<Mutex<S>>, qsize: Arc<AtomicU32>) {
+pub fn consume<S: LinkStorage>(store: Arc<S>, qsize: Arc<AtomicU32>) {
     let (sender, receiver) = flume::unbounded(); // eek
     let jetstream_handle = thread::spawn(move || consume_jetstream(sender));
     persist_events(store, receiver, qsize);
@@ -81,15 +81,14 @@ pub fn consume<S: LinkStorage>(store: Arc<Mutex<S>>, qsize: Arc<AtomicU32>) {
 }
 
 fn persist_events<S: LinkStorage>(
-    store: Arc<Mutex<S>>,
+    store: Arc<S>,
     receiver: flume::Receiver<JsonValue>,
     qsize: Arc<AtomicU32>,
 ) {
     for update in receiver.iter() {
         if let Some(event) = get_actionable(&update) {
             {
-                let mut s = store.lock().unwrap();
-                s.push(&event).unwrap();
+                store.push(&event).unwrap();
                 qsize.store(receiver.len().try_into().unwrap(), Ordering::Relaxed);
             }
         }
