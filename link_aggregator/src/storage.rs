@@ -5,7 +5,30 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 pub trait LinkStorage {
-    fn push(&self, event: &ActionableEvent) -> Result<()>;
+    fn push(&self, event: &ActionableEvent) -> Result<()> {
+        match event {
+            ActionableEvent::CreateLinks { record_id, links } => self.add_links(record_id, links),
+            ActionableEvent::UpdateLinks {
+                record_id,
+                new_links,
+            } => self.update_links(record_id, new_links),
+            ActionableEvent::DeleteRecord(record_id) => self.remove_links(record_id),
+            ActionableEvent::ActivateAccount(did) => self.set_account(did, true),
+            ActionableEvent::DeactivateAccount(did) => self.set_account(did, false),
+            ActionableEvent::DeleteAccount(did) => self.delete_account(did),
+        }
+        Ok(())
+    }
+
+    fn add_links(&self, record_id: &RecordId, links: &[CollectedLink]);
+    fn remove_links(&self, record_id: &RecordId);
+    fn update_links(&self, record_id: &RecordId, new_links: &[CollectedLink]) {
+        self.remove_links(record_id);
+        self.add_links(record_id, new_links);
+    }
+    fn set_account(&self, did: &Did, active: bool);
+    fn delete_account(&self, did: &Did);
+
     fn get_count(&self, target: &str, collection: &str, path: &str) -> Result<u64>;
 }
 
@@ -84,8 +107,10 @@ impl MemStorage {
         let sample_path = sample_target.and_then(|t| data.targets.get(t).unwrap().keys().next());
         println!("queue: {qsize}. {dids} dids, {targets} targets from {target_paths} paths, {links} links. sample: {sample_target:?} {sample_path:?}");
     }
+}
 
-    fn add_links(&self, record_id: &RecordId, links: &Vec<CollectedLink>) {
+impl LinkStorage for MemStorage {
+    fn add_links(&self, record_id: &RecordId, links: &[CollectedLink]) {
         let mut data = self.0.lock().unwrap();
         for link in links {
             data.dids.entry(record_id.did()).or_insert(true); // if they are inserting a link, presumably they are active
@@ -158,26 +183,7 @@ impl MemStorage {
         data.links.remove(did);
         data.dids.remove(did);
     }
-}
 
-impl LinkStorage for MemStorage {
-    fn push(&self, event: &ActionableEvent) -> Result<()> {
-        match event {
-            ActionableEvent::CreateLinks { record_id, links } => self.add_links(record_id, links),
-            ActionableEvent::UpdateLinks {
-                record_id,
-                new_links,
-            } => {
-                self.remove_links(record_id);
-                self.add_links(record_id, new_links);
-            }
-            ActionableEvent::DeleteRecord(record_id) => self.remove_links(record_id),
-            ActionableEvent::ActivateAccount(did) => self.set_account(did, true),
-            ActionableEvent::DeactivateAccount(did) => self.set_account(did, false),
-            ActionableEvent::DeleteAccount(did) => self.delete_account(did),
-        }
-        Ok(())
-    }
     fn get_count(&self, target: &str, collection: &str, path: &str) -> Result<u64> {
         let data = self.0.lock().unwrap();
         let Some(paths) = data.targets.get(&Target::new(target)) else {
