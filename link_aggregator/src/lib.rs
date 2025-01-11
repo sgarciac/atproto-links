@@ -1,6 +1,5 @@
 use links::CollectedLink;
 use std::convert::From;
-use std::ops::Deref;
 
 #[derive(Debug, PartialEq)]
 pub enum ActionableEvent {
@@ -21,22 +20,9 @@ pub enum ActionableEvent {
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub struct Did(String);
 
-impl AsRef<str> for Did {
-    fn as_ref(&self) -> &str {
-        &self.0
-    }
-}
-
 impl<T: Into<String>> From<T> for Did {
     fn from(s: T) -> Self {
         Self(s.into())
-    }
-}
-
-impl Deref for Did {
-    type Target = String;
-    fn deref(&self) -> &Self::Target {
-        &self.0
     }
 }
 
