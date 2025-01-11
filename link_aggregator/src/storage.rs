@@ -52,11 +52,20 @@ impl RepoId {
     }
 }
 
+#[derive(Debug, PartialEq, Hash, Eq, Clone)]
+struct RecordPath(String);
+
+impl RecordPath {
+    fn new(rp: &str) -> Self {
+        Self(rp.into())
+    }
+}
+
 #[derive(Debug, Default)]
 struct MemStorageData {
     dids: HashMap<Did, bool>,                            // bool: active or nah
     targets: HashMap<Target, HashMap<Source, Vec<Did>>>, // target -> (collection, path) -> did[]
-    links: HashMap<Did, HashMap<RepoId, Vec<(Target, Source)>>>, // did -> collection:rkey -> (target, (collection, path))[]
+    links: HashMap<Did, HashMap<RepoId, Vec<(RecordPath, Target)>>>, // did -> collection:rkey -> (path, target)[]
 }
 
 impl MemStorage {
@@ -91,10 +100,7 @@ impl MemStorage {
                 .or_default()
                 .entry(RepoId::from_record_id(record_id))
                 .or_insert(Vec::with_capacity(1))
-                .push((
-                    Target::new(&link.target),
-                    Source::new(&record_id.collection, &link.path),
-                ))
+                .push((RecordPath::new(&link.path), Target::new(&link.target)))
         }
     }
 
@@ -107,16 +113,16 @@ impl MemStorage {
 
     fn remove_links(&self, record_id: &RecordId) {
         let mut data = self.0.lock().unwrap();
-        let col_rkey = RepoId::from_record_id(record_id);
-        if let Some(Some(link_targets)) = data.links.get(&record_id.did).map(|cr| cr.get(&col_rkey))
+        let repo_id = RepoId::from_record_id(record_id);
+        if let Some(Some(link_targets)) = data.links.get(&record_id.did).map(|cr| cr.get(&repo_id))
         {
             let link_targets = link_targets.clone(); // satisfy borrowck
-            for (target, source) in link_targets {
+            for (record_path, target) in link_targets {
                 let dids = data
                     .targets
                     .get_mut(&target)
                     .expect("must have the target if we have a link saved")
-                    .get_mut(&source)
+                    .get_mut(&Source::new(&record_id.collection, &record_path.0))
                     .expect("must have the target at this path if we have a link to it saved");
                 // search from the end: more likely to be visible and deletes are usually soon after creates
                 // only delete one instance: a user can create multiple links to something, we're only deleting one
@@ -130,20 +136,20 @@ impl MemStorage {
         }
         data.links
             .get_mut(&record_id.did)
-            .map(|cr| cr.remove(&col_rkey));
+            .map(|cr| cr.remove(&repo_id));
     }
 
     fn delete_account(&self, did: &Did) {
         let mut data = self.0.lock().unwrap();
         if let Some(links) = data.links.get(did) {
             let links = links.clone();
-            for targets in links.values() {
+            for (repo_id, targets) in links {
                 let targets = targets.clone();
-                for (target, source) in targets {
+                for (record_path, target) in targets {
                     data.targets
                         .get_mut(&target)
                         .expect("must have the target if we have a link saved")
-                        .get_mut(&source)
+                        .get_mut(&Source::new(&repo_id.collection, &record_path.0))
                         .expect("must have the target at this path if we have a link to it saved")
                         .retain(|d| d != did);
                 }
