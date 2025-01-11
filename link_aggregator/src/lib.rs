@@ -18,7 +18,7 @@ pub enum ActionableEvent {
     DeleteAccount(Did),
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub struct Did(String);
 
 impl AsRef<str> for Did {

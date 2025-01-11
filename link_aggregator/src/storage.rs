@@ -1,5 +1,5 @@
 use anyhow::Result;
-use link_aggregator::{ActionableEvent, RecordId};
+use link_aggregator::{ActionableEvent, Did, RecordId};
 use std::collections::HashMap;
 use std::sync::Mutex;
 
@@ -12,12 +12,26 @@ pub trait LinkStorage {
 #[derive(Debug)]
 pub struct MemStorage(Mutex<MemStorageData>);
 
+#[derive(Debug, PartialEq, Hash, Eq, Clone)]
+struct Source {
+    collection: String,
+    path: String,
+}
+
+impl Source {
+    fn new(collection: &str, path: &str) -> Self {
+        Self {
+            collection: collection.into(),
+            path: path.into(),
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 struct MemStorageData {
-    dids: HashMap<String, bool>, // bool: active or nah
-    targets: HashMap<String, HashMap<(String, String), Vec<String>>>, // target -> (collection, path) -> did[]
-    #[allow(clippy::type_complexity)]
-    links: HashMap<String, HashMap<String, Vec<(String, String, String)>>>, // did -> collection:rkey -> (target, collection, path)[]
+    dids: HashMap<Did, bool>,                            // bool: active or nah
+    targets: HashMap<String, HashMap<Source, Vec<Did>>>, // target -> (collection, path) -> did[]
+    links: HashMap<Did, HashMap<String, Vec<(String, Source)>>>, // did -> collection:rkey -> (target, (collection, path))[]
 }
 
 impl MemStorage {
@@ -56,20 +70,20 @@ impl LinkStorage for MemStorage {
             } => {
                 for link in links {
                     data.dids
-                        .entry((*did).clone())
+                        .entry(did.clone())
                         .or_insert(true); // if they are inserting a link, presumably they are active
                     data.targets
                         .entry(link.target.clone())
                         .or_default()
-                        .entry((collection.clone(), link.path.clone()))
+                        .entry(Source::new(collection, &link.path))
                         .or_default()
-                        .push((*did).clone());
+                        .push(did.clone());
                     data.links
-                        .entry((*did).clone())
+                        .entry(did.clone())
                         .or_default()
                         .entry(Self::_col_rkey(collection, rkey))
                         .or_insert(Vec::with_capacity(1))
-                        .push((link.target.clone(), collection.clone(), link.path.clone()))
+                        .push((link.target.clone(), Source::new(collection, &link.path)))
                 }
                 Ok(())
             },
@@ -89,51 +103,52 @@ impl LinkStorage for MemStorage {
                 rkey,
             }) => {
                 let col_rkey = Self::_col_rkey(collection, rkey);
-                if let Some(Some(link_targets)) = data.links.get(&**did).map(|cr| cr.get(&col_rkey)) {
+                if let Some(Some(link_targets)) = data.links.get(did).map(|cr| cr.get(&col_rkey)) {
                     let link_targets = link_targets.clone(); // satisfy borrowck
-                    for (target, collection, path) in link_targets {
+                    for (target, source) in link_targets {
                         let dids = data.targets
                             .get_mut(&target)
                             .expect("must have the target if we have a link saved")
-                            .get_mut(&(collection.clone(), path.clone()))
+                            .get_mut(&source)
                             .expect("must have the target at this path if we have a link to it saved");
                         // search from the end: more likely to be visible and deletes are usually soon after creates
                         // only delete one instance: a user can create multiple links to something, we're only deleting one
                         // (we don't know which one in the list we should be deleting, and it hopefully mostly doesn't matter)
-                        let pos = dids.iter().rposition(|d| *d == **did).expect("must be in dids list if we have a link to it");
+                        let pos = dids.iter().rposition(|d| d == did).expect("must be in dids list if we have a link to it");
                         dids.remove(pos);
                     }
                 }
-                data.links.get_mut(&**did).map(|cr| cr.remove(&col_rkey));
+                data.links.get_mut(did).map(|cr| cr.remove(&col_rkey));
                 Ok(())
             },
             ActionableEvent::ActivateAccount(did) => {
-                if let Some(account) = data.dids.get_mut(did.as_ref()) { // only act if we have any records by this account
+                if let Some(account) = data.dids.get_mut(did) { // only act if we have any records by this account
                     *account = true;
                 }
                 Ok(())
             },
             ActionableEvent::DeactivateAccount(did) => {
-                if let Some(account) = data.dids.get_mut(did.as_ref()) { // ignore deactivating unknown accounts should be ok
+                if let Some(account) = data.dids.get_mut(did) { // ignore deactivating unknown accounts should be ok
                     *account = false;
                 }
                 Ok(())
             },
             ActionableEvent::DeleteAccount(did) => {
-                if let Some(links) = data.links.get(did.as_ref()) {
+                if let Some(links) = data.links.get(did) {
                     let links = links.clone();
                     for targets in links.values() {
-                        for (target, collection, path) in targets {
-                            data.targets.get_mut(target)
+                        let targets = targets.clone();
+                        for (target, source) in targets {
+                            data.targets.get_mut(&target)
                                 .expect("must have the target if we have a link saved")
-                                .get_mut(&(collection.clone(), path.clone()))
+                                .get_mut(&source)
                                 .expect("must have the target at this path if we have a link to it saved")
-                                .retain(|d| d != did.as_ref());
+                                .retain(|d| d != did);
                         }
                     }
                 }
-                data.links.remove(did.as_ref());
-                data.dids.remove(did.as_ref());
+                data.links.remove(did);
+                data.dids.remove(did);
                 Ok(())
             },
         }
@@ -143,7 +158,7 @@ impl LinkStorage for MemStorage {
         let Some(paths) = data.targets.get(target) else {
             return Ok(0);
         };
-        let Some(dids) = paths.get(&(collection.to_string(), path.to_string())) else {
+        let Some(dids) = paths.get(&Source::new(collection, path)) else {
             return Ok(0);
         };
         let count = dids.len().try_into()?;
