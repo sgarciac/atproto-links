@@ -191,45 +191,6 @@ impl LinkStorage for MemStorage {
     }
 }
 
-// pub struct RocksStorage {}
-
-// impl RocksStorage {
-//     pub fn new() -> Self {
-//         Self {}
-//     }
-// }
-
-// impl LinkStorage for RocksStorage {
-//     fn push(&mut self, event: &ActionableEvent) -> Result<()> {
-//         match event {
-//             ActionableEvent::CreateLinks {
-//                 did,
-//                 collection,
-//                 rkey,
-//                 links,
-//             } => {}
-//             ActionableEvent::UpdateLinks {
-//                 did,
-//                 collection,
-//                 rkey,
-//                 new_links,
-//             } => {}
-//             ActionableEvent::DeleteRecord {
-//                 did,
-//                 collection,
-//                 rkey,
-//             } => {}
-//             ActionableEvent::ActivateAccount { did } => {}
-//             ActionableEvent::DeactivateAccount { did } => {}
-//             ActionableEvent::DeleteAccount { did } => {}
-//         }
-//         Ok(())
-//     }
-//     fn get_count(target: &str, path: &str) -> Result<u64> {
-//         Ok(0)
-//     }
-// }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -626,6 +587,109 @@ mod tests {
                 .get_count("g.com", "app.test.collection", ".xyz[].uri")
                 .unwrap(),
             0
+        );
+    }
+
+    #[test]
+    fn test_update_link() {
+        let storage = MemStorage::new();
+
+        // create the links
+        storage
+            .push(&ActionableEvent::CreateLinks {
+                record_id: RecordId {
+                    did: "did:plc:asdf".into(),
+                    collection: "app.test.collection".into(),
+                    rkey: "fdsa".into(),
+                },
+                links: vec![
+                    CollectedLink {
+                        target: "e.com".into(),
+                        path: ".abc.uri".into(),
+                    },
+                    CollectedLink {
+                        target: "f.com".into(),
+                        path: ".xyz[].uri".into(),
+                    },
+                    CollectedLink {
+                        target: "g.com".into(),
+                        path: ".xyz[].uri".into(),
+                    },
+                ],
+            })
+            .unwrap();
+        assert_eq!(
+            storage
+                .get_count("e.com", "app.test.collection", ".abc.uri")
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            storage
+                .get_count("f.com", "app.test.collection", ".xyz[].uri")
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            storage
+                .get_count("g.com", "app.test.collection", ".xyz[].uri")
+                .unwrap(),
+            1
+        );
+
+        // update them
+        storage
+            .push(&ActionableEvent::UpdateLinks {
+                record_id: RecordId {
+                    did: "did:plc:asdf".into(),
+                    collection: "app.test.collection".into(),
+                    rkey: "fdsa".into(),
+                },
+                new_links: vec![
+                    CollectedLink {
+                        target: "h.com".into(),
+                        path: ".abc.uri".into(),
+                    },
+                    CollectedLink {
+                        target: "f.com".into(),
+                        path: ".xyz[].uri".into(),
+                    },
+                    CollectedLink {
+                        target: "i.com".into(),
+                        path: ".xyz[].uri".into(),
+                    },
+                ],
+            })
+            .unwrap();
+        assert_eq!(
+            storage
+                .get_count("e.com", "app.test.collection", ".abc.uri")
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            storage
+                .get_count("h.com", "app.test.collection", ".abc.uri")
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            storage
+                .get_count("f.com", "app.test.collection", ".xyz[].uri")
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            storage
+                .get_count("g.com", "app.test.collection", ".xyz[].uri")
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            storage
+                .get_count("i.com", "app.test.collection", ".xyz[].uri")
+                .unwrap(),
+            1
         );
     }
 }
