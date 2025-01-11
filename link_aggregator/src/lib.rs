@@ -46,3 +46,15 @@ pub struct RecordId {
     pub collection: String,
     pub rkey: String,
 }
+
+impl RecordId {
+    pub fn did(&self) -> Did {
+        self.did.clone()
+    }
+    pub fn collection(&self) -> String {
+        self.collection.clone()
+    }
+    pub fn rkey(&self) -> String {
+        self.rkey.clone()
+    }
+}

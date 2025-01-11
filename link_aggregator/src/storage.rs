@@ -1,5 +1,6 @@
 use anyhow::Result;
 use link_aggregator::{ActionableEvent, Did, RecordId};
+use links::CollectedLink;
 use std::collections::HashMap;
 use std::sync::Mutex;
 
@@ -43,10 +44,10 @@ struct RepoId {
 }
 
 impl RepoId {
-    fn new(collection: &str, rkey: &str) -> Self {
+    fn from_record_id(record_id: &RecordId) -> Self {
         Self {
-            collection: collection.into(),
-            rkey: rkey.into(),
+            collection: record_id.collection.clone(),
+            rkey: record_id.rkey.clone(),
         }
     }
 }
@@ -74,104 +75,102 @@ impl MemStorage {
         let sample_path = sample_target.and_then(|t| data.targets.get(t).unwrap().keys().next());
         println!("queue: {qsize}. {dids} dids, {targets} targets from {target_paths} paths, {links} links. sample: {sample_target:?} {sample_path:?}");
     }
+
+    fn add_links(&self, record_id: &RecordId, links: &Vec<CollectedLink>) {
+        let mut data = self.0.lock().unwrap();
+        for link in links {
+            data.dids.entry(record_id.did()).or_insert(true); // if they are inserting a link, presumably they are active
+            data.targets
+                .entry(Target::new(&link.target))
+                .or_default()
+                .entry(Source::new(&record_id.collection, &link.path))
+                .or_default()
+                .push(record_id.did());
+            data.links
+                .entry(record_id.did())
+                .or_default()
+                .entry(RepoId::from_record_id(record_id))
+                .or_insert(Vec::with_capacity(1))
+                .push((
+                    Target::new(&link.target),
+                    Source::new(&record_id.collection, &link.path),
+                ))
+        }
+    }
+
+    fn set_account(&self, did: &Did, active: bool) {
+        let mut data = self.0.lock().unwrap();
+        if let Some(account) = data.dids.get_mut(did) {
+            *account = active;
+        }
+    }
+
+    fn remove_links(&self, record_id: &RecordId) {
+        let mut data = self.0.lock().unwrap();
+        let col_rkey = RepoId::from_record_id(record_id);
+        if let Some(Some(link_targets)) = data.links.get(&record_id.did).map(|cr| cr.get(&col_rkey))
+        {
+            let link_targets = link_targets.clone(); // satisfy borrowck
+            for (target, source) in link_targets {
+                let dids = data
+                    .targets
+                    .get_mut(&target)
+                    .expect("must have the target if we have a link saved")
+                    .get_mut(&source)
+                    .expect("must have the target at this path if we have a link to it saved");
+                // search from the end: more likely to be visible and deletes are usually soon after creates
+                // only delete one instance: a user can create multiple links to something, we're only deleting one
+                // (we don't know which one in the list we should be deleting, and it hopefully mostly doesn't matter)
+                let pos = dids
+                    .iter()
+                    .rposition(|d| *d == record_id.did)
+                    .expect("must be in dids list if we have a link to it");
+                dids.remove(pos);
+            }
+        }
+        data.links
+            .get_mut(&record_id.did)
+            .map(|cr| cr.remove(&col_rkey));
+    }
+
+    fn delete_account(&self, did: &Did) {
+        let mut data = self.0.lock().unwrap();
+        if let Some(links) = data.links.get(did) {
+            let links = links.clone();
+            for targets in links.values() {
+                let targets = targets.clone();
+                for (target, source) in targets {
+                    data.targets
+                        .get_mut(&target)
+                        .expect("must have the target if we have a link saved")
+                        .get_mut(&source)
+                        .expect("must have the target at this path if we have a link to it saved")
+                        .retain(|d| d != did);
+                }
+            }
+        }
+        data.links.remove(did);
+        data.dids.remove(did);
+    }
 }
 
 impl LinkStorage for MemStorage {
     fn push(&self, event: &ActionableEvent) -> Result<()> {
-        let mut data = self.0.lock().unwrap();
         match event {
-            ActionableEvent::CreateLinks {
-                record_id: RecordId {
-                    did,
-                    collection,
-                    rkey,
-                },
-                links,
-            } => {
-                for link in links {
-                    data.dids
-                        .entry(did.clone())
-                        .or_insert(true); // if they are inserting a link, presumably they are active
-                    data.targets
-                        .entry(Target::new(&link.target))
-                        .or_default()
-                        .entry(Source::new(collection, &link.path))
-                        .or_default()
-                        .push(did.clone());
-                    data.links
-                        .entry(did.clone())
-                        .or_default()
-                        .entry(RepoId::new(collection, rkey))
-                        .or_insert(Vec::with_capacity(1))
-                        .push((Target::new(&link.target), Source::new(collection, &link.path)))
-                }
-                Ok(())
-            },
+            ActionableEvent::CreateLinks { record_id, links } => self.add_links(record_id, links),
             ActionableEvent::UpdateLinks {
-                ..
-                // did,
-                // collection,
-                // rkey,
-                // new_links,
+                record_id,
+                new_links,
             } => {
-                // eprintln!("storage: ignoring update event for now...");
-                Ok(())
-            } //unimplemented!(), // for mem version probably delete old then add new?
-            ActionableEvent::DeleteRecord(RecordId {
-                did,
-                collection,
-                rkey,
-            }) => {
-                let col_rkey = RepoId::new(collection, rkey);
-                if let Some(Some(link_targets)) = data.links.get(did).map(|cr| cr.get(&col_rkey)) {
-                    let link_targets = link_targets.clone(); // satisfy borrowck
-                    for (target, source) in link_targets {
-                        let dids = data.targets
-                            .get_mut(&target)
-                            .expect("must have the target if we have a link saved")
-                            .get_mut(&source)
-                            .expect("must have the target at this path if we have a link to it saved");
-                        // search from the end: more likely to be visible and deletes are usually soon after creates
-                        // only delete one instance: a user can create multiple links to something, we're only deleting one
-                        // (we don't know which one in the list we should be deleting, and it hopefully mostly doesn't matter)
-                        let pos = dids.iter().rposition(|d| d == did).expect("must be in dids list if we have a link to it");
-                        dids.remove(pos);
-                    }
-                }
-                data.links.get_mut(did).map(|cr| cr.remove(&col_rkey));
-                Ok(())
-            },
-            ActionableEvent::ActivateAccount(did) => {
-                if let Some(account) = data.dids.get_mut(did) { // only act if we have any records by this account
-                    *account = true;
-                }
-                Ok(())
-            },
-            ActionableEvent::DeactivateAccount(did) => {
-                if let Some(account) = data.dids.get_mut(did) { // ignore deactivating unknown accounts should be ok
-                    *account = false;
-                }
-                Ok(())
-            },
-            ActionableEvent::DeleteAccount(did) => {
-                if let Some(links) = data.links.get(did) {
-                    let links = links.clone();
-                    for targets in links.values() {
-                        let targets = targets.clone();
-                        for (target, source) in targets {
-                            data.targets.get_mut(&target)
-                                .expect("must have the target if we have a link saved")
-                                .get_mut(&source)
-                                .expect("must have the target at this path if we have a link to it saved")
-                                .retain(|d| d != did);
-                        }
-                    }
-                }
-                data.links.remove(did);
-                data.dids.remove(did);
-                Ok(())
-            },
+                self.remove_links(record_id);
+                self.add_links(record_id, new_links);
+            }
+            ActionableEvent::DeleteRecord(record_id) => self.remove_links(record_id),
+            ActionableEvent::ActivateAccount(did) => self.set_account(did, true),
+            ActionableEvent::DeactivateAccount(did) => self.set_account(did, false),
+            ActionableEvent::DeleteAccount(did) => self.delete_account(did),
         }
+        Ok(())
     }
     fn get_count(&self, target: &str, collection: &str, path: &str) -> Result<u64> {
         let data = self.0.lock().unwrap();
