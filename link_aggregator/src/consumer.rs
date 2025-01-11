@@ -1,6 +1,6 @@
 use crate::jetstream::consume_jetstream;
 use crate::storage::LinkStorage;
-use link_aggregator::ActionableEvent;
+use link_aggregator::{ActionableEvent, RecordId};
 use links::collect_links;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
@@ -31,24 +31,30 @@ pub fn get_actionable(event: &JsonValue) -> Option<ActionableEvent> {
                         None
                     } else {
                         Some(ActionableEvent::CreateLinks {
-                            did: did.clone(),
-                            collection: collection.clone(),
-                            rkey: rkey.clone(),
+                            record_id: RecordId {
+                                did: did.into(),
+                                collection: collection.clone(),
+                                rkey: rkey.clone(),
+                            },
                             links,
                         })
                     }
                 }
                 JsonValue::String(op) if op == "update" => Some(ActionableEvent::UpdateLinks {
-                    did: did.clone(),
-                    collection: collection.clone(),
-                    rkey: rkey.clone(),
+                    record_id: RecordId {
+                        did: did.into(),
+                        collection: collection.clone(),
+                        rkey: rkey.clone(),
+                    },
                     new_links: collect_links(commit.get("record")?),
                 }),
-                JsonValue::String(op) if op == "delete" => Some(ActionableEvent::DeleteRecord {
-                    did: did.clone(),
-                    collection: collection.clone(),
-                    rkey: rkey.clone(),
-                }),
+                JsonValue::String(op) if op == "delete" => {
+                    Some(ActionableEvent::DeleteRecord(RecordId {
+                        did: did.into(),
+                        collection: collection.clone(),
+                        rkey: rkey.clone(),
+                    }))
+                }
                 _ => None,
             }
         }
@@ -60,10 +66,10 @@ pub fn get_actionable(event: &JsonValue) -> Option<ActionableEvent> {
             };
             let did = account.get("did")?.get::<String>()?.clone();
             match (account.get("active")?.get::<bool>()?, account.get("status")) {
-                (true, None) => Some(ActionableEvent::ActivateAccount { did }),
+                (true, None) => Some(ActionableEvent::ActivateAccount(did.into())),
                 (false, Some(JsonValue::String(status))) => match status.as_ref() {
-                    "deactivated" => Some(ActionableEvent::DeactivateAccount { did }),
-                    "deleted" => Some(ActionableEvent::DeleteAccount { did }),
+                    "deactivated" => Some(ActionableEvent::DeactivateAccount(did.into())),
+                    "deleted" => Some(ActionableEvent::DeleteAccount(did.into())),
                     _ => None,
                 },
                 _ => None,
@@ -117,9 +123,11 @@ mod tests {
         assert_eq!(
             action,
             Some(ActionableEvent::CreateLinks {
-                did: "did:plc:icprmty6ticzracr5urz4uum".to_string(),
-                collection: "app.bsky.feed.like".to_string(),
-                rkey: "3lfddpt5djw2c".to_string(),
+                record_id: RecordId {
+                    did: "did:plc:icprmty6ticzracr5urz4uum".into(),
+                    collection: "app.bsky.feed.like".into(),
+                    rkey: "3lfddpt5djw2c".into(),
+                },
                 links: vec![CollectedLink {
                     path: ".subject.uri".into(),
                     target:
@@ -156,9 +164,11 @@ mod tests {
         assert_eq!(
             action,
             Some(ActionableEvent::UpdateLinks {
-                did: "did:plc:tcmiubbjtkwhmnwmrvr2eqnx".to_string(),
-                collection: "app.bsky.actor.profile".to_string(),
-                rkey: "self".to_string(),
+                record_id: RecordId {
+                    did: "did:plc:tcmiubbjtkwhmnwmrvr2eqnx".into(),
+                    collection: "app.bsky.actor.profile".into(),
+                    rkey: "self".into(),
+                },
                 new_links: vec![CollectedLink {
                     path: ".pinnedPost.uri".into(),
                     target:
@@ -180,11 +190,11 @@ mod tests {
         let action = get_actionable(&rec);
         assert_eq!(
             action,
-            Some(ActionableEvent::DeleteRecord {
-                did: "did:plc:3pa2ss4l2sqzhy6wud4btqsj".to_string(),
-                collection: "app.bsky.feed.like".to_string(),
-                rkey: "3lbiu72lczk2w".to_string(),
-            })
+            Some(ActionableEvent::DeleteRecord(RecordId {
+                did: "did:plc:3pa2ss4l2sqzhy6wud4btqsj".into(),
+                collection: "app.bsky.feed.like".into(),
+                rkey: "3lbiu72lczk2w".into(),
+            }))
         )
     }
 
@@ -199,9 +209,9 @@ mod tests {
         let action = get_actionable(&rec);
         assert_eq!(
             action,
-            Some(ActionableEvent::DeleteAccount {
-                did: "did:plc:zsgqovouzm2gyksjkqrdodsw".to_string(),
-            })
+            Some(ActionableEvent::DeleteAccount(
+                "did:plc:zsgqovouzm2gyksjkqrdodsw".into()
+            ))
         )
     }
 
@@ -213,9 +223,9 @@ mod tests {
         let action = get_actionable(&rec);
         assert_eq!(
             action,
-            Some(ActionableEvent::DeactivateAccount {
-                did: "did:plc:l4jb3hkq7lrblferbywxkiol".to_string(),
-            })
+            Some(ActionableEvent::DeactivateAccount(
+                "did:plc:l4jb3hkq7lrblferbywxkiol".into()
+            ))
         )
     }
 
@@ -227,9 +237,9 @@ mod tests {
         let action = get_actionable(&rec);
         assert_eq!(
             action,
-            Some(ActionableEvent::ActivateAccount {
-                did: "did:plc:nct6zfb2j4emoj4yjomxwml2".to_string(),
-            })
+            Some(ActionableEvent::ActivateAccount(
+                "did:plc:nct6zfb2j4emoj4yjomxwml2".into()
+            ))
         )
     }
 }

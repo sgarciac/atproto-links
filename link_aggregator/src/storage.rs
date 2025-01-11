@@ -1,5 +1,5 @@
 use anyhow::Result;
-use link_aggregator::ActionableEvent;
+use link_aggregator::{ActionableEvent, RecordId};
 use std::collections::HashMap;
 use std::sync::Mutex;
 
@@ -47,23 +47,25 @@ impl LinkStorage for MemStorage {
         let mut data = self.0.lock().unwrap();
         match event {
             ActionableEvent::CreateLinks {
-                did,
-                collection,
-                rkey,
+                record_id: RecordId {
+                    did,
+                    collection,
+                    rkey,
+                },
                 links,
             } => {
                 for link in links {
                     data.dids
-                        .entry(did.clone())
+                        .entry((*did).clone())
                         .or_insert(true); // if they are inserting a link, presumably they are active
                     data.targets
                         .entry(link.target.clone())
                         .or_default()
                         .entry((collection.clone(), link.path.clone()))
                         .or_default()
-                        .push(did.clone());
+                        .push((*did).clone());
                     data.links
-                        .entry(did.clone())
+                        .entry((*did).clone())
                         .or_default()
                         .entry(Self::_col_rkey(collection, rkey))
                         .or_insert(Vec::with_capacity(1))
@@ -81,13 +83,13 @@ impl LinkStorage for MemStorage {
                 // eprintln!("storage: ignoring update event for now...");
                 Ok(())
             } //unimplemented!(), // for mem version probably delete old then add new?
-            ActionableEvent::DeleteRecord {
+            ActionableEvent::DeleteRecord(RecordId {
                 did,
                 collection,
                 rkey,
-            } => {
+            }) => {
                 let col_rkey = Self::_col_rkey(collection, rkey);
-                if let Some(Some(link_targets)) = data.links.get(did).map(|cr| cr.get(&col_rkey)) {
+                if let Some(Some(link_targets)) = data.links.get(&**did).map(|cr| cr.get(&col_rkey)) {
                     let link_targets = link_targets.clone(); // satisfy borrowck
                     for (target, collection, path) in link_targets {
                         let dids = data.targets
@@ -98,27 +100,27 @@ impl LinkStorage for MemStorage {
                         // search from the end: more likely to be visible and deletes are usually soon after creates
                         // only delete one instance: a user can create multiple links to something, we're only deleting one
                         // (we don't know which one in the list we should be deleting, and it hopefully mostly doesn't matter)
-                        let pos = dids.iter().rposition(|d| d == did).expect("must be in dids list if we have a link to it");
+                        let pos = dids.iter().rposition(|d| *d == **did).expect("must be in dids list if we have a link to it");
                         dids.remove(pos);
                     }
                 }
-                data.links.get_mut(did).map(|cr| cr.remove(&col_rkey));
+                data.links.get_mut(&**did).map(|cr| cr.remove(&col_rkey));
                 Ok(())
             },
-            ActionableEvent::ActivateAccount { did } => {
-                if let Some(account) = data.dids.get_mut(did) { // only act if we have any records by this account
+            ActionableEvent::ActivateAccount(did) => {
+                if let Some(account) = data.dids.get_mut(did.as_ref()) { // only act if we have any records by this account
                     *account = true;
                 }
                 Ok(())
             },
-            ActionableEvent::DeactivateAccount { did } => {
-                if let Some(account) = data.dids.get_mut(did) { // ignore deactivating unknown accounts should be ok
+            ActionableEvent::DeactivateAccount(did) => {
+                if let Some(account) = data.dids.get_mut(did.as_ref()) { // ignore deactivating unknown accounts should be ok
                     *account = false;
                 }
                 Ok(())
             },
-            ActionableEvent::DeleteAccount { did } => {
-                if let Some(links) = data.links.get(did) {
+            ActionableEvent::DeleteAccount(did) => {
+                if let Some(links) = data.links.get(did.as_ref()) {
                     let links = links.clone();
                     for targets in links.values() {
                         for (target, collection, path) in targets {
@@ -126,12 +128,12 @@ impl LinkStorage for MemStorage {
                                 .expect("must have the target if we have a link saved")
                                 .get_mut(&(collection.clone(), path.clone()))
                                 .expect("must have the target at this path if we have a link to it saved")
-                                .retain(|d| d != did);
+                                .retain(|d| d != did.as_ref());
                         }
                     }
                 }
-                data.links.remove(did);
-                data.dids.remove(did);
+                data.links.remove(did.as_ref());
+                data.dids.remove(did.as_ref());
                 Ok(())
             },
         }
@@ -215,9 +217,11 @@ mod tests {
         let storage = MemStorage::new();
         storage
             .push(&ActionableEvent::CreateLinks {
-                did: "did:plc:asdf".into(),
-                collection: "app.test.collection".into(),
-                rkey: "fdsa".into(),
+                record_id: RecordId {
+                    did: "did:plc:asdf".into(),
+                    collection: "app.test.collection".into(),
+                    rkey: "fdsa".into(),
+                },
                 links: vec![CollectedLink {
                     target: "e.com".into(),
                     path: ".abc.uri".into(),
@@ -245,11 +249,11 @@ mod tests {
 
         // delete under the wrong collection
         storage
-            .push(&ActionableEvent::DeleteRecord {
+            .push(&ActionableEvent::DeleteRecord(RecordId {
                 did: "did:plc:asdf".into(),
                 collection: "app.test.wrongcollection".into(),
                 rkey: "fdsa".into(),
-            })
+            }))
             .unwrap();
         assert_eq!(
             storage
@@ -260,11 +264,11 @@ mod tests {
 
         // delete under the wrong rkey
         storage
-            .push(&ActionableEvent::DeleteRecord {
+            .push(&ActionableEvent::DeleteRecord(RecordId {
                 did: "did:plc:asdf".into(),
                 collection: "app.test.collection".into(),
                 rkey: "wrongkey".into(),
-            })
+            }))
             .unwrap();
         assert_eq!(
             storage
@@ -275,11 +279,11 @@ mod tests {
 
         // finally actually delete it
         storage
-            .push(&ActionableEvent::DeleteRecord {
+            .push(&ActionableEvent::DeleteRecord(RecordId {
                 did: "did:plc:asdf".into(),
                 collection: "app.test.collection".into(),
                 rkey: "fdsa".into(),
-            })
+            }))
             .unwrap();
         assert_eq!(
             storage
@@ -291,9 +295,11 @@ mod tests {
         // put it back
         storage
             .push(&ActionableEvent::CreateLinks {
-                did: "did:plc:asdf".into(),
-                collection: "app.test.collection".into(),
-                rkey: "fdsa".into(),
+                record_id: RecordId {
+                    did: "did:plc:asdf".into(),
+                    collection: "app.test.collection".into(),
+                    rkey: "fdsa".into(),
+                },
                 links: vec![CollectedLink {
                     target: "e.com".into(),
                     path: ".abc.uri".into(),
@@ -310,9 +316,11 @@ mod tests {
         // add another link from this user
         storage
             .push(&ActionableEvent::CreateLinks {
-                did: "did:plc:asdf".into(),
-                collection: "app.test.collection".into(),
-                rkey: "fdsa2".into(),
+                record_id: RecordId {
+                    did: "did:plc:asdf".into(),
+                    collection: "app.test.collection".into(),
+                    rkey: "fdsa2".into(),
+                },
                 links: vec![CollectedLink {
                     target: "e.com".into(),
                     path: ".abc.uri".into(),
@@ -329,9 +337,11 @@ mod tests {
         // add a link from someone else
         storage
             .push(&ActionableEvent::CreateLinks {
-                did: "did:plc:asdfasdf".into(),
-                collection: "app.test.collection".into(),
-                rkey: "fdsa".into(),
+                record_id: RecordId {
+                    did: "did:plc:asdfasdf".into(),
+                    collection: "app.test.collection".into(),
+                    rkey: "fdsa".into(),
+                },
                 links: vec![CollectedLink {
                     target: "e.com".into(),
                     path: ".abc.uri".into(),
@@ -347,11 +357,11 @@ mod tests {
 
         // aaaand delete the first one again
         storage
-            .push(&ActionableEvent::DeleteRecord {
+            .push(&ActionableEvent::DeleteRecord(RecordId {
                 did: "did:plc:asdf".into(),
                 collection: "app.test.collection".into(),
                 rkey: "fdsa".into(),
-            })
+            }))
             .unwrap();
         assert_eq!(
             storage
@@ -368,9 +378,11 @@ mod tests {
         // create the first link
         storage
             .push(&ActionableEvent::CreateLinks {
-                did: "did:plc:asdf".into(),
-                collection: "app.test.collection".into(),
-                rkey: "A".into(),
+                record_id: RecordId {
+                    did: "did:plc:asdf".into(),
+                    collection: "app.test.collection".into(),
+                    rkey: "A".into(),
+                },
                 links: vec![CollectedLink {
                     target: "e.com".into(),
                     path: ".abc.uri".into(),
@@ -387,9 +399,11 @@ mod tests {
         // create the second link (same user, different rkey)
         storage
             .push(&ActionableEvent::CreateLinks {
-                did: "did:plc:asdf".into(),
-                collection: "app.test.collection".into(),
-                rkey: "B".into(),
+                record_id: RecordId {
+                    did: "did:plc:asdf".into(),
+                    collection: "app.test.collection".into(),
+                    rkey: "B".into(),
+                },
                 links: vec![CollectedLink {
                     target: "e.com".into(),
                     path: ".abc.uri".into(),
@@ -405,11 +419,11 @@ mod tests {
 
         // aaaand delete the first link
         storage
-            .push(&ActionableEvent::DeleteRecord {
+            .push(&ActionableEvent::DeleteRecord(RecordId {
                 did: "did:plc:asdf".into(),
                 collection: "app.test.collection".into(),
                 rkey: "A".into(),
-            })
+            }))
             .unwrap();
 
         assert_eq!(
@@ -427,9 +441,11 @@ mod tests {
         // create two links
         storage
             .push(&ActionableEvent::CreateLinks {
-                did: "did:plc:asdf".into(),
-                collection: "app.test.collection".into(),
-                rkey: "A".into(),
+                record_id: RecordId {
+                    did: "did:plc:asdf".into(),
+                    collection: "app.test.collection".into(),
+                    rkey: "A".into(),
+                },
                 links: vec![CollectedLink {
                     target: "a.com".into(),
                     path: ".abc.uri".into(),
@@ -438,9 +454,11 @@ mod tests {
             .unwrap();
         storage
             .push(&ActionableEvent::CreateLinks {
-                did: "did:plc:asdf".into(),
-                collection: "app.test.collection".into(),
-                rkey: "B".into(),
+                record_id: RecordId {
+                    did: "did:plc:asdf".into(),
+                    collection: "app.test.collection".into(),
+                    rkey: "B".into(),
+                },
                 links: vec![CollectedLink {
                     target: "b.com".into(),
                     path: ".abc.uri".into(),
@@ -463,9 +481,11 @@ mod tests {
         // and a third from a different account
         storage
             .push(&ActionableEvent::CreateLinks {
-                did: "did:plc:fdsa".into(),
-                collection: "app.test.collection".into(),
-                rkey: "A".into(),
+                record_id: RecordId {
+                    did: "did:plc:fdsa".into(),
+                    collection: "app.test.collection".into(),
+                    rkey: "A".into(),
+                },
                 links: vec![CollectedLink {
                     target: "a.com".into(),
                     path: ".abc.uri".into(),
@@ -481,9 +501,7 @@ mod tests {
 
         // delete the first account
         storage
-            .push(&ActionableEvent::DeleteAccount {
-                did: "did:plc:asdf".into(),
-            })
+            .push(&ActionableEvent::DeleteAccount("did:plc:asdf".into()))
             .unwrap();
         assert_eq!(
             storage
@@ -504,9 +522,11 @@ mod tests {
         let storage = MemStorage::new();
         storage
             .push(&ActionableEvent::CreateLinks {
-                did: "did:plc:asdf".into(),
-                collection: "app.test.collection".into(),
-                rkey: "fdsa".into(),
+                record_id: RecordId {
+                    did: "did:plc:asdf".into(),
+                    collection: "app.test.collection".into(),
+                    rkey: "fdsa".into(),
+                },
                 links: vec![
                     CollectedLink {
                         target: "e.com".into(),
@@ -543,11 +563,11 @@ mod tests {
         );
 
         storage
-            .push(&ActionableEvent::DeleteRecord {
+            .push(&ActionableEvent::DeleteRecord(RecordId {
                 did: "did:plc:asdf".into(),
                 collection: "app.test.collection".into(),
                 rkey: "fdsa".into(),
-            })
+            }))
             .unwrap();
         assert_eq!(
             storage
