@@ -13,6 +13,15 @@ pub trait LinkStorage {
 pub struct MemStorage(Mutex<MemStorageData>);
 
 #[derive(Debug, PartialEq, Hash, Eq, Clone)]
+struct Target(String);
+
+impl Target {
+    fn new(t: &str) -> Self {
+        Self(t.into())
+    }
+}
+
+#[derive(Debug, PartialEq, Hash, Eq, Clone)]
 struct Source {
     collection: String,
     path: String,
@@ -27,11 +36,26 @@ impl Source {
     }
 }
 
+#[derive(Debug, PartialEq, Hash, Eq, Clone)]
+struct RepoId {
+    collection: String,
+    rkey: String,
+}
+
+impl RepoId {
+    fn new(collection: &str, rkey: &str) -> Self {
+        Self {
+            collection: collection.into(),
+            rkey: rkey.into(),
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 struct MemStorageData {
     dids: HashMap<Did, bool>,                            // bool: active or nah
-    targets: HashMap<String, HashMap<Source, Vec<Did>>>, // target -> (collection, path) -> did[]
-    links: HashMap<Did, HashMap<String, Vec<(String, Source)>>>, // did -> collection:rkey -> (target, (collection, path))[]
+    targets: HashMap<Target, HashMap<Source, Vec<Did>>>, // target -> (collection, path) -> did[]
+    links: HashMap<Did, HashMap<RepoId, Vec<(Target, Source)>>>, // did -> collection:rkey -> (target, (collection, path))[]
 }
 
 impl MemStorage {
@@ -49,10 +73,6 @@ impl MemStorage {
         let sample_target = data.targets.keys().nth(data.targets.len() / 2);
         let sample_path = sample_target.and_then(|t| data.targets.get(t).unwrap().keys().next());
         println!("queue: {qsize}. {dids} dids, {targets} targets from {target_paths} paths, {links} links. sample: {sample_target:?} {sample_path:?}");
-    }
-
-    fn _col_rkey(collection: &str, rkey: &str) -> String {
-        [collection, rkey].join(":")
     }
 }
 
@@ -73,7 +93,7 @@ impl LinkStorage for MemStorage {
                         .entry(did.clone())
                         .or_insert(true); // if they are inserting a link, presumably they are active
                     data.targets
-                        .entry(link.target.clone())
+                        .entry(Target::new(&link.target))
                         .or_default()
                         .entry(Source::new(collection, &link.path))
                         .or_default()
@@ -81,9 +101,9 @@ impl LinkStorage for MemStorage {
                     data.links
                         .entry(did.clone())
                         .or_default()
-                        .entry(Self::_col_rkey(collection, rkey))
+                        .entry(RepoId::new(collection, rkey))
                         .or_insert(Vec::with_capacity(1))
-                        .push((link.target.clone(), Source::new(collection, &link.path)))
+                        .push((Target::new(&link.target), Source::new(collection, &link.path)))
                 }
                 Ok(())
             },
@@ -102,7 +122,7 @@ impl LinkStorage for MemStorage {
                 collection,
                 rkey,
             }) => {
-                let col_rkey = Self::_col_rkey(collection, rkey);
+                let col_rkey = RepoId::new(collection, rkey);
                 if let Some(Some(link_targets)) = data.links.get(did).map(|cr| cr.get(&col_rkey)) {
                     let link_targets = link_targets.clone(); // satisfy borrowck
                     for (target, source) in link_targets {
@@ -155,7 +175,7 @@ impl LinkStorage for MemStorage {
     }
     fn get_count(&self, target: &str, collection: &str, path: &str) -> Result<u64> {
         let data = self.0.lock().unwrap();
-        let Some(paths) = data.targets.get(target) else {
+        let Some(paths) = data.targets.get(&Target::new(target)) else {
             return Ok(0);
         };
         let Some(dids) = paths.get(&Source::new(collection, path)) else {
