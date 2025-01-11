@@ -17,7 +17,7 @@ use storage::MemStorage;
 fn main() -> Result<()> {
     println!("starting...");
 
-    let storage = Arc::new(MemStorage::new());
+    let storage = MemStorage::new();
 
     let qsize = Arc::new(AtomicU32::new(0));
 

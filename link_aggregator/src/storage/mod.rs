@@ -2,9 +2,11 @@ use anyhow::Result;
 use link_aggregator::{ActionableEvent, Did, RecordId};
 use links::CollectedLink;
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::Mutex;
 
-pub trait LinkStorage {
+/// consumer-side storage api, independent of actual storage backend
+pub trait LinkStorage: StorageBackend {
     fn push(&self, event: &ActionableEvent) -> Result<()> {
         match event {
             ActionableEvent::CreateLinks { record_id, links } => self.add_links(record_id, links),
@@ -19,7 +21,13 @@ pub trait LinkStorage {
         }
         Ok(())
     }
+    fn get_count(&self, target: &str, collection: &str, path: &str) -> Result<u64> {
+        self.count(target, collection, path)
+    }
+}
 
+/// persistent data stores
+pub trait StorageBackend {
     fn add_links(&self, record_id: &RecordId, links: &[CollectedLink]);
     fn remove_links(&self, record_id: &RecordId);
     fn update_links(&self, record_id: &RecordId, new_links: &[CollectedLink]) {
@@ -29,12 +37,12 @@ pub trait LinkStorage {
     fn set_account(&self, did: &Did, active: bool);
     fn delete_account(&self, did: &Did);
 
-    fn get_count(&self, target: &str, collection: &str, path: &str) -> Result<u64>;
+    fn count(&self, target: &str, collection: &str, path: &str) -> Result<u64>;
 }
 
 // hopefully-correct simple hashmap version, intended only for tests to verify disk impl
-#[derive(Debug)]
-pub struct MemStorage(Mutex<MemStorageData>);
+#[derive(Debug, Clone)]
+pub struct MemStorage(Arc<Mutex<MemStorageData>>);
 
 #[derive(Debug, PartialEq, Hash, Eq, Clone)]
 struct Target(String);
@@ -93,7 +101,7 @@ struct MemStorageData {
 
 impl MemStorage {
     pub fn new() -> Self {
-        Self(Mutex::new(MemStorageData::default()))
+        Self(Arc::new(Mutex::new(MemStorageData::default())))
     }
 
     pub fn summarize(&self, qsize: u32) {
@@ -109,7 +117,9 @@ impl MemStorage {
     }
 }
 
-impl LinkStorage for MemStorage {
+impl LinkStorage for MemStorage {} // defaults are fine
+
+impl StorageBackend for MemStorage {
     fn add_links(&self, record_id: &RecordId, links: &[CollectedLink]) {
         let mut data = self.0.lock().unwrap();
         for link in links {
@@ -184,7 +194,7 @@ impl LinkStorage for MemStorage {
         data.dids.remove(did);
     }
 
-    fn get_count(&self, target: &str, collection: &str, path: &str) -> Result<u64> {
+    fn count(&self, target: &str, collection: &str, path: &str) -> Result<u64> {
         let data = self.0.lock().unwrap();
         let Some(paths) = data.targets.get(&Target::new(target)) else {
             return Ok(0);

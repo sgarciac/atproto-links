@@ -79,15 +79,15 @@ pub fn get_actionable(event: &JsonValue) -> Option<ActionableEvent> {
     }
 }
 
-pub fn consume<S: LinkStorage>(store: Arc<S>, qsize: Arc<AtomicU32>) {
+pub fn consume(store: impl LinkStorage, qsize: Arc<AtomicU32>) {
     let (sender, receiver) = flume::unbounded(); // eek
     let jetstream_handle = thread::spawn(move || consume_jetstream(sender));
     persist_events(store, receiver, qsize);
     jetstream_handle.join().unwrap();
 }
 
-fn persist_events<S: LinkStorage>(
-    store: Arc<S>,
+fn persist_events(
+    store: impl LinkStorage,
     receiver: flume::Receiver<JsonValue>,
     qsize: Arc<AtomicU32>,
 ) {

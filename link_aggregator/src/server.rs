@@ -1,15 +1,14 @@
 use axum::{extract::Query, http, routing::get, Router};
 use serde::Deserialize;
 use std::marker::{Send, Sync};
-use std::sync::Arc;
 use tokio::net::{TcpListener, ToSocketAddrs};
 use tokio::task::block_in_place;
 
 use crate::storage::LinkStorage;
 
-pub async fn serve<S, A>(store: Arc<S>, addr: A) -> anyhow::Result<()>
+pub async fn serve<S, A>(store: S, addr: A) -> anyhow::Result<()>
 where
-    S: LinkStorage + Send + Sync + 'static,
+    S: LinkStorage + Clone + Send + Sync + 'static,
     A: ToSocketAddrs,
 {
     let app = Router::new().route("/", get(hello)).route(
@@ -36,7 +35,7 @@ struct GetLinksQuery {
 
 fn count_links(
     query: Query<GetLinksQuery>,
-    store: Arc<impl LinkStorage>,
+    store: impl LinkStorage,
 ) -> Result<String, http::StatusCode> {
     store
         .get_count(&query.target, &query.collection, &query.path)
