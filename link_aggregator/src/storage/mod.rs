@@ -48,17 +48,12 @@ mod tests {
         ($test_name:ident, |$storage_label:ident| $test_code:block) => {
             #[test]
             fn $test_name() -> Result<()> {
-                for (__backend_name, __storage) in [
-                    ("memstorage", Box::new(MemStorage::new()))
-                ] {
+                let __stores: Vec<(&str, Box<dyn LinkStorage>)> =
+                    vec![("memstorage", Box::new(MemStorage::new()))];
+                for (__backend_name, __storage) in __stores {
+                    println!("=> testing with {__backend_name} backend");
                     let $storage_label = __storage;
-                    {
-                        $test_code
-                        Ok(())
-                    }.map_err(|e: anyhow::Error| {
-                        eprintln!("test failed for: {__backend_name} backend");
-                        e
-                    })?;
+                    $test_code
                 }
                 Ok(())
             }
