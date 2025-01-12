@@ -46,20 +46,25 @@ pub trait StorageBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
 
     macro_rules! test_each_storage {
         ($test_name:ident, |$storage_label:ident| $test_code:block) => {
             #[test]
             fn $test_name() -> Result<()> {
-                let __stores: Vec<(&str, Box<dyn LinkStorage>)> = vec![
-                    ("memstorage", Box::new(MemStorage::new())),
-                    ("rocksdb", Box::new(RocksStorage::new())),
-                ];
-                for (__backend_name, __storage) in __stores {
-                    println!("=> testing with {__backend_name} backend");
-                    let $storage_label = __storage;
+                println!("=> testing with memstorage backend");
+                {
+                    let $storage_label = MemStorage::new();
                     $test_code
                 }
+
+                println!("=> testing with memstorage backend");
+                {
+                    let rocks_db_path = tempdir()?;
+                    let $storage_label = RocksStorage::new(rocks_db_path.path())?;
+                    $test_code
+                }
+
                 Ok(())
             }
         };

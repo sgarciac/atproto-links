@@ -2,17 +2,23 @@ use super::{LinkStorage, StorageBackend};
 use anyhow::Result;
 use link_aggregator::{Did, RecordId};
 use links::CollectedLink;
+use rocksdb::{DBWithThreadMode, MultiThreaded};
+use std::path::Path;
+use std::sync::Arc;
 
 // hopefully-correct simple hashmap version, intended only for tests to verify disk impl
 #[derive(Debug, Clone)]
 pub struct RocksStorage(RocksStorageData);
 
 #[derive(Debug, Clone)]
-struct RocksStorageData {}
+struct RocksStorageData {
+    db: Arc<DBWithThreadMode<MultiThreaded>>,
+}
 
 impl RocksStorage {
-    pub fn new() -> Self {
-        Self(RocksStorageData {})
+    pub fn new(path: impl AsRef<Path>) -> Result<Self> {
+        let db = DBWithThreadMode::open_default(path)?;
+        Ok(Self(RocksStorageData { db: Arc::new(db) }))
     }
 }
 
