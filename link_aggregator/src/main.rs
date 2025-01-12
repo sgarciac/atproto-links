@@ -12,12 +12,13 @@ use tokio::runtime;
 
 use consumer::consume;
 use server::serve;
-use storage::MemStorage;
+use storage::{MemStorage, RocksStorage};
 
 fn main() -> Result<()> {
     println!("starting...");
 
     let storage = MemStorage::new();
+    let _ = RocksStorage::new(); // todo: switch storage to this
 
     let qsize = Arc::new(AtomicU32::new(0));
 

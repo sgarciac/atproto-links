@@ -5,6 +5,9 @@ use links::CollectedLink;
 pub mod mem_store;
 pub use mem_store::MemStorage;
 
+pub mod rocks_store;
+pub use rocks_store::RocksStorage;
+
 /// consumer-side storage api, independent of actual storage backend
 pub trait LinkStorage: StorageBackend {
     fn push(&self, event: &ActionableEvent) -> Result<()> {
@@ -48,8 +51,10 @@ mod tests {
         ($test_name:ident, |$storage_label:ident| $test_code:block) => {
             #[test]
             fn $test_name() -> Result<()> {
-                let __stores: Vec<(&str, Box<dyn LinkStorage>)> =
-                    vec![("memstorage", Box::new(MemStorage::new()))];
+                let __stores: Vec<(&str, Box<dyn LinkStorage>)> = vec![
+                    ("memstorage", Box::new(MemStorage::new())),
+                    ("rocksdb", Box::new(RocksStorage::new())),
+                ];
                 for (__backend_name, __storage) in __stores {
                     println!("=> testing with {__backend_name} backend");
                     let $storage_label = __storage;
