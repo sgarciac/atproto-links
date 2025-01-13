@@ -91,15 +91,23 @@ impl StorageBackend for RocksStorage {
             .db
             .get_cf(&did_ids_cf, &actual_linking_did)
             .unwrap()
-            .map(|id_bytes| {
-                let id_typed: DidID = bincode::deserialize(&id_bytes).unwrap();
+            .map(|did_value_bytes| {
+                let DidIdValue(id_typed, active) = bincode::deserialize(&did_value_bytes).unwrap();
+                if !active {
+                    eprintln!(
+                        "adding links for apparently-inactive did {:?}",
+                        &record_id.did
+                    );
+                }
+                let id_bytes = bincode::serialize(&id_typed).unwrap();
                 (id_bytes, id_typed)
             })
             .unwrap_or_else(|| {
-                let id_typed = self.0.did_id_seq.fetch_add(1, Ordering::SeqCst);
+                let id_typed = DidID(self.0.did_id_seq.fetch_add(1, Ordering::SeqCst));
                 let id_bytes = bincode::serialize(&id_typed).unwrap();
-                batch.put_cf(&did_ids_cf, &actual_linking_did, &id_bytes);
-                (id_bytes, DidID(id_typed))
+                let did_value_bytes = bincode::serialize(&DidIdValue(id_typed, true)).unwrap();
+                batch.put_cf(&did_ids_cf, &actual_linking_did, &did_value_bytes);
+                (id_bytes, id_typed)
             });
 
         for CollectedLink { target, path } in links {
@@ -148,18 +156,25 @@ impl StorageBackend for RocksStorage {
         let mut batch = WriteBatch::default();
 
         let actual_linking_did = bincode::serialize(&record_id.did).unwrap();
-        let Some(linking_did) = self
+        let Some(DidIdValue(linking_did_id, did_active)) = self
             .0
             .db
             .get_cf(&did_ids_cf, &actual_linking_did)
             .unwrap()
-            .map(|id_bytes| bincode::deserialize(&id_bytes).unwrap())
+            .map(|id_value_bytes| bincode::deserialize(&id_value_bytes).unwrap())
         else {
             return; // we don't know her: nothing to do
         };
 
+        if !did_active {
+            eprintln!(
+                "removing links from apparently-inactive did {:?}",
+                &record_id.did
+            );
+        }
+
         let fwd_link_key = bincode::serialize(&LinkKey(
-            linking_did,
+            linking_did_id,
             Collection(record_id.collection()),
             RKey(record_id.rkey()),
         ))
@@ -183,7 +198,7 @@ impl StorageBackend for RocksStorage {
             let mut dids: Vec<DidID> = bincode::deserialize(&dids_bytes).unwrap();
             let last_did_position = dids
                 .iter()
-                .rposition(|d| *d == linking_did)
+                .rposition(|d| *d == linking_did_id)
                 .expect("must be in dids list if we have a link to it");
             dids.remove(last_did_position);
             let dids_bytes = bincode::serialize(&dids).unwrap();
@@ -195,8 +210,29 @@ impl StorageBackend for RocksStorage {
         self.0.db.write(batch).unwrap();
     }
 
-    fn set_account(&self, _did: &Did, _active: bool) {
-        todo!()
+    fn set_account(&self, did: &Did, active: bool) {
+        // this needs to be read-modify-write since the did_id needs to stay the same,
+        // which has a benefit of allowing to avoid adding entries for dids we don't
+        // need. reading on dids needs to be cheap anyway for the current design, and
+        // did active/inactive updates are low-freq in the firehose so, eh, it's fine.
+
+        let did_ids_cf = self.0.db.cf_handle(DID_IDS_CF).unwrap();
+        let did_bytes = bincode::serialize(&did).unwrap();
+        let Some(did_value_bytes) = self.0.db.get_cf(&did_ids_cf, &did_bytes).unwrap() else {
+            return; // ignore updates for dids we don't know about
+        };
+        let DidIdValue(did_id, was_active) = bincode::deserialize(&did_value_bytes).unwrap();
+        if was_active == active {
+            eprintln!(
+                "set_account: did {did:?} was already set to active={active:?}, ignoring update"
+            );
+            return;
+        }
+        let updated_did_id_value = bincode::serialize(&DidIdValue(did_id, active)).unwrap();
+        self.0
+            .db
+            .put_cf(&did_ids_cf, &did_bytes, &updated_did_id_value)
+            .unwrap();
     }
 
     fn delete_account(&self, _did: &Did) {
@@ -240,9 +276,10 @@ struct RKey(String);
 
 // did ids
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-struct DidID(u64); // key
+struct DidID(u64);
 
-// struct DidValue(Did, bool); // active or not
+#[derive(Debug, Serialize, Deserialize)]
+struct DidIdValue(DidID, bool); // active or not
 
 // target ids
 #[derive(Debug, Serialize, Deserialize)]

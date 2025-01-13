@@ -155,7 +155,7 @@ impl StorageBackend for MemStorage {
                 }
             }
         }
-        data.links.remove(did);
+        data.links.remove(did); // nb: this is removing by a whole prefix in kv context
         data.dids.remove(did);
     }
 
