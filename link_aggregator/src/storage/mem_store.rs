@@ -68,8 +68,10 @@ impl MemStorage {
     pub fn new() -> Self {
         Self(Arc::new(Mutex::new(MemStorageData::default())))
     }
+}
 
-    pub fn summarize(&self, qsize: u32) {
+impl LinkStorage for MemStorage {
+    fn summarize(&self, qsize: u32) {
         let data = self.0.lock().unwrap();
         let dids = data.dids.len();
         let targets = data.targets.len();
@@ -81,8 +83,6 @@ impl MemStorage {
         println!("queue: {qsize}. {dids} dids, {targets} targets from {target_paths} paths, {links} links. sample: {sample_target:?} {sample_path:?}");
     }
 }
-
-impl LinkStorage for MemStorage {} // defaults are fine
 
 impl StorageBackend for MemStorage {
     fn add_links(&self, record_id: &RecordId, links: &[CollectedLink]) {

@@ -1,6 +1,5 @@
 use axum::{extract::Query, http, routing::get, Router};
 use serde::Deserialize;
-use std::marker::{Send, Sync};
 use tokio::net::{TcpListener, ToSocketAddrs};
 use tokio::task::block_in_place;
 
@@ -8,7 +7,7 @@ use crate::storage::LinkStorage;
 
 pub async fn serve<S, A>(store: S, addr: A) -> anyhow::Result<()>
 where
-    S: LinkStorage + Clone + Send + Sync + 'static,
+    S: LinkStorage,
     A: ToSocketAddrs,
 {
     let app = Router::new().route("/", get(hello)).route(

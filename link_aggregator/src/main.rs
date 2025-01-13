@@ -4,6 +4,7 @@ mod server;
 mod storage;
 
 use anyhow::Result;
+use clap::{Parser, ValueEnum};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::thread;
@@ -12,14 +13,36 @@ use tokio::runtime;
 
 use consumer::consume;
 use server::serve;
-use storage::{MemStorage, RocksStorage};
+use storage::{LinkStorage, MemStorage, RocksStorage};
+
+/// Aggregate links in the at-mosphere
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
+struct Args {
+    /// Storage backend to use
+    #[arg(short, long)]
+    #[clap(value_enum, default_value_t = StorageBackend::Memory)]
+    backend: StorageBackend,
+}
+
+#[derive(Debug, Clone, ValueEnum)]
+enum StorageBackend {
+    Memory,
+    Rocks,
+}
 
 fn main() -> Result<()> {
-    println!("starting...");
+    let args = Args::parse();
 
-    let storage = MemStorage::new();
-    let _ = RocksStorage::new("rocks.test")?; // todo: switch storage to this
+    println!("starting with storage backend: {:?}...", args.backend);
 
+    match args.backend {
+        StorageBackend::Memory => run(MemStorage::new()),
+        StorageBackend::Rocks => run(RocksStorage::new("rocks.test")?),
+    }
+}
+
+fn run(storage: impl LinkStorage) -> Result<()> {
     let qsize = Arc::new(AtomicU32::new(0));
 
     thread::spawn({
@@ -42,7 +65,6 @@ fn main() -> Result<()> {
         .enable_all()
         .build()?
         .block_on(async { serve(storage, "127.0.0.1:6789").await })?;
-
     unreachable!();
 }
 

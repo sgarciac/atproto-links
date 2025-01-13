@@ -9,7 +9,7 @@ pub mod rocks_store;
 pub use rocks_store::RocksStorage;
 
 /// consumer-side storage api, independent of actual storage backend
-pub trait LinkStorage: StorageBackend {
+pub trait LinkStorage: StorageBackend + Clone + Send + Sync + 'static {
     fn push(&self, event: &ActionableEvent) -> Result<()> {
         match event {
             ActionableEvent::CreateLinks { record_id, links } => self.add_links(record_id, links),
@@ -26,6 +26,9 @@ pub trait LinkStorage: StorageBackend {
     }
     fn get_count(&self, target: &str, collection: &str, path: &str) -> Result<u64> {
         self.count(target, collection, path)
+    }
+    fn summarize(&self, qsize: u32) {
+        println!("queue: {qsize}");
     }
 }
 
@@ -374,12 +377,10 @@ mod tests {
                 collection: "app.t.c".into(),
                 rkey: "asdf".into(),
             },
-            new_links: vec![
-                CollectedLink {
-                    target: "a.com".into(),
-                    path: ".abc.uri".into(),
-                },
-            ],
+            new_links: vec![CollectedLink {
+                target: "a.com".into(),
+                path: ".abc.uri".into(),
+            }],
         })?;
         assert_eq!(storage.get_count("a.com", "app.t.c", ".abc.uri")?, 1);
     });
