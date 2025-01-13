@@ -83,7 +83,7 @@ mod tests {
         );
     });
 
-    test_each_storage!(mem_links, |storage| {
+    test_each_storage!(mem_add_link, |storage| {
         storage.push(&ActionableEvent::CreateLinks {
             record_id: RecordId {
                 did: "did:plc:asdf".into(),
@@ -97,7 +97,21 @@ mod tests {
         })?;
         assert_eq!(storage.get_count("e.com", "app.t.c", ".abc.uri")?, 1);
         assert_eq!(storage.get_count("bad.com", "app.t.c", ".abc.uri")?, 0);
-        assert_eq!(storage.get_count("e.com", "app.t.c", ".def.uri")?, 0);
+        assert_eq!(storage.get_count("e.com", "app.t.c", ".bad.uri")?, 0);
+    });
+
+    test_each_storage!(mem_links, |storage| {
+        storage.push(&ActionableEvent::CreateLinks {
+            record_id: RecordId {
+                did: "did:plc:asdf".into(),
+                collection: "app.t.c".into(),
+                rkey: "fdsa".into(),
+            },
+            links: vec![CollectedLink {
+                target: "e.com".into(),
+                path: ".abc.uri".into(),
+            }],
+        })?;
 
         // delete under the wrong collection
         storage.push(&ActionableEvent::DeleteRecord(RecordId {
