@@ -104,13 +104,6 @@ impl StorageBackend for MemStorage {
         }
     }
 
-    fn set_account(&self, did: &Did, active: bool) {
-        let mut data = self.0.lock().unwrap();
-        if let Some(account) = data.dids.get_mut(did) {
-            *account = active;
-        }
-    }
-
     fn remove_links(&self, record_id: &RecordId) {
         let mut data = self.0.lock().unwrap();
         let repo_id = RepoId::from_record_id(record_id);
@@ -137,6 +130,13 @@ impl StorageBackend for MemStorage {
         data.links
             .get_mut(&record_id.did)
             .map(|cr| cr.remove(&repo_id));
+    }
+
+    fn set_account(&self, did: &Did, active: bool) {
+        let mut data = self.0.lock().unwrap();
+        if let Some(account) = data.dids.get_mut(did) {
+            *account = active;
+        }
     }
 
     fn delete_account(&self, did: &Did) {

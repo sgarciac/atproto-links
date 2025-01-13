@@ -109,35 +109,93 @@ impl StorageBackend for RocksStorage {
                 RPath(path.clone()),
             );
             let actual_target = bincode::serialize(&target_key).unwrap();
-            let target_id = self
+            let (target_id_bytes, target_id) = self
                 .0
                 .db
                 .get_cf(&target_ids_cf, &actual_target)
                 .unwrap()
+                .map(|id_bytes| {
+                    let id_typed: TargetID = bincode::deserialize(&id_bytes).unwrap();
+                    (id_bytes, id_typed)
+                })
                 .unwrap_or_else(|| {
-                    let id = self.0.target_id_seq.fetch_add(1, Ordering::SeqCst);
-                    let id = bincode::serialize(&id).unwrap();
-                    batch.put_cf(&target_ids_cf, &actual_target, &id);
-                    id
+                    let id_typed = self.0.target_id_seq.fetch_add(1, Ordering::SeqCst);
+                    let id_bytes = bincode::serialize(&id_typed).unwrap();
+                    batch.put_cf(&target_ids_cf, &actual_target, &id_bytes);
+                    (id_bytes, TargetID(id_typed))
                 });
 
-            batch.merge_cf(&target_linkers_cf, &target_id, &linking_did_bytes);
+            batch.merge_cf(&target_linkers_cf, &target_id_bytes, &linking_did_bytes);
             let fwd_link_key = bincode::serialize(&LinkKey(
                 linking_did,
                 Collection(record_id.collection()),
                 RKey(record_id.rkey()),
             ))
             .unwrap();
-            batch.merge_cf(&link_targets_cf, &fwd_link_key, &target_id);
+            let link_target_bytes =
+                bincode::serialize(&LinkTarget(RPath(path.clone()), target_id)).unwrap();
+            batch.merge_cf(&link_targets_cf, &fwd_link_key, &link_target_bytes);
         }
         self.0.db.write(batch).unwrap();
     }
 
-    fn set_account(&self, _did: &Did, _active: bool) {
-        todo!()
+    fn remove_links(&self, record_id: &RecordId) {
+        let did_ids_cf = self.0.db.cf_handle(DID_IDS_CF).unwrap();
+        let target_linkers_cf = self.0.db.cf_handle(TARGET_LINKERS_CF).unwrap();
+        let link_targets_cf = self.0.db.cf_handle(LINK_TARGETS_CF).unwrap();
+
+        // despite all the Arcs there can be only one writer thread
+        let mut batch = WriteBatch::default();
+
+        let actual_linking_did = bincode::serialize(&record_id.did).unwrap();
+        let Some(linking_did) = self
+            .0
+            .db
+            .get_cf(&did_ids_cf, &actual_linking_did)
+            .unwrap()
+            .map(|id_bytes| bincode::deserialize(&id_bytes).unwrap())
+        else {
+            return; // we don't know her: nothing to do
+        };
+
+        let fwd_link_key = bincode::serialize(&LinkKey(
+            linking_did,
+            Collection(record_id.collection()),
+            RKey(record_id.rkey()),
+        ))
+        .unwrap();
+
+        let Some(links) = self.0.db.get_cf(&link_targets_cf, &fwd_link_key).unwrap() else {
+            return; // we don't have these links
+        };
+        let links: Vec<LinkTarget> = bincode::deserialize(&links).unwrap();
+
+        // we do read -> modify -> write here: could merge-op in the deletes instead?
+        // otherwise it's another single-thread-constraining thing.
+        for LinkTarget(_rpath, target_id) in links {
+            let target_id_bytes = bincode::serialize(&target_id).unwrap();
+            let dids_bytes = self
+                .0
+                .db
+                .get_cf(&target_linkers_cf, &target_id_bytes)
+                .unwrap()
+                .expect("linked target should exist");
+            let mut dids: Vec<DidID> = bincode::deserialize(&dids_bytes).unwrap();
+            let last_did_position = dids
+                .iter()
+                .rposition(|d| *d == linking_did)
+                .expect("must be in dids list if we have a link to it");
+            dids.remove(last_did_position);
+            let dids_bytes = bincode::serialize(&dids).unwrap();
+            batch.put_cf(&target_linkers_cf, &target_id_bytes, &dids_bytes);
+        }
+
+        batch.delete_cf(&link_targets_cf, &fwd_link_key);
+
+        self.0.db.write(batch).unwrap();
     }
 
-    fn remove_links(&self, _record_id: &RecordId) {
+    fn set_account(&self, _did: &Did, _active: bool) {
         todo!()
     }
 
@@ -181,7 +239,7 @@ struct RPath(String);
 struct RKey(String);
 
 // did ids
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 struct DidID(u64); // key
 
 // struct DidValue(Did, bool); // active or not
@@ -230,8 +288,8 @@ fn concat_link_targets(
         .map(|existing_bytes| bincode::deserialize(existing_bytes).unwrap())
         .unwrap_or_default();
     for op in operands {
-        let decoded: Vec<LinkTarget> = bincode::deserialize(op).unwrap();
-        ts.extend(decoded);
+        let decoded: LinkTarget = bincode::deserialize(op).unwrap();
+        ts.push(decoded);
     }
     Some(bincode::serialize(&ts).unwrap())
 }

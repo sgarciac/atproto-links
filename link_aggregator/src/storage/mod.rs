@@ -365,4 +365,7 @@ mod tests {
         assert_eq!(storage.get_count("g.com", "app.t.c", ".xyz[].uri")?, 0);
         assert_eq!(storage.get_count("i.com", "app.t.c", ".xyz[].uri")?, 1);
     });
+
+    // todo: test update where previously there were no links in the record
+    // todo: test where delete removes a record that had multiple links to the same target
 }
