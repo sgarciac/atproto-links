@@ -235,8 +235,54 @@ impl StorageBackend for RocksStorage {
             .unwrap();
     }
 
-    fn delete_account(&self, _did: &Did) {
-        todo!()
+    fn delete_account(&self, did: &Did) {
+        let did_ids_cf = self.0.db.cf_handle(DID_IDS_CF).unwrap();
+        let target_linkers_cf = self.0.db.cf_handle(TARGET_LINKERS_CF).unwrap();
+        let link_targets_cf = self.0.db.cf_handle(LINK_TARGETS_CF).unwrap();
+
+        let mut batch = WriteBatch::default();
+
+        let did_bytes = bincode::serialize(&did).unwrap();
+        let Some(did_value_bytes) = self.0.db.get_cf(&did_ids_cf, &did_bytes).unwrap() else {
+            return; // ignore updates for dids we don't know about
+        };
+        batch.delete_cf(&did_ids_cf, &did_value_bytes);
+
+        let DidIdValue(did_id_typed, _active) = bincode::deserialize(&did_value_bytes).unwrap();
+
+        // TODO: relying on bincode to serialize to working prefix bytes is probably not wise.
+        let did_id_prefix = LinkKeyDidIdPrefix(did_id_typed);
+        let did_id_prefix_bytes = bincode::serialize(&did_id_prefix).unwrap();
+        for item in self
+            .0
+            .db
+            .prefix_iterator_cf(&link_targets_cf, &did_id_prefix_bytes)
+        {
+            let (key_bytes, fwd_links_bytes) = item.unwrap();
+            batch.delete_cf(&link_targets_cf, &key_bytes); // not using delete_range here since we have to scan & read already anyway (should we though?)
+
+            let links: Vec<LinkTarget> = bincode::deserialize(&fwd_links_bytes).unwrap();
+            for LinkTarget(_path, target_link_id) in links {
+                let target_link_id_bytes = bincode::serialize(&target_link_id).unwrap();
+                let target_linkers_bytes = self
+                    .0
+                    .db
+                    .get_cf(&target_linkers_cf, &target_link_id_bytes)
+                    .unwrap()
+                    .expect("linked target should exist");
+                let mut target_linkers: Vec<DidID> =
+                    bincode::deserialize(&target_linkers_bytes).unwrap();
+                target_linkers.retain(|d| *d != did_id_typed);
+                let target_linkers_updated_bytes = bincode::serialize(&target_linkers).unwrap();
+                batch.put_cf(
+                    &target_linkers_cf,
+                    &target_link_id_bytes,
+                    &target_linkers_updated_bytes,
+                );
+            }
+        }
+
+        self.0.db.write(batch).unwrap();
     }
 
     fn count(&self, target: &str, collection: &str, path: &str) -> Result<u64> {
@@ -297,6 +343,10 @@ struct TargetKey(Target, Collection, RPath);
 // forward links to targets so we can delete links
 #[derive(Debug, Serialize, Deserialize)]
 struct LinkKey(DidID, Collection, RKey);
+
+// does this even work????
+#[derive(Debug, Serialize, Deserialize)]
+struct LinkKeyDidIdPrefix(DidID);
 
 #[derive(Debug, Serialize, Deserialize)]
 struct LinkTarget(RPath, TargetID);

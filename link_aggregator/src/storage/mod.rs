@@ -369,4 +369,5 @@ mod tests {
     // todo: test update where previously there were no links in the record
     // todo: test update where the new record has no links
     // todo: test where delete removes a record that had multiple links to the same target
+    // todo: make sure accoun-delete is checking for an account with multiple links (prefix iter)
 }
