@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time;
 use tokio::runtime;
+use tokio::sync::oneshot;
 
 use consumer::consume;
 use server::serve;
@@ -45,27 +46,37 @@ fn main() -> Result<()> {
 fn run(storage: impl LinkStorage) -> Result<()> {
     let qsize = Arc::new(AtomicU32::new(0));
 
-    thread::spawn({
+    let consumer = thread::spawn({
         let storage = storage.clone();
         let qsize = qsize.clone();
         move || consume(storage, qsize)
     });
 
+    let (stop_server, shutdown) = oneshot::channel::<()>();
     thread::spawn({
         let storage = storage.clone();
-        move || loop {
-            storage.summarize(qsize.load(Ordering::Relaxed));
-            thread::sleep(time::Duration::from_secs(3));
+        move || {
+            runtime::Builder::new_multi_thread()
+                .worker_threads(1)
+                .max_blocking_threads(2)
+                .enable_all()
+                .build()?
+                .block_on(serve(storage.clone(), "127.0.0.1:6789", shutdown))
         }
     });
 
-    runtime::Builder::new_multi_thread()
-        .worker_threads(1)
-        .max_blocking_threads(2)
-        .enable_all()
-        .build()?
-        .block_on(async { serve(storage, "127.0.0.1:6789").await })?;
-    unreachable!();
+    let mon = thread::spawn(move || {
+        while !consumer.is_finished() {
+            storage.summarize(qsize.load(Ordering::Relaxed));
+            thread::sleep(time::Duration::from_secs(3));
+        }
+        let _ = stop_server.send(());
+    });
+
+    let _ = mon.join();
+    println!("byeeee");
+
+    Ok(())
 }
 
 #[cfg(test)]

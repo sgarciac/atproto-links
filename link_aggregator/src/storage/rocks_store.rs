@@ -192,20 +192,28 @@ impl StorageBackend for RocksStorage {
         ))
         .unwrap();
 
-        let Some(links) = self.0.db.get_cf(&link_targets_cf, &fwd_link_key).unwrap() else {
+        let Some(links_bytes) = self.0.db.get_cf(&link_targets_cf, &fwd_link_key).unwrap() else {
             return; // we don't have these links
         };
-        let links: Vec<LinkTarget> = bincode::deserialize(&links).unwrap();
+        let links: Vec<LinkTarget> = bincode::deserialize(&links_bytes).unwrap();
 
         // we do read -> modify -> write here: could merge-op in the deletes instead?
         // otherwise it's another single-thread-constraining thing.
-        for LinkTarget(_rpath, target_id) in links {
+        for (i, LinkTarget(_rpath, target_id)) in links.iter().enumerate() {
             let target_id_bytes = bincode::serialize(&target_id).unwrap();
             let dids_bytes = self
                 .0
                 .db
                 .get_cf(&target_linkers_cf, &target_id_bytes)
                 .unwrap()
+                .or_else(|| {
+                    eprintln!("about to blow up because a linked target is apparently missing.");
+                    eprintln!("removing links for: {record_id:?}");
+                    eprintln!("found links: {links:?}");
+                    eprintln!("from links bytes: {links_bytes:?}");
+                    eprintln!("working on #{i}: {_rpath:?} / {target_id:?}");
+                    None
+                })
                 .expect("linked target should exist");
             let mut dids: Vec<DidID> = bincode::deserialize(&dids_bytes).unwrap();
             let last_did_position = dids
