@@ -86,20 +86,20 @@ impl StorageBackend for RocksStorage {
         let mut batch = WriteBatch::default();
 
         let actual_linking_did = bincode::serialize(&record_id.did).unwrap();
-        let (linking_did_id, raw_linking_did_id) = self
+        let (linking_did_bytes, linking_did) = self
             .0
             .db
             .get_cf(&did_ids_cf, &actual_linking_did)
             .unwrap()
-            .map(|linking_did_id| {
-                let id_raw: DidID = bincode::deserialize(&linking_did_id).unwrap();
-                (linking_did_id, id_raw)
+            .map(|id_bytes| {
+                let id_typed: DidID = bincode::deserialize(&id_bytes).unwrap();
+                (id_bytes, id_typed)
             })
             .unwrap_or_else(|| {
-                let id_raw = self.0.did_id_seq.fetch_add(1, Ordering::SeqCst) + 1;
-                let id = bincode::serialize(&id_raw).unwrap();
-                batch.put_cf(&did_ids_cf, &actual_linking_did, &id);
-                (id, DidID(id_raw))
+                let id_typed = self.0.did_id_seq.fetch_add(1, Ordering::SeqCst);
+                let id_bytes = bincode::serialize(&id_typed).unwrap();
+                batch.put_cf(&did_ids_cf, &actual_linking_did, &id_bytes);
+                (id_bytes, DidID(id_typed))
             });
 
         for CollectedLink { target, path } in links {
@@ -115,15 +115,15 @@ impl StorageBackend for RocksStorage {
                 .get_cf(&target_ids_cf, &actual_target)
                 .unwrap()
                 .unwrap_or_else(|| {
-                    let id = self.0.target_id_seq.fetch_add(1, Ordering::SeqCst) + 1;
+                    let id = self.0.target_id_seq.fetch_add(1, Ordering::SeqCst);
                     let id = bincode::serialize(&id).unwrap();
                     batch.put_cf(&target_ids_cf, &actual_target, &id);
                     id
                 });
 
-            batch.merge_cf(&target_linkers_cf, &target_id, &linking_did_id);
+            batch.merge_cf(&target_linkers_cf, &target_id, &linking_did_bytes);
             let fwd_link_key = bincode::serialize(&LinkKey(
-                raw_linking_did_id,
+                linking_did,
                 Collection(record_id.collection()),
                 RKey(record_id.rkey()),
             ))
@@ -146,17 +146,17 @@ impl StorageBackend for RocksStorage {
     }
 
     fn count(&self, target: &str, collection: &str, path: &str) -> Result<u64> {
-        let did_ids_cf = self.0.db.cf_handle(DID_IDS_CF).unwrap();
+        let target_ids_cf = self.0.db.cf_handle(TARGET_IDS_CF).unwrap();
         let target_linkers_cf = self.0.db.cf_handle(TARGET_LINKERS_CF).unwrap();
 
-        let target_key = TargetKey(
+        let target_key_z = TargetKey(
             Target(target.to_string()),
             Collection(collection.to_string()),
             RPath(path.to_string()),
         );
-        let target_key = bincode::serialize(&target_key).unwrap();
+        let target_key = bincode::serialize(&target_key_z).unwrap();
 
-        if let Some(target_id) = self.0.db.get_cf(&did_ids_cf, &target_key).unwrap() {
+        if let Some(target_id) = self.0.db.get_cf(&target_ids_cf, &target_key).unwrap() {
             let linkers = self
                 .0
                 .db
@@ -171,39 +171,39 @@ impl StorageBackend for RocksStorage {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct Collection(String);
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct RPath(String);
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct RKey(String);
 
 // did ids
-#[derive(Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 struct DidID(u64); // key
 
 // struct DidValue(Did, bool); // active or not
 
 // target ids
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct TargetID(u64); // key
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct Target(String); // value
 
 // targets (uris, dids, etc.): the reverse index
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct TargetKey(Target, Collection, RPath);
 
 // target linker is just Did
 
 // forward links to targets so we can delete links
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct LinkKey(DidID, Collection, RKey);
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct LinkTarget(RPath, TargetID);
 
 fn concat_dids(
@@ -211,14 +211,11 @@ fn concat_dids(
     existing: Option<&[u8]>,
     operands: &MergeOperands,
 ) -> Option<Vec<u8>> {
-    let mut ts = existing
-        .map(|existing_bytes| {
-            let decoded: Vec<Did> = bincode::deserialize(existing_bytes).unwrap();
-            decoded
-        })
+    let mut ts: Vec<DidID> = existing
+        .map(|existing_bytes| bincode::deserialize(existing_bytes).unwrap())
         .unwrap_or_default();
     for op in operands {
-        let decoded: Did = bincode::deserialize(op).unwrap();
+        let decoded: DidID = bincode::deserialize(op).unwrap();
         ts.push(decoded);
     }
     Some(bincode::serialize(&ts).unwrap())
@@ -229,15 +226,12 @@ fn concat_link_targets(
     existing: Option<&[u8]>,
     operands: &MergeOperands,
 ) -> Option<Vec<u8>> {
-    let mut ts = existing
-        .map(|existing_bytes| {
-            let decoded: Vec<LinkTarget> = bincode::deserialize(existing_bytes).unwrap();
-            decoded
-        })
+    let mut ts: Vec<LinkTarget> = existing
+        .map(|existing_bytes| bincode::deserialize(existing_bytes).unwrap())
         .unwrap_or_default();
     for op in operands {
-        let decoded: LinkTarget = bincode::deserialize(op).unwrap();
-        ts.push(decoded);
+        let decoded: Vec<LinkTarget> = bincode::deserialize(op).unwrap();
+        ts.extend(decoded);
     }
     Some(bincode::serialize(&ts).unwrap())
 }
