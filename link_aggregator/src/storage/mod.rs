@@ -366,8 +366,53 @@ mod tests {
         assert_eq!(storage.get_count("i.com", "app.t.c", ".xyz[].uri")?, 1);
     });
 
-    // todo: test update where previously there were no links in the record
-    // todo: test update where the new record has no links
-    // todo: test where delete removes a record that had multiple links to the same target
-    // todo: make sure accoun-delete is checking for an account with multiple links (prefix iter)
+    test_each_storage!(update_no_links_to_links, |storage| {
+        // update without prior create (consumer would have filtered out the original)
+        storage.push(&ActionableEvent::UpdateLinks {
+            record_id: RecordId {
+                did: "did:plc:asdf".into(),
+                collection: "app.t.c".into(),
+                rkey: "asdf".into(),
+            },
+            new_links: vec![
+                CollectedLink {
+                    target: "a.com".into(),
+                    path: ".abc.uri".into(),
+                },
+            ],
+        })?;
+        assert_eq!(storage.get_count("a.com", "app.t.c", ".abc.uri")?, 1);
+    });
+
+    test_each_storage!(delete_multi_link_same_target, |storage| {
+        storage.push(&ActionableEvent::CreateLinks {
+            record_id: RecordId {
+                did: "did:plc:asdf".into(),
+                collection: "app.t.c".into(),
+                rkey: "asdf".into(),
+            },
+            links: vec![
+                CollectedLink {
+                    target: "a.com".into(),
+                    path: ".abc.uri".into(),
+                },
+                CollectedLink {
+                    target: "a.com".into(),
+                    path: ".def.uri".into(),
+                },
+            ],
+        })?;
+        assert_eq!(storage.get_count("a.com", "app.t.c", ".abc.uri")?, 1);
+        assert_eq!(storage.get_count("a.com", "app.t.c", ".def.uri")?, 1);
+
+        storage.push(&ActionableEvent::DeleteRecord(RecordId {
+            did: "did:plc:asdf".into(),
+            collection: "app.t.c".into(),
+            rkey: "asdf".into(),
+        }))?;
+        assert_eq!(storage.get_count("a.com", "app.t.c", ".abc.uri")?, 0);
+        assert_eq!(storage.get_count("a.com", "app.t.c", ".def.uri")?, 0);
+    });
+
+    // todo: test update where the new record has no links -> this test might need to be in main?
 }
