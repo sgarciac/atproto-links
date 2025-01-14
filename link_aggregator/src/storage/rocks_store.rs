@@ -84,10 +84,7 @@ impl LinkStorage for RocksStorage {
 
 impl RocksStorageData {
     fn get_did_id_value(&self, did: &Did) -> Result<Option<DidIdValue>> {
-        let cf = self
-            .db
-            .cf_handle(DID_IDS_CF)
-            .expect("cf handle for did_id table must exist");
+        let cf = self.db.cf_handle(DID_IDS_CF).unwrap();
         if let Some(bytes) = self.db.get_cf(&cf, did_key(did))? {
             let did_id_value = DidIdValue::from_bytes(&bytes)?;
             let current_seq = DID_ID_SEQ.load(Ordering::Relaxed);
@@ -101,10 +98,7 @@ impl RocksStorageData {
         }
     }
     fn get_or_create_did_id_value(&self, batch: &mut WriteBatch, did: &Did) -> Result<DidIdValue> {
-        let cf = self
-            .db
-            .cf_handle(DID_IDS_CF)
-            .expect("cf handle for did_id table must exist");
+        let cf = self.db.cf_handle(DID_IDS_CF).unwrap();
         Ok(self.get_did_id_value(did)?.unwrap_or_else(|| {
             let did_id = DidId(DID_ID_SEQ.fetch_add(1, Ordering::SeqCst));
             let did_id_value = DidIdValue(did_id, true);
@@ -117,10 +111,7 @@ impl RocksStorageData {
     where
         F: FnOnce(DidIdValue) -> Option<DidIdValue>,
     {
-        let cf = self
-            .db
-            .cf_handle(DID_IDS_CF)
-            .expect("cf handle for did_id table must exist");
+        let cf = self.db.cf_handle(DID_IDS_CF).unwrap();
         let Some(did_id_value) = self.get_did_id_value(did)? else {
             return Ok(false);
         };
@@ -131,17 +122,14 @@ impl RocksStorageData {
         Ok(true)
     }
     fn delete_did_id_value(&self, batch: &mut WriteBatch, did: &Did) {
-        let cf = self
-            .db
-            .cf_handle(DID_IDS_CF)
-            .expect("cf handle for did_id table must exist");
+        let cf = self.db.cf_handle(DID_IDS_CF).unwrap();
         batch.delete_cf(&cf, did_key(did));
     }
 
-    fn get_target_id(&self, target: &TargetKey) -> Result<Option<TargetId>> {
+    fn get_target_id(&self, target_key: &TargetKey) -> Result<Option<TargetId>> {
         let cf = self.db.cf_handle(TARGET_IDS_CF).unwrap();
-        if let Some(bytes) = self.db.get_cf(&cf, target.as_key())? {
-            let target_id: TargetId = bincode::deserialize(&bytes)?;
+        if let Some(bytes) = self.db.get_cf(&cf, target_key.as_key())? {
+            let target_id = TargetId::from_bytes(&bytes)?;
             let current_seq = TARGET_ID_SEQ.load(Ordering::Relaxed);
             if target_id.0 > (current_seq + 10) {
                 panic!("found target id greater than current seq: {current_seq}");
@@ -154,21 +142,53 @@ impl RocksStorageData {
     fn get_or_create_target_id(
         &self,
         batch: &mut WriteBatch,
-        target: &TargetKey,
+        target_key: &TargetKey,
     ) -> Result<TargetId> {
         let cf = self.db.cf_handle(TARGET_IDS_CF).unwrap();
-        Ok(self.get_target_id(target)?.unwrap_or_else(|| {
+        Ok(self.get_target_id(target_key)?.unwrap_or_else(|| {
             let target_id = TargetId(TARGET_ID_SEQ.fetch_add(1, Ordering::SeqCst));
-            batch.put_cf(&cf, target.as_key(), target_id.to_bytes());
+            batch.put_cf(&cf, target_key.as_key(), target_id.to_bytes());
             // todo: also persist seq
             target_id
         }))
+    }
+    fn get_target_linkers(&self, target_id: &TargetId) -> Result<TargetLinkers> {
+        let cf = self.db.cf_handle(TARGET_LINKERS_CF).unwrap();
+        let Some(linkers_bytes) = self.db.get_cf(&cf, target_id.to_bytes())? else {
+            return Ok(TargetLinkers::default());
+        };
+        TargetLinkers::from_bytes(&linkers_bytes)
+    }
+    fn merge_target_linker(
+        &self,
+        batch: &mut WriteBatch,
+        target_id: &TargetId,
+        linker_did_id: &DidId,
+    ) {
+        let cf = self.db.cf_handle(TARGET_LINKERS_CF).unwrap();
+        batch.merge_cf(&cf, target_id.to_bytes(), linker_did_id.linker_bytes());
+    }
+    fn update_target_linkers<F>(
+        &self,
+        batch: &mut WriteBatch,
+        target_id: &TargetId,
+        update: F,
+    ) -> Result<bool>
+    where
+        F: FnOnce(TargetLinkers) -> Option<TargetLinkers>,
+    {
+        let cf = self.db.cf_handle(TARGET_LINKERS_CF).unwrap();
+        let existing_linkers = self.get_target_linkers(target_id)?;
+        let Some(new_linkers) = update(existing_linkers) else {
+            return Ok(false);
+        };
+        batch.put_cf(&cf, target_id.to_bytes(), new_linkers.to_bytes());
+        Ok(true)
     }
 }
 
 impl StorageBackend for RocksStorage {
     fn add_links(&self, record_id: &RecordId, links: &[CollectedLink]) {
-        let target_linkers_cf = self.0.db.cf_handle(TARGET_LINKERS_CF).unwrap();
         let link_targets_cf = self.0.db.cf_handle(LINK_TARGETS_CF).unwrap();
 
         // despite all the Arcs there can be only one writer thread
@@ -190,11 +210,7 @@ impl StorageBackend for RocksStorage {
                 .get_or_create_target_id(&mut batch, &target_key)
                 .unwrap();
 
-            batch.merge_cf(
-                &target_linkers_cf,
-                target_id.to_bytes(),
-                did_id.linker_bytes(),
-            );
+            self.0.merge_target_linker(&mut batch, &target_id, &did_id);
             let fwd_link_key = bincode::serialize(&LinkKey(
                 did_id,
                 Collection(record_id.collection()),
@@ -209,7 +225,6 @@ impl StorageBackend for RocksStorage {
     }
 
     fn remove_links(&self, record_id: &RecordId) {
-        let target_linkers_cf = self.0.db.cf_handle(TARGET_LINKERS_CF).unwrap();
         let link_targets_cf = self.0.db.cf_handle(LINK_TARGETS_CF).unwrap();
 
         // despite all the Arcs there can be only one writer thread
@@ -238,39 +253,30 @@ impl StorageBackend for RocksStorage {
         let Some(links_bytes) = self.0.db.get_cf(&link_targets_cf, &fwd_link_key).unwrap() else {
             return; // we don't have these links
         };
-        let links: Vec<LinkTarget> = bincode::deserialize(&links_bytes).unwrap();
+        let links = RecordLinkTargets::from_bytes(&links_bytes).unwrap();
 
         // we do read -> modify -> write here: could merge-op in the deletes instead?
         // otherwise it's another single-thread-constraining thing.
-        for (i, LinkTarget(_rpath, target_id)) in links.iter().enumerate() {
-            let target_id_bytes = bincode::serialize(&target_id).unwrap();
-            // eprintln!("delete links working on #{i}: {_rpath:?} / {target_id:?}");
-
-            let Some(dids_bytes) = self
-                .0
-                .db
-                .get_cf(&target_linkers_cf, &target_id_bytes)
-                .unwrap()
-            else {
-                eprintln!("about to blow up because a linked target is apparently missing.");
-                eprintln!("removing links for: {record_id:?}");
-                eprintln!("found links: {links:?}");
-                eprintln!("from links bytes: {links_bytes:?}");
-                eprintln!("working on #{i}: {_rpath:?} / {target_id:?}");
-                continue;
-            };
-            let mut dids: Vec<DidId> = bincode::deserialize(&dids_bytes).unwrap();
-            let Some(last_did_position) = dids.iter().rposition(|d| *d == linking_did_id) else {
-                eprintln!("about to blow up because a linked target apparently does not have us in its dids.");
-                eprintln!("removing links for: {record_id:?}");
-                eprintln!("found links: {links:?}");
-                eprintln!("working on #{i}: {_rpath:?} / {target_id:?}");
-                eprintln!("trying to find us ({linking_did_id:?}) in dids: {dids:?}");
-                continue;
-            };
-            dids.remove(last_did_position);
-            let dids_bytes = bincode::serialize(&dids).unwrap();
-            batch.put_cf(&target_linkers_cf, &target_id_bytes, &dids_bytes);
+        for (i, LinkTarget(rpath, target_id)) in links.0.iter().enumerate() {
+            self.0.update_target_linkers(&mut batch, target_id, |mut linkers| {
+                if linkers.0.is_empty() {
+                    eprintln!("about to blow up because a linked target is apparently missing.");
+                    eprintln!("removing links for: {record_id:?}");
+                    eprintln!("found links: {links:?}");
+                    eprintln!("from links bytes: {links_bytes:?}");
+                    eprintln!("working on #{i}: {rpath:?} / {target_id:?}");
+                    return None
+                }
+                if !linkers.remove_last_linker(&linking_did_id) {
+                    eprintln!("about to blow up because a linked target apparently does not have us in its dids.");
+                    eprintln!("removing links for: {record_id:?}");
+                    eprintln!("found links: {links:?}");
+                    eprintln!("working on #{i}: {rpath:?} / {target_id:?}");
+                    eprintln!("trying to find us ({linking_did_id:?}) in {linkers:?}");
+                    return None
+                }
+                Some(linkers)
+            }).unwrap();
         }
 
         batch.delete_cf(&link_targets_cf, &fwd_link_key);
@@ -297,7 +303,6 @@ impl StorageBackend for RocksStorage {
     }
 
     fn delete_account(&self, did: &Did) {
-        let target_linkers_cf = self.0.db.cf_handle(TARGET_LINKERS_CF).unwrap();
         let link_targets_cf = self.0.db.cf_handle(LINK_TARGETS_CF).unwrap();
 
         let mut batch = WriteBatch::default();
@@ -317,36 +322,23 @@ impl StorageBackend for RocksStorage {
             .enumerate()
         {
             let (key_bytes, fwd_links_bytes) = item.unwrap();
+            // deletes the did forwrd link
             batch.delete_cf(&link_targets_cf, &key_bytes); // not using delete_range here since we have to scan & read already anyway (should we though?)
 
-            let links: Vec<LinkTarget> = bincode::deserialize(&fwd_links_bytes).unwrap();
-            for (j, LinkTarget(path, target_link_id)) in links.iter().enumerate() {
-                let target_link_id_bytes = bincode::serialize(&target_link_id).unwrap();
-                let Some(target_linkers_bytes) = self
-                    .0
-                    .db
-                    .get_cf(&target_linkers_cf, &target_link_id_bytes)
-                    .unwrap()
-                else {
-                    eprintln!(
-                        "DELETING ACCOUNT: about to blow because a linked target cannot be found."
-                    );
-                    eprintln!("account: {did:?}");
-                    eprintln!("did_id: {did_id:?}, was active? {active:?}");
-                    eprintln!("with links: {links:?}");
-                    eprintln!("working on #{i}.#{j}: {path:?} / {target_link_id:?}");
-                    eprintln!("but could not find this link :/");
-                    continue;
-                };
-                let mut target_linkers: Vec<DidId> =
-                    bincode::deserialize(&target_linkers_bytes).unwrap();
-                target_linkers.retain(|d| *d != did_id);
-                let target_linkers_updated_bytes = bincode::serialize(&target_linkers).unwrap();
-                batch.put_cf(
-                    &target_linkers_cf,
-                    &target_link_id_bytes,
-                    &target_linkers_updated_bytes,
-                );
+            let links = RecordLinkTargets::from_bytes(&fwd_links_bytes).unwrap();
+            for (j, LinkTarget(path, target_link_id)) in links.0.iter().enumerate() {
+                self.0.update_target_linkers(&mut batch, target_link_id, |mut linkers| {
+                    if !linkers.remove_last_linker(&did_id) {
+                        eprintln!("DELETING ACCOUNT: blowing up: missing linker entry in linked target.");
+                        eprintln!("account: {did:?}");
+                        eprintln!("did_id: {did_id:?}, was active? {active:?}");
+                        eprintln!("with links: {links:?}");
+                        eprintln!("working on #{i}.#{j}: {path:?} / {target_link_id:?}");
+                        eprintln!("but could not find this link :/");
+                        return None
+                    }
+                    Some(linkers)
+                }).unwrap();
             }
         }
 
@@ -354,25 +346,13 @@ impl StorageBackend for RocksStorage {
     }
 
     fn count(&self, target: &str, collection: &str, path: &str) -> Result<u64> {
-        let target_ids_cf = self.0.db.cf_handle(TARGET_IDS_CF).unwrap();
-        let target_linkers_cf = self.0.db.cf_handle(TARGET_LINKERS_CF).unwrap();
-
-        let target_key_z = TargetKey(
+        let target_key = TargetKey(
             Target(target.to_string()),
             Collection(collection.to_string()),
             RPath(path.to_string()),
         );
-        let target_key = bincode::serialize(&target_key_z).unwrap();
-
-        if let Some(target_id) = self.0.db.get_cf(&target_ids_cf, &target_key).unwrap() {
-            let linkers = self
-                .0
-                .db
-                .get_cf(&target_linkers_cf, target_id)
-                .unwrap()
-                .expect("target to exist if target id exists");
-            let linkers: Vec<DidId> = bincode::deserialize(&linkers).unwrap();
-            Ok(linkers.len() as u64)
+        if let Some(target_id) = self.0.get_target_id(&target_key)? {
+            Ok(self.0.get_target_linkers(&target_id)?.count())
         } else {
             Ok(0)
         }
@@ -393,6 +373,9 @@ struct RKey(String);
 struct DidId(u64);
 
 impl DidId {
+    fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        Ok(bincode::deserialize(bytes)?)
+    }
     fn linker_bytes(&self) -> Vec<u8> {
         bincode::serialize(self).unwrap()
     }
@@ -427,6 +410,9 @@ impl DidIdValue {
 struct TargetId(u64); // key
 
 impl TargetId {
+    fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        Ok(bincode::deserialize(bytes)?)
+    }
     fn to_bytes(&self) -> Vec<u8> {
         bincode::serialize(self).unwrap()
     }
@@ -445,7 +431,28 @@ impl TargetKey {
     }
 }
 
-// target linker is just Did
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct TargetLinkers(Vec<DidId>);
+
+impl TargetLinkers {
+    fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        Ok(bincode::deserialize(bytes)?)
+    }
+    fn to_bytes(&self) -> Vec<u8> {
+        bincode::serialize(self).unwrap()
+    }
+    fn remove_last_linker(&mut self, did: &DidId) -> bool {
+        if let Some(last_position) = self.0.iter().rposition(|d| d == did) {
+            self.0.remove(last_position);
+            true
+        } else {
+            false
+        }
+    }
+    fn count(&self) -> u64 {
+        self.0.len() as u64
+    }
+}
 
 // forward links to targets so we can delete links
 #[derive(Debug, Serialize, Deserialize)]
@@ -458,21 +465,33 @@ struct LinkKeyDidIdPrefix(DidId);
 #[derive(Debug, Serialize, Deserialize)]
 struct LinkTarget(RPath, TargetId);
 
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct RecordLinkTargets(Vec<LinkTarget>);
+
+impl RecordLinkTargets {
+    fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        Ok(bincode::deserialize(bytes)?)
+    }
+    fn to_bytes(&self) -> Vec<u8> {
+        bincode::serialize(self).unwrap()
+    }
+}
+
 fn concat_did_ids(
     _new_key: &[u8],
     existing: Option<&[u8]>,
     operands: &MergeOperands,
 ) -> Option<Vec<u8>> {
-    let mut ts: Vec<DidId> = existing
-        .map(|existing_bytes| bincode::deserialize(existing_bytes).unwrap())
+    let mut tls = existing
+        .map(|existing_bytes| TargetLinkers::from_bytes(existing_bytes).unwrap())
         .unwrap_or_default();
 
     let current_seq = DID_ID_SEQ.load(Ordering::Relaxed);
 
-    for did_id in &ts {
+    for did_id in &tls.0 {
         let DidId(ref n) = did_id;
         if *n > current_seq {
-            eprintln!("problem with concat_did_ids. existing: {ts:?}");
+            eprintln!("problem with concat_did_ids. existing: {tls:?}");
             eprintln!(
                 "an entry has did_id={n}, which is higher than the current sequence: {current_seq}"
             );
@@ -481,20 +500,20 @@ fn concat_did_ids(
     }
 
     for op in operands {
-        let decoded: DidId = bincode::deserialize(op).unwrap();
+        let did_id = DidId::from_bytes(op).unwrap();
         {
-            let DidId(ref n) = &decoded;
+            let DidId(ref n) = &did_id;
             if *n > current_seq {
-                let orig: Option<Vec<DidId>> =
-                    existing.map(|existing_bytes| bincode::deserialize(existing_bytes).unwrap());
-                eprintln!("problem with concat_did_ids. existing: {orig:?}\nnew did: {decoded:?}");
+                let orig: Option<TargetLinkers> = existing
+                    .map(|existing_bytes| TargetLinkers::from_bytes(existing_bytes).unwrap());
+                eprintln!("problem with concat_did_ids. existing: {orig:?}\nnew did: {did_id:?}");
                 eprintln!("the current sequence is {current_seq}");
-                panic!("decoded a did to a number higher than the current sequence");
+                panic!("did_id a did to a number higher than the current sequence");
             }
         }
-        ts.push(decoded);
+        tls.0.push(did_id);
     }
-    Some(bincode::serialize(&ts).unwrap())
+    Some(tls.to_bytes())
 }
 
 fn concat_link_targets(
@@ -502,17 +521,17 @@ fn concat_link_targets(
     existing: Option<&[u8]>,
     operands: &MergeOperands,
 ) -> Option<Vec<u8>> {
-    let mut ts: Vec<LinkTarget> = existing
-        .map(|existing_bytes| bincode::deserialize(existing_bytes).unwrap())
+    let mut rlts: RecordLinkTargets = existing
+        .map(|existing_bytes| RecordLinkTargets::from_bytes(existing_bytes).unwrap())
         .unwrap_or_default();
 
     let current_seq = TARGET_ID_SEQ.load(Ordering::Relaxed);
 
-    for link_target in &ts {
+    for link_target in &rlts.0 {
         let LinkTarget(_path, TargetId(ref target_id)) = link_target;
         if *target_id > (current_seq + 10) {
             eprintln!("problem with concat_link_targets. deserialized existing target_id {target_id} higher than current sequence {current_seq}.");
-            eprintln!("the full set is {ts:?}");
+            eprintln!("the full set is {rlts:?}");
             panic!("booo");
         }
     }
@@ -522,8 +541,8 @@ fn concat_link_targets(
         {
             let LinkTarget(_, TargetId(ref target_id)) = &decoded;
             if *target_id > (current_seq + 10) {
-                let orig: Option<Vec<LinkTarget>> =
-                    existing.map(|existing_bytes| bincode::deserialize(existing_bytes).unwrap());
+                let orig: Option<RecordLinkTargets> = existing
+                    .map(|existing_bytes| RecordLinkTargets::from_bytes(existing_bytes).unwrap());
                 eprintln!("problem with concat_link_targets");
                 eprintln!("decoded {decoded:?} with target id {target_id} greater than current seq {current_seq}");
                 eprintln!("orig was {orig:?}\nwith orig bytes: {existing:?}");
@@ -533,7 +552,7 @@ fn concat_link_targets(
                 panic!("ohnoooooo");
             }
         }
-        ts.push(decoded);
+        rlts.0.push(decoded);
     }
-    Some(bincode::serialize(&ts).unwrap())
+    Some(rlts.to_bytes())
 }
