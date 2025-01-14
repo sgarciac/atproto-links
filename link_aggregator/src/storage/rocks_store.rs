@@ -65,6 +65,14 @@ trait AsRocksKey {
         self
     }
 }
+trait AsRocksKeyPrefix {
+    fn as_rocks_key(&self) -> &impl Serialize
+    where
+        Self: Serialize + Sized,
+    {
+        self
+    }
+}
 trait AsRocksValue {
     fn as_rocks_value(&self) -> &impl Serialize
     where
@@ -87,6 +95,9 @@ trait MergeOpFromRocks<'a>: Deserialize<'a> {}
 
 fn _rk(k: impl AsRocksKey + Serialize) -> Vec<u8> {
     bincode::serialize(k.as_rocks_key()).unwrap()
+}
+fn _rkp(kp: impl AsRocksKeyPrefix + Serialize) -> Vec<u8> {
+    bincode::serialize(kp.as_rocks_key()).unwrap()
 }
 fn _rv(v: impl AsRocksValue + Serialize) -> Vec<u8> {
     bincode::serialize(v.as_rocks_value()).unwrap()
@@ -123,6 +134,7 @@ impl MergeOpFromRocks<'_> for DidId {}
 
 // record_link_targets table
 impl AsRocksKey for &RecordLinkKey {}
+impl AsRocksKeyPrefix for &RecordLinkKeyDidIdPrefix {} // TODO
 impl KeyFromRocks<'_> for RecordLinkKey {}
 impl AsRocksValue for &RecordLinkTargets {}
 impl ValueFromRocks<'_> for RecordLinkTargets {}
@@ -401,13 +413,11 @@ impl StorageBackend for RocksStorage {
         };
         self.0.delete_did_id_value(&mut batch, did);
 
-        // TODO: relying on bincode to serialize to working prefix bytes is probably not wise.
         let did_id_prefix = RecordLinkKeyDidIdPrefix(did_id);
-        let did_id_prefix_bytes = bincode::serialize(&did_id_prefix).unwrap();
         for (i, item) in self
             .0
             .db
-            .prefix_iterator_cf(&link_targets_cf, &did_id_prefix_bytes)
+            .prefix_iterator_cf(&link_targets_cf, _rkp(&did_id_prefix))
             .enumerate()
         {
             let (key_bytes, fwd_links_bytes) = item.unwrap();
@@ -562,8 +572,8 @@ fn concat_did_ids(
         {
             let DidId(ref n) = &did_id;
             if *n > current_seq {
-                let orig: Option<TargetLinkers> = existing
-                    .map(|existing_bytes| _vr(existing_bytes).unwrap());
+                let orig: Option<TargetLinkers> =
+                    existing.map(|existing_bytes| _vr(existing_bytes).unwrap());
                 eprintln!("problem with concat_did_ids. existing: {orig:?}\nnew did: {did_id:?}");
                 eprintln!("the current sequence is {current_seq}");
                 panic!("did_id a did to a number higher than the current sequence");
