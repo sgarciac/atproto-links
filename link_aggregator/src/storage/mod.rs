@@ -73,7 +73,7 @@ mod tests {
         };
     }
 
-    test_each_storage!(mem_empty, |storage| {
+    test_each_storage!(test_empty, |storage| {
         assert_eq!(storage.get_count("", "", "")?, 0);
         assert_eq!(storage.get_count("a", "b", "c")?, 0);
         assert_eq!(
@@ -86,7 +86,7 @@ mod tests {
         );
     });
 
-    test_each_storage!(mem_add_link, |storage| {
+    test_each_storage!(test_add_link, |storage| {
         storage.push(&ActionableEvent::CreateLinks {
             record_id: RecordId {
                 did: "did:plc:asdf".into(),
@@ -103,7 +103,7 @@ mod tests {
         assert_eq!(storage.get_count("e.com", "app.t.c", ".bad.uri")?, 0);
     });
 
-    test_each_storage!(mem_links, |storage| {
+    test_each_storage!(test_links, |storage| {
         storage.push(&ActionableEvent::CreateLinks {
             record_id: RecordId {
                 did: "did:plc:asdf".into(),
@@ -191,7 +191,7 @@ mod tests {
         assert_eq!(storage.get_count("e.com", "app.t.c", ".abc.uri")?, 2);
     });
 
-    test_each_storage!(mem_two_user_links_delete_one, |storage| {
+    test_each_storage!(test_two_user_links_delete_one, |storage| {
         // create the first link
         storage.push(&ActionableEvent::CreateLinks {
             record_id: RecordId {
@@ -230,7 +230,7 @@ mod tests {
         assert_eq!(storage.get_count("e.com", "app.t.c", ".abc.uri")?, 1);
     });
 
-    test_each_storage!(mem_accounts, |storage| {
+    test_each_storage!(test_accounts, |storage| {
         // create two links
         storage.push(&ActionableEvent::CreateLinks {
             record_id: RecordId {
