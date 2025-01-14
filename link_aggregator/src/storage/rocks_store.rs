@@ -1,5 +1,6 @@
 use super::{LinkStorage, StorageBackend};
 use anyhow::Result;
+use bincode::Options as BincodeOptions;
 use link_aggregator::{Did, RecordId};
 use links::CollectedLink;
 use rocksdb::{
@@ -93,26 +94,33 @@ trait KeyFromRocks<'a>: Deserialize<'a> {}
 trait ValueFromRocks<'a>: Deserialize<'a> {}
 trait MergeOpFromRocks<'a>: Deserialize<'a> {}
 
+fn _encode_rocks_bytes(o: &impl Serialize) -> Vec<u8> {
+    bincode::DefaultOptions::new().serialize(o).unwrap()
+}
+fn _decode_rocks_bytes<'a, T: Deserialize<'a>>(bytes: &'a [u8]) -> Result<T> {
+    Ok(bincode::DefaultOptions::new().deserialize(bytes)?)
+}
+
 fn _rk(k: impl AsRocksKey + Serialize) -> Vec<u8> {
-    bincode::serialize(k.as_rocks_key()).unwrap()
+    _encode_rocks_bytes(k.as_rocks_key())
 }
 fn _rkp(kp: impl AsRocksKeyPrefix + Serialize) -> Vec<u8> {
-    bincode::serialize(kp.as_rocks_key()).unwrap()
+    _encode_rocks_bytes(kp.as_rocks_key())
 }
 fn _rv(v: impl AsRocksValue + Serialize) -> Vec<u8> {
-    bincode::serialize(v.as_rocks_value()).unwrap()
+    _encode_rocks_bytes(v.as_rocks_value())
 }
 fn _rm(m: impl AsRocksMergeOp + Serialize) -> Vec<u8> {
-    bincode::serialize(m.as_rocks_merge_op()).unwrap()
+    _encode_rocks_bytes(m.as_rocks_merge_op())
 }
 fn _kr<'a, T: KeyFromRocks<'a>>(bytes: &'a [u8]) -> Result<T> {
-    Ok(bincode::deserialize(bytes)?)
+    _decode_rocks_bytes(bytes)
 }
 fn _vr<'a, T: ValueFromRocks<'a>>(bytes: &'a [u8]) -> Result<T> {
-    Ok(bincode::deserialize(bytes)?)
+    _decode_rocks_bytes(bytes)
 }
 fn _mr<'a, T: MergeOpFromRocks<'a>>(bytes: &'a [u8]) -> Result<T> {
-    Ok(bincode::deserialize(bytes)?)
+    _decode_rocks_bytes(bytes)
 }
 
 // did_id table
