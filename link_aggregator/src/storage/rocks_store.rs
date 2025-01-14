@@ -400,13 +400,8 @@ impl StorageBackend for RocksStorage {
         // did active/inactive updates are low-freq in the firehose so, eh, it's fine.
         let mut batch = WriteBatch::default();
         self.0
-            .update_did_id_value(&mut batch, did, |current_value| {
-                if current_value.is_active() == active {
-                    eprintln!("set_account: did {did:?} was already set to active={active:?}");
-                    return None;
-                }
-                Some(DidIdValue(current_value.did_id(), active))
-            })
+            .update_did_id_value(&mut batch, did, |current_value|
+                Some(DidIdValue(current_value.did_id(), active)))
             .unwrap();
         self.0.db.write(batch).unwrap();
     }
@@ -488,10 +483,6 @@ impl DidIdValue {
     fn did_id(&self) -> DidId {
         let Self(id, _) = self;
         *id
-    }
-    fn is_active(&self) -> bool {
-        let Self(_, active) = self;
-        *active
     }
 }
 
