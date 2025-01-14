@@ -193,6 +193,8 @@ impl RocksStorageData {
         // the path that we need to be fast. we could go back to a merge op and probably be
         // consistent. or we can accept just a littttttle inconsistency and be idempotent on
         // forward links but not reverse, slightly messing up deletes :/
+        // _maybe_ we could run in slow idempotent r-m-w mode during firehose catch-up at the start,
+        // then switch to the fast version?
         let cf = self.db.cf_handle(LINK_TARGETS_CF).unwrap();
         batch.put_cf(&cf, record_link_key.as_key(), targets.to_bytes());
     }
@@ -339,8 +341,9 @@ impl StorageBackend for RocksStorage {
             .enumerate()
         {
             let (key_bytes, fwd_links_bytes) = item.unwrap();
-            // deletes the did forwrd link
-            batch.delete_cf(&link_targets_cf, &key_bytes); // not using delete_range here since we have to scan & read already anyway (should we though?)
+            let record_link_key = RecordLinkKey::from_bytes(&key_bytes).unwrap();
+
+            self.0.delete_record_link(&mut batch, &record_link_key); // _could_ use delete range here instead of individual deletes, but since we have to scan anyway it's not obvious if it's better
 
             let links = RecordLinkTargets::from_bytes(&fwd_links_bytes).unwrap();
             for (j, RecordLinkTarget(path, target_link_id)) in links.0.iter().enumerate() {
@@ -350,7 +353,7 @@ impl StorageBackend for RocksStorage {
                         eprintln!("account: {did:?}");
                         eprintln!("did_id: {did_id:?}, was active? {active:?}");
                         eprintln!("with links: {links:?}");
-                        eprintln!("working on #{i}.#{j}: {path:?} / {target_link_id:?}");
+                        eprintln!("working on #{i}.#{j}: {:?} / {path:?} / {target_link_id:?}", record_link_key.collection());
                         eprintln!("but could not find this link :/");
                         return None
                     }
@@ -376,7 +379,7 @@ impl StorageBackend for RocksStorage {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct Collection(String);
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -478,6 +481,13 @@ struct RecordLinkKey(DidId, Collection, RKey);
 impl RecordLinkKey {
     fn as_key(&self) -> Vec<u8> {
         bincode::serialize(self).unwrap()
+    }
+    fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        Ok(bincode::deserialize(bytes)?)
+    }
+    fn collection(&self) -> Collection {
+        let Self(_, collection, _) = self;
+        collection.clone()
     }
 }
 
