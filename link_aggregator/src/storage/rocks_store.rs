@@ -436,6 +436,7 @@ impl StorageBackend for RocksStorage {
                         eprintln!("account: {did:?}");
                         eprintln!("did_id: {did_id:?}, was active? {active:?}");
                         eprintln!("with links: {links:?}");
+                        eprintln!("and linkers: {linkers:?}");
                         eprintln!("working on #{i}.#{j}: {:?} / {path:?} / {target_link_id:?}", record_link_key.collection());
                         eprintln!("but could not find this link :/");
                         panic!("ohnoooo");
