@@ -82,17 +82,8 @@ trait AsRocksValue {
         self
     }
 }
-trait AsRocksMergeOp {
-    fn as_rocks_merge_op(&self) -> &impl Serialize
-    where
-        Self: Serialize + Sized,
-    {
-        self
-    }
-}
 trait KeyFromRocks<'a>: Deserialize<'a> {}
 trait ValueFromRocks<'a>: Deserialize<'a> {}
-trait MergeOpFromRocks<'a>: Deserialize<'a> {}
 
 fn _encode_rocks_bytes(o: &impl Serialize) -> Vec<u8> {
     bincode::DefaultOptions::new().serialize(o).unwrap()
@@ -110,16 +101,10 @@ fn _rkp(kp: impl AsRocksKeyPrefix + Serialize) -> Vec<u8> {
 fn _rv(v: impl AsRocksValue + Serialize) -> Vec<u8> {
     _encode_rocks_bytes(v.as_rocks_value())
 }
-fn _rm(m: impl AsRocksMergeOp + Serialize) -> Vec<u8> {
-    _encode_rocks_bytes(m.as_rocks_merge_op())
-}
 fn _kr<'a, T: KeyFromRocks<'a>>(bytes: &'a [u8]) -> Result<T> {
     _decode_rocks_bytes(bytes)
 }
 fn _vr<'a, T: ValueFromRocks<'a>>(bytes: &'a [u8]) -> Result<T> {
-    _decode_rocks_bytes(bytes)
-}
-fn _mr<'a, T: MergeOpFromRocks<'a>>(bytes: &'a [u8]) -> Result<T> {
     _decode_rocks_bytes(bytes)
 }
 
@@ -137,14 +122,12 @@ impl ValueFromRocks<'_> for TargetId {}
 impl AsRocksKey for &TargetId {}
 impl AsRocksValue for &TargetLinkers {}
 impl ValueFromRocks<'_> for TargetLinkers {}
-impl AsRocksMergeOp for &DidId {}
-impl MergeOpFromRocks<'_> for DidId {}
 
 // record_link_targets table
 impl AsRocksKey for &RecordLinkKey {}
 impl AsRocksKeyPrefix for &RecordLinkKeyDidIdPrefix {} // TODO
-impl KeyFromRocks<'_> for RecordLinkKey {}
 impl AsRocksValue for &RecordLinkTargets {}
+impl KeyFromRocks<'_> for RecordLinkKey {}
 impl ValueFromRocks<'_> for RecordLinkTargets {}
 
 impl RocksStorageData {
@@ -252,7 +235,11 @@ impl RocksStorageData {
         linker_did_id: &DidId,
     ) {
         let cf = self.db.cf_handle(TARGET_LINKERS_CF).unwrap();
-        batch.merge_cf(&cf, _rk(target_id), _rm(linker_did_id));
+        batch.merge_cf(
+            &cf,
+            _rk(target_id),
+            _rv(&TargetLinkers(vec![*linker_did_id])),
+        );
     }
     fn update_target_linkers<F>(
         &self,
@@ -568,18 +555,19 @@ fn concat_did_ids(
     }
 
     for op in operands {
-        let did_id: DidId = _mr(op).unwrap();
-        {
-            let DidId(ref n) = &did_id;
+        let new_linkers: TargetLinkers = _vr(op).unwrap();
+        for DidId(ref n) in &new_linkers.0 {
             if *n > current_seq {
                 let orig: Option<TargetLinkers> =
                     existing.map(|existing_bytes| _vr(existing_bytes).unwrap());
-                eprintln!("problem with concat_did_ids. existing: {orig:?}\nnew did: {did_id:?}");
+                eprintln!(
+                    "problem with concat_did_ids. existing: {orig:?}\nnew linkers: {new_linkers:?}"
+                );
                 eprintln!("the current sequence is {current_seq}");
                 panic!("did_id a did to a number higher than the current sequence");
             }
         }
-        tls.0.push(did_id);
+        tls.0.extend(&new_linkers.0);
     }
     Some(_rv(&tls))
 }
