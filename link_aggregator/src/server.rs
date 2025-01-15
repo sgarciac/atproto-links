@@ -1,14 +1,14 @@
 use axum::{extract::Query, http, routing::get, Router};
 use serde::Deserialize;
-use std::marker::{Send, Sync};
 use tokio::net::{TcpListener, ToSocketAddrs};
+use tokio::sync::oneshot::Receiver;
 use tokio::task::block_in_place;
 
 use crate::storage::LinkStorage;
 
-pub async fn serve<S, A>(store: S, addr: A) -> anyhow::Result<()>
+pub async fn serve<S, A>(store: S, addr: A, cancel: Receiver<()>) -> anyhow::Result<()>
 where
-    S: LinkStorage + Clone + Send + Sync + 'static,
+    S: LinkStorage,
     A: ToSocketAddrs,
 {
     let app = Router::new().route("/", get(hello)).route(
@@ -17,9 +17,14 @@ where
     );
 
     let listener = TcpListener::bind(addr).await?;
-    println!("api: serving at http://{:?}", listener.local_addr()?);
-    axum::serve(listener, app).await?;
-    unreachable!()
+    println!("api: listening at http://{:?}", listener.local_addr()?);
+    axum::serve(listener, app)
+        .with_graceful_shutdown(async {
+            cancel.await.ok();
+        })
+        .await?;
+
+    Ok(())
 }
 
 async fn hello() -> &'static str {

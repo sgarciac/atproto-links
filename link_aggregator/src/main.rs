@@ -1,49 +1,90 @@
 mod consumer;
-mod jetstream;
 mod server;
 mod storage;
 
 use anyhow::Result;
+use clap::{Parser, ValueEnum};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time;
 use tokio::runtime;
+use tokio::sync::oneshot;
 
 use consumer::consume;
 use server::serve;
-use storage::{MemStorage, RocksStorage};
+use storage::{LinkStorage, MemStorage, RocksStorage};
+
+/// Aggregate links in the at-mosphere
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
+struct Args {
+    /// Storage backend to use
+    #[arg(short, long)]
+    #[clap(value_enum, default_value_t = StorageBackend::Memory)]
+    backend: StorageBackend,
+    /// Saved jsonl from jetstream to use instead of a live subscription
+    #[arg(short, long)]
+    fixture: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, ValueEnum)]
+enum StorageBackend {
+    Memory,
+    Rocks,
+}
 
 fn main() -> Result<()> {
-    println!("starting...");
+    let args = Args::parse();
 
-    let storage = MemStorage::new();
-    let _ = RocksStorage::new(); // todo: switch storage to this
+    println!("starting with storage backend: {:?}...", args.backend);
 
+    let fixture = args.fixture;
+    if let Some(ref p) = fixture {
+        println!("using fixture at {p:?}...");
+    }
+
+    match args.backend {
+        StorageBackend::Memory => run(MemStorage::new(), fixture),
+        StorageBackend::Rocks => run(RocksStorage::new("rocks.test")?, fixture),
+    }
+}
+
+fn run(storage: impl LinkStorage, fixture: Option<PathBuf>) -> Result<()> {
     let qsize = Arc::new(AtomicU32::new(0));
 
-    thread::spawn({
+    let consumer = thread::spawn({
         let storage = storage.clone();
         let qsize = qsize.clone();
-        move || consume(storage, qsize)
+        move || consume(storage, qsize, fixture)
     });
 
+    let (stop_server, shutdown) = oneshot::channel::<()>();
     thread::spawn({
         let storage = storage.clone();
-        move || loop {
-            storage.summarize(qsize.load(Ordering::Relaxed));
-            thread::sleep(time::Duration::from_secs(3));
+        move || {
+            runtime::Builder::new_multi_thread()
+                .worker_threads(1)
+                .max_blocking_threads(2)
+                .enable_all()
+                .build()?
+                .block_on(serve(storage.clone(), "127.0.0.1:6789", shutdown))
         }
     });
 
-    runtime::Builder::new_multi_thread()
-        .worker_threads(1)
-        .max_blocking_threads(2)
-        .enable_all()
-        .build()?
-        .block_on(async { serve(storage, "127.0.0.1:6789").await })?;
+    let mon = thread::spawn(move || {
+        while !consumer.is_finished() {
+            storage.summarize(qsize.load(Ordering::Relaxed));
+            thread::sleep(time::Duration::from_secs(3));
+        }
+        let _ = stop_server.send(());
+    });
 
-    unreachable!();
+    let _ = mon.join();
+    println!("byeeee");
+
+    Ok(())
 }
 
 #[cfg(test)]

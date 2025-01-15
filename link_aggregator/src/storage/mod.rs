@@ -9,7 +9,7 @@ pub mod rocks_store;
 pub use rocks_store::RocksStorage;
 
 /// consumer-side storage api, independent of actual storage backend
-pub trait LinkStorage: StorageBackend {
+pub trait LinkStorage: StorageBackend + Clone + Send + Sync + 'static {
     fn push(&self, event: &ActionableEvent) -> Result<()> {
         match event {
             ActionableEvent::CreateLinks { record_id, links } => self.add_links(record_id, links),
@@ -26,6 +26,9 @@ pub trait LinkStorage: StorageBackend {
     }
     fn get_count(&self, target: &str, collection: &str, path: &str) -> Result<u64> {
         self.count(target, collection, path)
+    }
+    fn summarize(&self, qsize: u32) {
+        println!("queue: {qsize}");
     }
 }
 
@@ -46,26 +49,31 @@ pub trait StorageBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
 
     macro_rules! test_each_storage {
         ($test_name:ident, |$storage_label:ident| $test_code:block) => {
             #[test]
             fn $test_name() -> Result<()> {
-                let __stores: Vec<(&str, Box<dyn LinkStorage>)> = vec![
-                    ("memstorage", Box::new(MemStorage::new())),
-                    ("rocksdb", Box::new(RocksStorage::new())),
-                ];
-                for (__backend_name, __storage) in __stores {
-                    println!("=> testing with {__backend_name} backend");
-                    let $storage_label = __storage;
+                println!("=> testing with memstorage backend");
+                {
+                    let $storage_label = MemStorage::new();
                     $test_code
                 }
+
+                println!("=> testing with memstorage backend");
+                {
+                    let rocks_db_path = tempdir()?;
+                    let $storage_label = RocksStorage::new(rocks_db_path.path())?;
+                    $test_code
+                }
+
                 Ok(())
             }
         };
     }
 
-    test_each_storage!(mem_empty, |storage| {
+    test_each_storage!(test_empty, |storage| {
         assert_eq!(storage.get_count("", "", "")?, 0);
         assert_eq!(storage.get_count("a", "b", "c")?, 0);
         assert_eq!(
@@ -78,7 +86,7 @@ mod tests {
         );
     });
 
-    test_each_storage!(mem_links, |storage| {
+    test_each_storage!(test_add_link, |storage| {
         storage.push(&ActionableEvent::CreateLinks {
             record_id: RecordId {
                 did: "did:plc:asdf".into(),
@@ -92,7 +100,21 @@ mod tests {
         })?;
         assert_eq!(storage.get_count("e.com", "app.t.c", ".abc.uri")?, 1);
         assert_eq!(storage.get_count("bad.com", "app.t.c", ".abc.uri")?, 0);
-        assert_eq!(storage.get_count("e.com", "app.t.c", ".def.uri")?, 0);
+        assert_eq!(storage.get_count("e.com", "app.t.c", ".bad.uri")?, 0);
+    });
+
+    test_each_storage!(test_links, |storage| {
+        storage.push(&ActionableEvent::CreateLinks {
+            record_id: RecordId {
+                did: "did:plc:asdf".into(),
+                collection: "app.t.c".into(),
+                rkey: "fdsa".into(),
+            },
+            links: vec![CollectedLink {
+                target: "e.com".into(),
+                path: ".abc.uri".into(),
+            }],
+        })?;
 
         // delete under the wrong collection
         storage.push(&ActionableEvent::DeleteRecord(RecordId {
@@ -169,7 +191,7 @@ mod tests {
         assert_eq!(storage.get_count("e.com", "app.t.c", ".abc.uri")?, 2);
     });
 
-    test_each_storage!(mem_two_user_links_delete_one, |storage| {
+    test_each_storage!(test_two_user_links_delete_one, |storage| {
         // create the first link
         storage.push(&ActionableEvent::CreateLinks {
             record_id: RecordId {
@@ -208,7 +230,7 @@ mod tests {
         assert_eq!(storage.get_count("e.com", "app.t.c", ".abc.uri")?, 1);
     });
 
-    test_each_storage!(mem_accounts, |storage| {
+    test_each_storage!(test_accounts, |storage| {
         // create two links
         storage.push(&ActionableEvent::CreateLinks {
             record_id: RecordId {
@@ -346,4 +368,52 @@ mod tests {
         assert_eq!(storage.get_count("g.com", "app.t.c", ".xyz[].uri")?, 0);
         assert_eq!(storage.get_count("i.com", "app.t.c", ".xyz[].uri")?, 1);
     });
+
+    test_each_storage!(update_no_links_to_links, |storage| {
+        // update without prior create (consumer would have filtered out the original)
+        storage.push(&ActionableEvent::UpdateLinks {
+            record_id: RecordId {
+                did: "did:plc:asdf".into(),
+                collection: "app.t.c".into(),
+                rkey: "asdf".into(),
+            },
+            new_links: vec![CollectedLink {
+                target: "a.com".into(),
+                path: ".abc.uri".into(),
+            }],
+        })?;
+        assert_eq!(storage.get_count("a.com", "app.t.c", ".abc.uri")?, 1);
+    });
+
+    test_each_storage!(delete_multi_link_same_target, |storage| {
+        storage.push(&ActionableEvent::CreateLinks {
+            record_id: RecordId {
+                did: "did:plc:asdf".into(),
+                collection: "app.t.c".into(),
+                rkey: "asdf".into(),
+            },
+            links: vec![
+                CollectedLink {
+                    target: "a.com".into(),
+                    path: ".abc.uri".into(),
+                },
+                CollectedLink {
+                    target: "a.com".into(),
+                    path: ".def.uri".into(),
+                },
+            ],
+        })?;
+        assert_eq!(storage.get_count("a.com", "app.t.c", ".abc.uri")?, 1);
+        assert_eq!(storage.get_count("a.com", "app.t.c", ".def.uri")?, 1);
+
+        storage.push(&ActionableEvent::DeleteRecord(RecordId {
+            did: "did:plc:asdf".into(),
+            collection: "app.t.c".into(),
+            rkey: "asdf".into(),
+        }))?;
+        assert_eq!(storage.get_count("a.com", "app.t.c", ".abc.uri")?, 0);
+        assert_eq!(storage.get_count("a.com", "app.t.c", ".def.uri")?, 0);
+    });
+
+    // todo: test update where the new record has no links -> this test might need to be in main?
 }

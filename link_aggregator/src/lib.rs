@@ -1,4 +1,5 @@
 use links::CollectedLink;
+use serde::{Deserialize, Serialize};
 use std::convert::From;
 
 #[derive(Debug, PartialEq)]
@@ -17,7 +18,7 @@ pub enum ActionableEvent {
     DeleteAccount(Did),
 }
 
-#[derive(Debug, PartialEq, Eq, Hash, Clone)]
+#[derive(Debug, PartialEq, Eq, Hash, Clone, Serialize, Deserialize)]
 pub struct Did(String);
 
 impl<T: Into<String>> From<T> for Did {

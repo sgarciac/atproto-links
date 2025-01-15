@@ -68,8 +68,10 @@ impl MemStorage {
     pub fn new() -> Self {
         Self(Arc::new(Mutex::new(MemStorageData::default())))
     }
+}
 
-    pub fn summarize(&self, qsize: u32) {
+impl LinkStorage for MemStorage {
+    fn summarize(&self, qsize: u32) {
         let data = self.0.lock().unwrap();
         let dids = data.dids.len();
         let targets = data.targets.len();
@@ -81,8 +83,6 @@ impl MemStorage {
         println!("queue: {qsize}. {dids} dids, {targets} targets from {target_paths} paths, {links} links. sample: {sample_target:?} {sample_path:?}");
     }
 }
-
-impl LinkStorage for MemStorage {} // defaults are fine
 
 impl StorageBackend for MemStorage {
     fn add_links(&self, record_id: &RecordId, links: &[CollectedLink]) {
@@ -101,13 +101,6 @@ impl StorageBackend for MemStorage {
                 .entry(RepoId::from_record_id(record_id))
                 .or_insert(Vec::with_capacity(1))
                 .push((RecordPath::new(&link.path), Target::new(&link.target)))
-        }
-    }
-
-    fn set_account(&self, did: &Did, active: bool) {
-        let mut data = self.0.lock().unwrap();
-        if let Some(account) = data.dids.get_mut(did) {
-            *account = active;
         }
     }
 
@@ -139,6 +132,13 @@ impl StorageBackend for MemStorage {
             .map(|cr| cr.remove(&repo_id));
     }
 
+    fn set_account(&self, did: &Did, active: bool) {
+        let mut data = self.0.lock().unwrap();
+        if let Some(account) = data.dids.get_mut(did) {
+            *account = active;
+        }
+    }
+
     fn delete_account(&self, did: &Did) {
         let mut data = self.0.lock().unwrap();
         if let Some(links) = data.links.get(did) {
@@ -155,7 +155,7 @@ impl StorageBackend for MemStorage {
                 }
             }
         }
-        data.links.remove(did);
+        data.links.remove(did); // nb: this is removing by a whole prefix in kv context
         data.dids.remove(did);
     }
 
