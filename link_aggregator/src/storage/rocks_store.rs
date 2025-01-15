@@ -642,6 +642,55 @@ mod tests {
 
         Ok(())
     }
-    // TODO: test prefix iteration explicitly
+
+    #[test]
+    fn rocks_prefix_iteration_helper() -> Result<()> {
+        #[derive(Serialize, Deserialize)]
+        struct Key(u8, u8);
+
+        #[derive(Serialize)]
+        struct KeyPrefix(u8);
+
+        #[derive(Serialize, Deserialize)]
+        struct Value(());
+
+        impl AsRocksKey for &Key {}
+        impl AsRocksKeyPrefix<Key> for &KeyPrefix {}
+        impl AsRocksValue for &Value {}
+
+        impl KeyFromRocks for Key {}
+        impl ValueFromRocks for Value {}
+
+        let data = RocksStorageData::new(tempdir()?)?;
+        let cf = data.db.cf_handle(DID_IDS_CF).unwrap();
+        let mut batch = WriteBatch::default();
+
+        // not our prefix
+        batch.put_cf(&cf, _rk(&Key(0x01, 0x00)), &_rv(&Value(())));
+        batch.put_cf(&cf, _rk(&Key(0x01, 0xFF)), &_rv(&Value(())));
+
+        // our prefix!
+        for i in 0..=0xFF {
+            batch.put_cf(&cf, _rk(&Key(0x02, i)), &_rv(&Value(())));
+        }
+
+        // not our prefix
+        batch.put_cf(&cf, _rk(&Key(0x03, 0x00)), &_rv(&Value(())));
+        batch.put_cf(&cf, _rk(&Key(0x03, 0xFF)), &_rv(&Value(())));
+
+        data.db.write(batch)?;
+
+        let mut okays: [bool; 256] = [false; 256];
+        for (i, (k, Value(_))) in data.prefix_iter_cf(&cf, KeyPrefix(0x02)).enumerate() {
+            assert!(i < 256);
+            assert_eq!(k.0, 0x02, "prefix iterated key has the right prefix");
+            assert_eq!(k.1 as usize, i, "prefixed keys are iterated in exact order");
+            okays[k.1 as usize] = true;
+        }
+        assert!(okays.iter().all(|b| *b), "every key was iterated");
+
+        Ok(())
+    }
+
     // TODO: add tests for key prefixes actually prefixing (bincode encoding _should_...)
 }
