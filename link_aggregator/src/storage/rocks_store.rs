@@ -4,8 +4,8 @@ use bincode::Options as BincodeOptions;
 use link_aggregator::{Did, RecordId};
 use links::CollectedLink;
 use rocksdb::{
-    ColumnFamilyDescriptor, DBWithThreadMode, Direction, IteratorMode, MergeOperands,
-    MultiThreaded, Options, WriteBatch,
+    AsColumnFamilyRef, ColumnFamilyDescriptor, DBWithThreadMode, IteratorMode, MergeOperands,
+    MultiThreaded, Options, PrefixRange, ReadOptions, WriteBatch,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -84,8 +84,8 @@ trait AsRocksValue {
         self
     }
 }
-trait KeyFromRocks<'a>: Deserialize<'a> {}
-trait ValueFromRocks<'a>: Deserialize<'a> {}
+trait KeyFromRocks: for<'a> Deserialize<'a> {}
+trait ValueFromRocks: for<'a> Deserialize<'a> {}
 
 fn _bincode_opts() -> impl BincodeOptions {
     bincode::DefaultOptions::new().with_big_endian() // happier db -- numeric prefixes in lsm
@@ -99,37 +99,37 @@ fn _rkp(kp: impl AsRocksKeyPrefix + Serialize) -> Vec<u8> {
 fn _rv(v: impl AsRocksValue + Serialize) -> Vec<u8> {
     _bincode_opts().serialize(v.as_rocks_value()).unwrap()
 }
-fn _kr<'a, T: KeyFromRocks<'a>>(bytes: &'a [u8]) -> Result<T> {
+fn _kr<T: KeyFromRocks>(bytes: &[u8]) -> Result<T> {
     Ok(_bincode_opts().deserialize(bytes)?)
 }
-fn _vr<'a, T: ValueFromRocks<'a>>(bytes: &'a [u8]) -> Result<T> {
+fn _vr<T: ValueFromRocks>(bytes: &[u8]) -> Result<T> {
     Ok(_bincode_opts().deserialize(bytes)?)
 }
 
 // did_id table
 impl AsRocksKey for &Did {}
 impl AsRocksValue for &DidIdValue {}
-impl ValueFromRocks<'_> for DidIdValue {}
+impl ValueFromRocks for DidIdValue {}
 
 // temp
-impl KeyFromRocks<'_> for Did {}
+impl KeyFromRocks for Did {}
 
 // target_ids table
 impl AsRocksKey for &TargetKey {}
 impl AsRocksValue for &TargetId {}
-impl ValueFromRocks<'_> for TargetId {}
+impl ValueFromRocks for TargetId {}
 
 // target_links table
 impl AsRocksKey for &TargetId {}
 impl AsRocksValue for &TargetLinkers {}
-impl ValueFromRocks<'_> for TargetLinkers {}
+impl ValueFromRocks for TargetLinkers {}
 
 // record_link_targets table
 impl AsRocksKey for &RecordLinkKey {}
 impl AsRocksKeyPrefix for &RecordLinkKeyDidIdPrefix {} // TODO
 impl AsRocksValue for &RecordLinkTargets {}
-impl KeyFromRocks<'_> for RecordLinkKey {}
-impl ValueFromRocks<'_> for RecordLinkTargets {}
+impl KeyFromRocks for RecordLinkKey {}
+impl ValueFromRocks for RecordLinkTargets {}
 
 impl RocksStorageData {
     fn new(path: impl AsRef<Path>) -> Result<Self> {
@@ -150,6 +150,24 @@ impl RocksStorageData {
             ],
         )?;
         Ok(Self { db: Arc::new(db) })
+    }
+
+    fn prefix_iter_cf<CF, K, V>(
+        &self,
+        cf: &CF,
+        pre: Vec<u8>,
+    ) -> impl Iterator<Item = (K, V)> + use<'_, CF, K, V>
+    where
+        CF: AsColumnFamilyRef,
+        K: KeyFromRocks,
+        V: ValueFromRocks,
+    {
+        let mut read_opts = ReadOptions::default();
+        read_opts.set_iterate_range(PrefixRange(pre)); // inclusive bounds?
+        self.db
+            .iterator_cf_opt(cf, read_opts, IteratorMode::Start)
+            .map_while(Result::ok)
+            .map_while(|(k, v)| Some((_kr(&k).ok()?, _vr(&v).ok()?)))
     }
 
     fn get_did_id_value(&self, did: &Did) -> Result<Option<DidIdValue>> {
@@ -291,6 +309,13 @@ impl RocksStorageData {
         let cf = self.db.cf_handle(LINK_TARGETS_CF).unwrap();
         batch.delete_cf(&cf, _rk(record_link_key));
     }
+    fn iter_links_for_did_id(
+        &self,
+        did_id: &DidId,
+    ) -> impl Iterator<Item = (RecordLinkKey, RecordLinkTargets)> + use<'_> {
+        let cf = self.db.cf_handle(LINK_TARGETS_CF).unwrap();
+        self.prefix_iter_cf(&cf, _rkp(&RecordLinkKeyDidIdPrefix(*did_id)))
+    }
 
     fn check_for_did_dups(&self, problem_did_id: &DidId) {
         let cf = self.db.cf_handle(DID_IDS_CF).unwrap();
@@ -422,8 +447,6 @@ impl StorageBackend for RocksStorage {
     }
 
     fn delete_account(&self, did: &Did) {
-        let link_targets_cf = self.0.db.cf_handle(LINK_TARGETS_CF).unwrap();
-
         let mut batch = WriteBatch::default();
 
         let Some(DidIdValue(did_id, active)) = self.0.get_did_id_value(did).unwrap() else {
@@ -431,28 +454,9 @@ impl StorageBackend for RocksStorage {
         };
         self.0.delete_did_id_value(&mut batch, did);
 
-        let did_id_prefix_bytes = _rkp(&RecordLinkKeyDidIdPrefix(did_id));
-        for (i, item) in self
-            .0
-            .db
-            .iterator_cf(
-                &link_targets_cf,
-                IteratorMode::From(&did_id_prefix_bytes, Direction::Forward),
-            )
-            .enumerate()
-        {
-            let (key_bytes, fwd_links_bytes) = item.unwrap();
-            if !key_bytes.starts_with(&did_id_prefix_bytes) {
-                // you might think, like i did, that we could use rust-rocksdb "prefix iteration"
-                // and just iterate to the end. turns out that it really iterates "to the end"!
-                // it doesn't only iterate keys with the prefix!? so we have to check anyway.
-                break;
-            }
-            let record_link_key: RecordLinkKey = _kr(&key_bytes).unwrap();
-
+        for (i, (record_link_key, links)) in self.0.iter_links_for_did_id(&did_id).enumerate() {
             self.0.delete_record_link(&mut batch, &record_link_key); // _could_ use delete range here instead of individual deletes, but since we have to scan anyway it's not obvious if it's better
 
-            let links: RecordLinkTargets = _vr(&fwd_links_bytes).unwrap();
             for (j, RecordLinkTarget(path, target_link_id)) in links.0.iter().enumerate() {
                 self.0.update_target_linkers(&mut batch, target_link_id, |mut linkers| {
                     if !linkers.remove_last_linker(&did_id) {
