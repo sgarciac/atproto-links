@@ -7,6 +7,7 @@ use rocksdb::{
     ColumnFamilyDescriptor, DBWithThreadMode, MergeOperands, MultiThreaded, Options, WriteBatch,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{
     atomic::{AtomicU64, Ordering},
@@ -67,7 +68,7 @@ trait AsRocksKey {
     }
 }
 trait AsRocksKeyPrefix {
-    fn as_rocks_key(&self) -> &impl Serialize
+    fn as_rocks_key_prefix(&self) -> &impl Serialize
     where
         Self: Serialize + Sized,
     {
@@ -85,33 +86,32 @@ trait AsRocksValue {
 trait KeyFromRocks<'a>: Deserialize<'a> {}
 trait ValueFromRocks<'a>: Deserialize<'a> {}
 
-fn _encode_rocks_bytes(o: &impl Serialize) -> Vec<u8> {
-    bincode::DefaultOptions::new().serialize(o).unwrap()
+fn _bincode_opts() -> impl BincodeOptions {
+    bincode::DefaultOptions::new().with_big_endian() // happier db -- numeric prefixes in lsm
 }
-fn _decode_rocks_bytes<'a, T: Deserialize<'a>>(bytes: &'a [u8]) -> Result<T> {
-    Ok(bincode::DefaultOptions::new().deserialize(bytes)?)
-}
-
 fn _rk(k: impl AsRocksKey + Serialize) -> Vec<u8> {
-    _encode_rocks_bytes(k.as_rocks_key())
+    _bincode_opts().serialize(k.as_rocks_key()).unwrap()
 }
 fn _rkp(kp: impl AsRocksKeyPrefix + Serialize) -> Vec<u8> {
-    _encode_rocks_bytes(kp.as_rocks_key())
+    _bincode_opts().serialize(kp.as_rocks_key_prefix()).unwrap()
 }
 fn _rv(v: impl AsRocksValue + Serialize) -> Vec<u8> {
-    _encode_rocks_bytes(v.as_rocks_value())
+    _bincode_opts().serialize(v.as_rocks_value()).unwrap()
 }
 fn _kr<'a, T: KeyFromRocks<'a>>(bytes: &'a [u8]) -> Result<T> {
-    _decode_rocks_bytes(bytes)
+    Ok(_bincode_opts().deserialize(bytes)?)
 }
 fn _vr<'a, T: ValueFromRocks<'a>>(bytes: &'a [u8]) -> Result<T> {
-    _decode_rocks_bytes(bytes)
+    Ok(_bincode_opts().deserialize(bytes)?)
 }
 
 // did_id table
 impl AsRocksKey for &Did {}
 impl AsRocksValue for &DidIdValue {}
 impl ValueFromRocks<'_> for DidIdValue {}
+
+// temp
+impl KeyFromRocks<'_> for Did {}
 
 // target_ids table
 impl AsRocksKey for &TargetKey {}
@@ -290,6 +290,32 @@ impl RocksStorageData {
         let cf = self.db.cf_handle(LINK_TARGETS_CF).unwrap();
         batch.delete_cf(&cf, _rk(record_link_key));
     }
+
+    fn check_for_did_dups(&self, problem_did_id: &DidId) {
+        let cf = self.db.cf_handle(DID_IDS_CF).unwrap();
+        let mut seen_ids: HashMap<DidId, Vec<Did>> = HashMap::new();
+        for (k, v) in self
+            .db
+            .iterator_cf(&cf, rocksdb::IteratorMode::Start)
+            .map_while(Result::ok)
+        {
+            let did: Did = _kr(&k).unwrap();
+            let DidIdValue(did_id, _) = _vr(&v).unwrap();
+            if let Some(dids) = seen_ids.get_mut(&did_id) {
+                let is_problem = did_id == *problem_did_id;
+                eprintln!(
+                    "dup! problem? {is_problem}. at did_id {did_id:?}: {dids:?} and now {did:?}"
+                );
+                dids.push(did);
+            } else {
+                if did_id == *problem_did_id {
+                    eprintln!("found our friend {did:?} {did_id:?}");
+                }
+                assert!(seen_ids.insert(did_id, vec![did]).is_none());
+            }
+        }
+        eprintln!("done checking.");
+    }
 }
 
 impl StorageBackend for RocksStorage {
@@ -387,8 +413,9 @@ impl StorageBackend for RocksStorage {
         // did active/inactive updates are low-freq in the firehose so, eh, it's fine.
         let mut batch = WriteBatch::default();
         self.0
-            .update_did_id_value(&mut batch, did, |current_value|
-                Some(DidIdValue(current_value.did_id(), active)))
+            .update_did_id_value(&mut batch, did, |current_value| {
+                Some(DidIdValue(current_value.did_id(), active))
+            })
             .unwrap();
         self.0.db.write(batch).unwrap();
     }
@@ -413,6 +440,17 @@ impl StorageBackend for RocksStorage {
             let (key_bytes, fwd_links_bytes) = item.unwrap();
             let record_link_key: RecordLinkKey = _kr(&key_bytes).unwrap();
 
+            if record_link_key.0 .0 == 5502 {
+                eprintln!("a hey it's us: {did_id:?}: {record_link_key:?}");
+            }
+            if record_link_key.0 != did_id {
+                eprintln!("wtf, wrongly deleting something for {did_id:?}: {record_link_key:?}");
+                // break; // WOW HIIIII
+            }
+            // if record_link_key.did_id == 5502 {
+            //     eprintln!("heyooo", )
+            // }
+
             self.0.delete_record_link(&mut batch, &record_link_key); // _could_ use delete range here instead of individual deletes, but since we have to scan anyway it's not obvious if it's better
 
             let links: RecordLinkTargets = _vr(&fwd_links_bytes).unwrap();
@@ -425,7 +463,13 @@ impl StorageBackend for RocksStorage {
                         eprintln!("with links: {links:?}");
                         eprintln!("and linkers: {linkers:?}");
                         eprintln!("working on #{i}.#{j}: {:?} / {path:?} / {target_link_id:?}", record_link_key.collection());
+                        eprintln!("from record link key {record_link_key:?}");
                         eprintln!("but could not find this link :/");
+                        eprintln!("checking for did_id dups...");
+                        self.0.check_for_did_dups(&did_id);
+                        eprintln!("ok so what the heck. did_id again, for did {did:?}:");
+                        let did_id_again = self.0.get_did_id_value(did).unwrap().unwrap();
+                        eprintln!("did_id_value (again): {did_id_again:?}");
                         panic!("ohnoooo");
                     }
                     eprintln!("managed to delete while deleting {did:?}...");
@@ -461,7 +505,7 @@ struct RPath(String);
 struct RKey(String);
 
 // did ids
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 struct DidId(u64);
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -570,4 +614,49 @@ fn concat_did_ids(
         tls.0.extend(&new_linkers.0);
     }
     Some(_rv(&tls))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::ActionableEvent;
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn rocks_delete_iterator_regression() -> Result<()> {
+        let store = RocksStorage::new(tempdir()?)?;
+
+        // create a link from the deleter account
+        store.push(&ActionableEvent::CreateLinks {
+            record_id: RecordId {
+                did: "did:plc:will-shortly-delete".into(),
+                collection: "a.b.c".into(),
+                rkey: "asdf".into(),
+            },
+            links: vec![CollectedLink {
+                target: "example.com".into(),
+                path: ".uri".into(),
+            }],
+        })?;
+
+        // and a different link from a separate, new account (later in didid prefix iteration)
+        store.push(&ActionableEvent::CreateLinks {
+            record_id: RecordId {
+                did: "did:plc:someone-else".into(),
+                collection: "a.b.c".into(),
+                rkey: "asdf".into(),
+            },
+            links: vec![CollectedLink {
+                target: "another.example.com".into(),
+                path: ".uri".into(),
+            }],
+        })?;
+
+        // now delete the first account (this is where the buggy version explodes)
+        store.push(&ActionableEvent::DeleteAccount(
+            "did:plc:will-shortly-delete".into(),
+        ))?;
+
+        Ok(())
+    }
 }
