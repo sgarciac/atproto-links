@@ -455,7 +455,6 @@ impl StorageBackend for RocksStorage {
                         eprintln!("did_id_value (again): {did_id_again:?}");
                         panic!("ohnoooo");
                     }
-                    eprintln!("managed to delete while deleting {did:?}...");
                     Some(linkers)
                 }).unwrap();
             }
