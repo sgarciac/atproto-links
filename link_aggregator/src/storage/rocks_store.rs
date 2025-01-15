@@ -666,17 +666,17 @@ mod tests {
         let mut batch = WriteBatch::default();
 
         // not our prefix
-        batch.put_cf(&cf, _rk(&Key(0x01, 0x00)), &_rv(&Value(())));
-        batch.put_cf(&cf, _rk(&Key(0x01, 0xFF)), &_rv(&Value(())));
+        batch.put_cf(&cf, _rk(&Key(0x01, 0x00)), _rv(&Value(())));
+        batch.put_cf(&cf, _rk(&Key(0x01, 0xFF)), _rv(&Value(())));
 
         // our prefix!
         for i in 0..=0xFF {
-            batch.put_cf(&cf, _rk(&Key(0x02, i)), &_rv(&Value(())));
+            batch.put_cf(&cf, _rk(&Key(0x02, i)), _rv(&Value(())));
         }
 
         // not our prefix
-        batch.put_cf(&cf, _rk(&Key(0x03, 0x00)), &_rv(&Value(())));
-        batch.put_cf(&cf, _rk(&Key(0x03, 0xFF)), &_rv(&Value(())));
+        batch.put_cf(&cf, _rk(&Key(0x03, 0x00)), _rv(&Value(())));
+        batch.put_cf(&cf, _rk(&Key(0x03, 0xFF)), _rv(&Value(())));
 
         data.db.write(batch)?;
 
