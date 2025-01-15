@@ -4,7 +4,8 @@ use bincode::Options as BincodeOptions;
 use link_aggregator::{Did, RecordId};
 use links::CollectedLink;
 use rocksdb::{
-    ColumnFamilyDescriptor, DBWithThreadMode, MergeOperands, MultiThreaded, Options, WriteBatch,
+    ColumnFamilyDescriptor, DBWithThreadMode, Direction, IteratorMode, MergeOperands,
+    MultiThreaded, Options, WriteBatch,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -430,26 +431,24 @@ impl StorageBackend for RocksStorage {
         };
         self.0.delete_did_id_value(&mut batch, did);
 
-        let did_id_prefix = RecordLinkKeyDidIdPrefix(did_id);
+        let did_id_prefix_bytes = _rkp(&RecordLinkKeyDidIdPrefix(did_id));
         for (i, item) in self
             .0
             .db
-            .prefix_iterator_cf(&link_targets_cf, _rkp(&did_id_prefix))
+            .iterator_cf(
+                &link_targets_cf,
+                IteratorMode::From(&did_id_prefix_bytes, Direction::Forward),
+            )
             .enumerate()
         {
             let (key_bytes, fwd_links_bytes) = item.unwrap();
+            if !key_bytes.starts_with(&did_id_prefix_bytes) {
+                // you might think, like i did, that we could use rust-rocksdb "prefix iteration"
+                // and just iterate to the end. turns out that it really iterates "to the end"!
+                // it doesn't only iterate keys with the prefix!? so we have to check anyway.
+                break;
+            }
             let record_link_key: RecordLinkKey = _kr(&key_bytes).unwrap();
-
-            if record_link_key.0 .0 == 5502 {
-                eprintln!("a hey it's us: {did_id:?}: {record_link_key:?}");
-            }
-            if record_link_key.0 != did_id {
-                eprintln!("wtf, wrongly deleting something for {did_id:?}: {record_link_key:?}");
-                // break; // WOW HIIIII
-            }
-            // if record_link_key.did_id == 5502 {
-            //     eprintln!("heyooo", )
-            // }
 
             self.0.delete_record_link(&mut batch, &record_link_key); // _could_ use delete range here instead of individual deletes, but since we have to scan anyway it's not obvious if it's better
 
