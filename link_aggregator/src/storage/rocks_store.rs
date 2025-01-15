@@ -60,51 +60,11 @@ impl LinkStorage for RocksStorage {
     }
 }
 
-trait AsRocksKey {
-    fn as_rocks_key(&self) -> &impl Serialize
-    where
-        Self: Serialize + Sized,
-    {
-        self
-    }
-}
-trait AsRocksKeyPrefix {
-    fn as_rocks_key_prefix(&self) -> &impl Serialize
-    where
-        Self: Serialize + Sized,
-    {
-        self
-    }
-}
-trait AsRocksValue {
-    fn as_rocks_value(&self) -> &impl Serialize
-    where
-        Self: Serialize + Sized,
-    {
-        self
-    }
-}
-trait KeyFromRocks: for<'a> Deserialize<'a> {}
-trait ValueFromRocks: for<'a> Deserialize<'a> {}
-
-fn _bincode_opts() -> impl BincodeOptions {
-    bincode::DefaultOptions::new().with_big_endian() // happier db -- numeric prefixes in lsm
-}
-fn _rk(k: impl AsRocksKey + Serialize) -> Vec<u8> {
-    _bincode_opts().serialize(k.as_rocks_key()).unwrap()
-}
-fn _rkp(kp: impl AsRocksKeyPrefix + Serialize) -> Vec<u8> {
-    _bincode_opts().serialize(kp.as_rocks_key_prefix()).unwrap()
-}
-fn _rv(v: impl AsRocksValue + Serialize) -> Vec<u8> {
-    _bincode_opts().serialize(v.as_rocks_value()).unwrap()
-}
-fn _kr<T: KeyFromRocks>(bytes: &[u8]) -> Result<T> {
-    Ok(_bincode_opts().deserialize(bytes)?)
-}
-fn _vr<T: ValueFromRocks>(bytes: &[u8]) -> Result<T> {
-    Ok(_bincode_opts().deserialize(bytes)?)
-}
+trait AsRocksKey: Serialize {}
+trait AsRocksKeyPrefix<K: KeyFromRocks>: Serialize {}
+trait AsRocksValue: Serialize {}
+trait KeyFromRocks: for<'de> Deserialize<'de> {}
+trait ValueFromRocks: for<'de> Deserialize<'de> {}
 
 // did_id table
 impl AsRocksKey for &Did {}
@@ -126,10 +86,29 @@ impl ValueFromRocks for TargetLinkers {}
 
 // record_link_targets table
 impl AsRocksKey for &RecordLinkKey {}
-impl AsRocksKeyPrefix for &RecordLinkKeyDidIdPrefix {} // TODO
+impl AsRocksKeyPrefix<RecordLinkKey> for &RecordLinkKeyDidIdPrefix {}
 impl AsRocksValue for &RecordLinkTargets {}
 impl KeyFromRocks for RecordLinkKey {}
 impl ValueFromRocks for RecordLinkTargets {}
+
+fn _bincode_opts() -> impl BincodeOptions {
+    bincode::DefaultOptions::new().with_big_endian() // happier db -- numeric prefixes in lsm
+}
+fn _rk(k: impl AsRocksKey) -> Vec<u8> {
+    _bincode_opts().serialize(&k).unwrap()
+}
+fn _rkp<K: KeyFromRocks>(kp: impl AsRocksKeyPrefix<K>) -> Vec<u8> {
+    _bincode_opts().serialize(&kp).unwrap()
+}
+fn _rv(v: impl AsRocksValue) -> Vec<u8> {
+    _bincode_opts().serialize(&v).unwrap()
+}
+fn _kr<T: KeyFromRocks>(bytes: &[u8]) -> Result<T> {
+    Ok(_bincode_opts().deserialize(bytes)?)
+}
+fn _vr<T: ValueFromRocks>(bytes: &[u8]) -> Result<T> {
+    Ok(_bincode_opts().deserialize(bytes)?)
+}
 
 impl RocksStorageData {
     fn new(path: impl AsRef<Path>) -> Result<Self> {
@@ -152,18 +131,19 @@ impl RocksStorageData {
         Ok(Self { db: Arc::new(db) })
     }
 
-    fn prefix_iter_cf<CF, K, V>(
+    fn prefix_iter_cf<K, V, CF, P>(
         &self,
         cf: &CF,
-        pre: Vec<u8>,
-    ) -> impl Iterator<Item = (K, V)> + use<'_, CF, K, V>
+        pre: P,
+    ) -> impl Iterator<Item = (K, V)> + use<'_, K, V, CF, P>
     where
-        CF: AsColumnFamilyRef,
         K: KeyFromRocks,
         V: ValueFromRocks,
+        CF: AsColumnFamilyRef,
+        for<'a> &'a P: AsRocksKeyPrefix<K>,
     {
         let mut read_opts = ReadOptions::default();
-        read_opts.set_iterate_range(PrefixRange(pre)); // inclusive bounds?
+        read_opts.set_iterate_range(PrefixRange(_rkp(&pre))); // TODO verify: inclusive bounds?
         self.db
             .iterator_cf_opt(cf, read_opts, IteratorMode::Start)
             .map_while(Result::ok)
@@ -314,7 +294,7 @@ impl RocksStorageData {
         did_id: &DidId,
     ) -> impl Iterator<Item = (RecordLinkKey, RecordLinkTargets)> + use<'_> {
         let cf = self.db.cf_handle(LINK_TARGETS_CF).unwrap();
-        self.prefix_iter_cf(&cf, _rkp(&RecordLinkKeyDidIdPrefix(*did_id)))
+        self.prefix_iter_cf(&cf, RecordLinkKeyDidIdPrefix(*did_id))
     }
 
     fn check_for_did_dups(&self, problem_did_id: &DidId) {
@@ -662,4 +642,6 @@ mod tests {
 
         Ok(())
     }
+    // TODO: test prefix iteration explicitly
+    // TODO: add tests for key prefixes actually prefixing (bincode encoding _should_...)
 }
