@@ -1,10 +1,10 @@
 mod consumer;
-mod jetstream;
 mod server;
 mod storage;
 
 use anyhow::Result;
 use clap::{Parser, ValueEnum};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::thread;
@@ -24,6 +24,9 @@ struct Args {
     #[arg(short, long)]
     #[clap(value_enum, default_value_t = StorageBackend::Memory)]
     backend: StorageBackend,
+    /// Saved jsonl from jetstream to use instead of a live subscription
+    #[arg(short, long)]
+    fixture: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, ValueEnum)]
@@ -37,19 +40,24 @@ fn main() -> Result<()> {
 
     println!("starting with storage backend: {:?}...", args.backend);
 
+    let fixture = args.fixture;
+    if let Some(ref p) = fixture {
+        println!("using fixture at {p:?}...");
+    }
+
     match args.backend {
-        StorageBackend::Memory => run(MemStorage::new()),
-        StorageBackend::Rocks => run(RocksStorage::new("rocks.test")?),
+        StorageBackend::Memory => run(MemStorage::new(), fixture),
+        StorageBackend::Rocks => run(RocksStorage::new("rocks.test")?, fixture),
     }
 }
 
-fn run(storage: impl LinkStorage) -> Result<()> {
+fn run(storage: impl LinkStorage, fixture: Option<PathBuf>) -> Result<()> {
     let qsize = Arc::new(AtomicU32::new(0));
 
     let consumer = thread::spawn({
         let storage = storage.clone();
         let qsize = qsize.clone();
-        move || consume(storage, qsize)
+        move || consume(storage, qsize, fixture)
     });
 
     let (stop_server, shutdown) = oneshot::channel::<()>();

@@ -1,7 +1,12 @@
-use crate::jetstream::consume_jetstream;
+mod jetstream;
+mod jsonl_file;
+
 use crate::storage::LinkStorage;
+use jetstream::consume_jetstream;
+use jsonl_file::consume_jsonl_file;
 use link_aggregator::{ActionableEvent, RecordId};
 use links::collect_links;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::thread;
@@ -79,11 +84,19 @@ pub fn get_actionable(event: &JsonValue) -> Option<ActionableEvent> {
     }
 }
 
-pub fn consume(store: impl LinkStorage, qsize: Arc<AtomicU32>) {
-    let (sender, receiver) = flume::unbounded(); // eek
-    let jetstream_handle = thread::spawn(move || consume_jetstream(sender));
+pub fn consume(store: impl LinkStorage, qsize: Arc<AtomicU32>, fixture: Option<PathBuf>) {
+    let (receiver, consumer_handle) = if let Some(f) = fixture {
+        let (sender, receiver) = flume::bounded(21);
+        (
+            receiver,
+            thread::spawn(move || consume_jsonl_file(f, sender)),
+        )
+    } else {
+        let (sender, receiver) = flume::unbounded(); // eek
+        (receiver, thread::spawn(move || consume_jetstream(sender)))
+    };
     persist_events(store, receiver, qsize);
-    jetstream_handle.join().unwrap();
+    consumer_handle.join().unwrap().unwrap()
 }
 
 fn persist_events(

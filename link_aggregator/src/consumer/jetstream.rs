@@ -5,7 +5,7 @@ use tinyjson::JsonValue;
 use tungstenite::{Error as TError, Message};
 use zstd::dict::DecoderDictionary;
 
-const JETSTREAM_ZSTD_DICTIONARY: &[u8] = include_bytes!("../zstd/dictionary");
+const JETSTREAM_ZSTD_DICTIONARY: &[u8] = include_bytes!("../../zstd/dictionary");
 
 const WS_URLS: [&str; 4] = [
     "wss://jetstream2.us-east.bsky.network/subscribe?compress=true", //&cursor=0",
@@ -14,7 +14,7 @@ const WS_URLS: [&str; 4] = [
     "wss://jetstream2.us-west.bsky.network/subscribe?compress=true", //&cursor=0",
 ];
 
-pub fn consume_jetstream(sender: flume::Sender<JsonValue>) {
+pub fn consume_jetstream(sender: flume::Sender<JsonValue>) -> anyhow::Result<()> {
     let dict = DecoderDictionary::copy(JETSTREAM_ZSTD_DICTIONARY);
     let mut connect_retries = 0;
     'outer: loop {
@@ -121,4 +121,5 @@ pub fn consume_jetstream(sender: flume::Sender<JsonValue>) {
             }
         }
     }
+    Err(anyhow::anyhow!("broke out of jetstream loop"))
 }
