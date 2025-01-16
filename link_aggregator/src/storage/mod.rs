@@ -5,7 +5,9 @@ use links::CollectedLink;
 pub mod mem_store;
 pub use mem_store::MemStorage;
 
+#[cfg(feature = "rocks")]
 pub mod rocks_store;
+#[cfg(feature = "rocks")]
 pub use rocks_store::RocksStorage;
 
 /// consumer-side storage api, independent of actual storage backend
@@ -49,21 +51,21 @@ pub trait StorageBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::tempdir;
 
     macro_rules! test_each_storage {
         ($test_name:ident, |$storage_label:ident| $test_code:block) => {
             #[test]
             fn $test_name() -> Result<()> {
-                println!("=> testing with memstorage backend");
                 {
+                    println!("=> testing with memstorage backend");
                     let $storage_label = MemStorage::new();
                     $test_code
                 }
 
-                println!("=> testing with memstorage backend");
+                #[cfg(feature = "rocks")]
                 {
-                    let rocks_db_path = tempdir()?;
+                    println!("=> testing with rocksdb backend");
+                    let rocks_db_path = tempfile::tempdir()?;
                     let $storage_label = RocksStorage::new(rocks_db_path.path())?;
                     $test_code
                 }

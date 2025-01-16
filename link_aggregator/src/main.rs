@@ -14,7 +14,9 @@ use tokio::sync::oneshot;
 
 use consumer::consume;
 use server::serve;
-use storage::{LinkStorage, MemStorage, RocksStorage};
+#[cfg(feature = "rocks")]
+use storage::RocksStorage;
+use storage::{LinkStorage, MemStorage};
 
 /// Aggregate links in the at-mosphere
 #[derive(Parser, Debug)]
@@ -32,6 +34,7 @@ struct Args {
 #[derive(Debug, Clone, ValueEnum)]
 enum StorageBackend {
     Memory,
+    #[cfg(feature = "rocks")]
     Rocks,
 }
 
@@ -47,6 +50,7 @@ fn main() -> Result<()> {
 
     match args.backend {
         StorageBackend::Memory => run(MemStorage::new(), fixture),
+        #[cfg(feature = "rocks")]
         StorageBackend::Rocks => run(RocksStorage::new("rocks.test")?, fixture),
     }
 }
