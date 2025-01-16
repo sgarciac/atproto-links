@@ -16,7 +16,7 @@ use consumer::consume;
 use server::serve;
 #[cfg(feature = "rocks")]
 use storage::RocksStorage;
-use storage::{LinkStorage, MemStorage};
+use storage::{LinkReader, LinkStorage, MemStorage};
 
 /// Aggregate links in the at-mosphere
 #[derive(Parser, Debug)]
@@ -55,37 +55,36 @@ fn main() -> Result<()> {
     }
 }
 
-fn run(storage: impl LinkStorage, fixture: Option<PathBuf>) -> Result<()> {
+fn run(mut storage: impl LinkStorage, fixture: Option<PathBuf>) -> Result<()> {
     let qsize = Arc::new(AtomicU32::new(0));
 
-    let consumer = thread::spawn({
-        let storage = storage.clone();
-        let qsize = qsize.clone();
-        move || consume(storage, qsize, fixture)
-    });
+    let read_storage = storage.to_readable();
+    let read2 = storage.to_readable();
 
-    let (stop_server, shutdown) = oneshot::channel::<()>();
-    thread::spawn({
-        let storage = storage.clone();
-        move || {
+    thread::scope(|s| {
+        let consumer = s.spawn({
+            let qsize = qsize.clone();
+            move || consume(storage, qsize, fixture)
+        });
+
+        let (stop_server, shutdown) = oneshot::channel::<()>();
+        s.spawn(move || {
             runtime::Builder::new_multi_thread()
                 .worker_threads(1)
                 .max_blocking_threads(2)
                 .enable_all()
                 .build()?
-                .block_on(serve(storage.clone(), "127.0.0.1:6789", shutdown))
-        }
-    });
+                .block_on(serve(read_storage, "127.0.0.1:6789", shutdown))
+        });
 
-    let mon = thread::spawn(move || {
-        while !consumer.is_finished() {
-            storage.summarize(qsize.load(Ordering::Relaxed));
-            thread::sleep(time::Duration::from_secs(3));
-        }
-        let _ = stop_server.send(());
+        s.spawn(move || {
+            while !consumer.is_finished() {
+                read2.summarize(qsize.load(Ordering::Relaxed));
+                thread::sleep(time::Duration::from_secs(3));
+            }
+            let _ = stop_server.send(());
+        });
     });
-
-    let _ = mon.join();
     println!("byeeee");
 
     Ok(())
@@ -94,11 +93,11 @@ fn run(storage: impl LinkStorage, fixture: Option<PathBuf>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use crate::consumer::get_actionable;
-    use crate::storage::{LinkStorage, MemStorage};
+    use crate::storage::{LinkReader, LinkStorage, MemStorage};
 
     #[test]
     fn test_create_like_integrated() {
-        let storage = MemStorage::new();
+        let mut storage = MemStorage::new();
 
         let rec = r#"{
             "did":"did:plc:icprmty6ticzracr5urz4uum",

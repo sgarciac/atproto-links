@@ -10,9 +10,8 @@ pub mod rocks_store;
 #[cfg(feature = "rocks")]
 pub use rocks_store::RocksStorage;
 
-/// consumer-side storage api, independent of actual storage backend
-pub trait LinkStorage: StorageBackend + Clone + Send + Sync + 'static {
-    fn push(&self, event: &ActionableEvent) -> Result<()> {
+pub trait LinkStorage: Send + Sync {
+    fn push(&mut self, event: &ActionableEvent) -> Result<()> {
         match event {
             ActionableEvent::CreateLinks { record_id, links } => self.add_links(record_id, links),
             ActionableEvent::UpdateLinks {
@@ -26,26 +25,27 @@ pub trait LinkStorage: StorageBackend + Clone + Send + Sync + 'static {
         }
         Ok(())
     }
-    fn get_count(&self, target: &str, collection: &str, path: &str) -> Result<u64> {
-        self.count(target, collection, path)
-    }
-    fn summarize(&self, qsize: u32) {
-        println!("queue: {qsize}");
-    }
-}
 
-/// persistent data stores
-pub trait StorageBackend {
-    fn add_links(&self, record_id: &RecordId, links: &[CollectedLink]);
-    fn remove_links(&self, record_id: &RecordId);
-    fn update_links(&self, record_id: &RecordId, new_links: &[CollectedLink]) {
+    fn add_links(&mut self, record_id: &RecordId, links: &[CollectedLink]);
+    fn remove_links(&mut self, record_id: &RecordId);
+    fn update_links(&mut self, record_id: &RecordId, new_links: &[CollectedLink]) {
         self.remove_links(record_id);
         self.add_links(record_id, new_links);
     }
-    fn set_account(&self, did: &Did, active: bool);
-    fn delete_account(&self, did: &Did);
+    fn set_account(&mut self, did: &Did, active: bool);
+    fn delete_account(&mut self, did: &Did);
 
-    fn count(&self, target: &str, collection: &str, path: &str) -> Result<u64>;
+    // readers are  off from the writer instance
+    fn to_readable(&mut self) -> impl LinkReader;
+}
+
+pub trait LinkReader: Clone + Send + Sync + 'static {
+    fn get_count(&self, target: &str, collection: &str, path: &str) -> Result<u64>;
+
+    // todo: remove it
+    fn summarize(&self, qsize: u32) {
+        println!("queue: {qsize}");
+    }
 }
 
 #[cfg(test)]
@@ -58,7 +58,8 @@ mod tests {
             fn $test_name() -> Result<()> {
                 {
                     println!("=> testing with memstorage backend");
-                    let $storage_label = MemStorage::new();
+                    #[allow(unused_mut)]
+                    let mut $storage_label = MemStorage::new();
                     $test_code
                 }
 
@@ -66,7 +67,8 @@ mod tests {
                 {
                     println!("=> testing with rocksdb backend");
                     let rocks_db_path = tempfile::tempdir()?;
-                    let $storage_label = RocksStorage::new(rocks_db_path.path())?;
+                    #[allow(unused_mut)]
+                    let mut $storage_label = RocksStorage::new(rocks_db_path.path())?;
                     $test_code
                 }
 

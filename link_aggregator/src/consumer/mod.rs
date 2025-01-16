@@ -100,7 +100,7 @@ pub fn consume(store: impl LinkStorage, qsize: Arc<AtomicU32>, fixture: Option<P
 }
 
 fn persist_events(
-    store: impl LinkStorage,
+    mut store: impl LinkStorage,
     receiver: flume::Receiver<JsonValue>,
     qsize: Arc<AtomicU32>,
 ) {
