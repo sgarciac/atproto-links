@@ -1,6 +1,4 @@
-use metrics::{
-    counter, describe_counter, describe_gauge, describe_histogram, gauge, histogram, Unit,
-};
+use metrics::{counter, describe_counter, describe_histogram, histogram, Unit};
 use std::io::{Cursor, Read};
 use std::thread;
 use std::time;
@@ -53,7 +51,7 @@ pub fn consume_jetstream(sender: flume::Sender<JsonValue>) -> anyhow::Result<()>
         Unit::Count,
         "valid json messages received"
     );
-    describe_gauge!(
+    describe_histogram!(
         "jetstream.events.queued",
         Unit::Count,
         "event messages waiting in queue"
@@ -208,7 +206,7 @@ pub fn consume_jetstream(sender: flume::Sender<JsonValue>) -> anyhow::Result<()>
                     "jetstream: failed to send on channel, dropping update! (FIXME / HANDLEME)"
                 );
             }
-            gauge!("jetstream.events.queued", "url" => stream).set(sender.len() as f64);
+            histogram!("jetstream.events.queued", "url" => stream).record(sender.len() as f64);
         }
     }
     Err(anyhow::anyhow!("broke out of jetstream loop"))
