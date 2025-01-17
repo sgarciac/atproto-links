@@ -200,7 +200,6 @@ pub fn consume_jetstream(sender: flume::Sender<JsonValue>) -> anyhow::Result<()>
 
             if let Err(flume::SendError(_rejected)) = sender.send(v) {
                 counter!("jetstream.events", "url" => stream).increment(1);
-                gauge!("jetstream.events.queued", "url" => stream).set(sender.len() as f64);
                 if sender.is_disconnected() {
                     eprintln!("jetstream: send channel disconnected -- nothing to do, bye.");
                     break 'outer;
@@ -209,6 +208,7 @@ pub fn consume_jetstream(sender: flume::Sender<JsonValue>) -> anyhow::Result<()>
                     "jetstream: failed to send on channel, dropping update! (FIXME / HANDLEME)"
                 );
             }
+            gauge!("jetstream.events.queued", "url" => stream).set(sender.len() as f64);
         }
     }
     Err(anyhow::anyhow!("broke out of jetstream loop"))

@@ -4,6 +4,7 @@ mod storage;
 
 use anyhow::Result;
 use clap::{Parser, ValueEnum};
+use metrics_exporter_prometheus::PrometheusBuilder;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
@@ -75,7 +76,10 @@ fn run(mut storage: impl LinkStorage, fixture: Option<PathBuf>) -> Result<()> {
                     .max_blocking_threads(2)
                     .enable_all()
                     .build()?
-                    .block_on(serve(readable, "127.0.0.1:6789", shutdown))
+                    .block_on(async {
+                        install_metrics_server()?;
+                        serve(readable, "127.0.0.1:6789", shutdown).await
+                    })
             }
         });
 
@@ -89,6 +93,21 @@ fn run(mut storage: impl LinkStorage, fixture: Option<PathBuf>) -> Result<()> {
     });
     println!("byeeee");
 
+    Ok(())
+}
+
+fn install_metrics_server() -> Result<()> {
+    println!("installing metrics server...");
+    let host = [0, 0, 0, 0];
+    let port = 8765;
+    PrometheusBuilder::new()
+        .set_enable_unit_suffix(true)
+        .with_http_listener((host, port))
+        .install()?;
+    println!(
+        "metrics server installed! listening on http://{}.{}.{}.{}:{port}",
+        host[0], host[1], host[2], host[3]
+    );
     Ok(())
 }
 
