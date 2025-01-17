@@ -20,9 +20,6 @@ static TARGET_IDS_CF: &str = "target_ids";
 static TARGET_LINKERS_CF: &str = "target_links";
 static LINK_TARGETS_CF: &str = "link_targets";
 
-static DID_ID_SEQ: AtomicU64 = AtomicU64::new(1); // todo
-static TARGET_ID_SEQ: AtomicU64 = AtomicU64::new(1); // todo
-
 // todo: actually understand and set these options probably better
 fn rocks_opts_base() -> Options {
     let mut opts = Options::default();
@@ -41,6 +38,8 @@ fn get_db_opts() -> Options {
 #[derive(Debug, Clone)]
 pub struct RocksStorage {
     db: Arc<DBWithThreadMode<MultiThreaded>>, // TODO: mov seqs here (concat merge op will be fun)
+    did_id_seq: Arc<AtomicU64>,
+    target_id_seq: Arc<AtomicU64>,
 }
 
 impl RocksStorage {
@@ -54,14 +53,21 @@ impl RocksStorage {
                 // the reverse links:
                 ColumnFamilyDescriptor::new(TARGET_LINKERS_CF, {
                     let mut opts = rocks_opts_base();
-                    opts.set_merge_operator_associative("merge_op_extend_did_ids", merge_op_extend_did_ids);
+                    opts.set_merge_operator_associative(
+                        "merge_op_extend_did_ids",
+                        merge_op_extend_did_ids,
+                    );
                     opts
                 }),
                 // unfortunately we also need forward links to handle deletes
                 ColumnFamilyDescriptor::new(LINK_TARGETS_CF, rocks_opts_base()),
             ],
         )?;
-        Ok(Self { db: Arc::new(db) })
+        Ok(Self {
+            db: Arc::new(db),
+            did_id_seq: Arc::new(AtomicU64::new(1)), // TODO: actually init
+            target_id_seq: Arc::new(AtomicU64::new(1)),
+        })
     }
     fn prefix_iter_cf<K, V, CF, P>(
         &self,
@@ -86,7 +92,7 @@ impl RocksStorage {
         let cf = self.db.cf_handle(DID_IDS_CF).unwrap();
         if let Some(bytes) = self.db.get_cf(&cf, _rk(did))? {
             let did_id_value: DidIdValue = _vr(&bytes)?;
-            let current_seq = DID_ID_SEQ.load(Ordering::Relaxed);
+            let current_seq = self.did_id_seq.load(Ordering::Relaxed);
             let DidIdValue(DidId(n), _) = did_id_value;
             if n > (current_seq + 10) {
                 panic!("found did id greater than current seq: {current_seq}");
@@ -99,7 +105,7 @@ impl RocksStorage {
     fn get_or_create_did_id_value(&self, batch: &mut WriteBatch, did: &Did) -> Result<DidIdValue> {
         let cf = self.db.cf_handle(DID_IDS_CF).unwrap();
         Ok(self.get_did_id_value(did)?.unwrap_or_else(|| {
-            let did_id = DidId(DID_ID_SEQ.fetch_add(1, Ordering::SeqCst));
+            let did_id = DidId(self.did_id_seq.fetch_add(1, Ordering::SeqCst));
             let did_id_value = DidIdValue(did_id, true);
             batch.put_cf(&cf, _rk(did), _rv(&did_id_value));
             // todo: also persist seq
@@ -129,7 +135,7 @@ impl RocksStorage {
         let cf = self.db.cf_handle(TARGET_IDS_CF).unwrap();
         if let Some(bytes) = self.db.get_cf(&cf, _rk(target_key))? {
             let target_id: TargetId = _vr(&bytes)?;
-            let current_seq = TARGET_ID_SEQ.load(Ordering::Relaxed);
+            let current_seq = self.target_id_seq.load(Ordering::Relaxed);
             if target_id.0 > (current_seq + 10) {
                 panic!("found target id greater than current seq: {current_seq}");
             }
@@ -145,7 +151,7 @@ impl RocksStorage {
     ) -> Result<TargetId> {
         let cf = self.db.cf_handle(TARGET_IDS_CF).unwrap();
         Ok(self.get_target_id(target_key)?.unwrap_or_else(|| {
-            let target_id = TargetId(TARGET_ID_SEQ.fetch_add(1, Ordering::SeqCst));
+            let target_id = TargetId(self.target_id_seq.fetch_add(1, Ordering::SeqCst));
             batch.put_cf(&cf, _rk(target_key), _rv(&target_id));
             // todo: also persist seq
             target_id
@@ -256,7 +262,6 @@ impl RocksStorage {
     }
 }
 
-
 fn merge_op_extend_did_ids(
     _new_key: &[u8],
     existing: Option<&[u8]>,
@@ -266,32 +271,32 @@ fn merge_op_extend_did_ids(
         .map(|existing_bytes| _vr(existing_bytes).unwrap())
         .unwrap_or_default();
 
-    let current_seq = DID_ID_SEQ.load(Ordering::Relaxed);
+    // let current_seq = DID_ID_SEQ.load(Ordering::Relaxed);
 
-    for did_id in &tls.0 {
-        let DidId(ref n) = did_id;
-        if *n > current_seq {
-            eprintln!("problem with merge_op_extend_did_ids. existing: {tls:?}");
-            eprintln!(
-                "an entry has did_id={n}, which is higher than the current sequence: {current_seq}"
-            );
-            panic!("got a did to merge with higher-than-current did_id sequence");
-        }
-    }
+    // for did_id in &tls.0 {
+    //     let DidId(ref n) = did_id;
+    //     if *n > current_seq {
+    //         eprintln!("problem with merge_op_extend_did_ids. existing: {tls:?}");
+    //         eprintln!(
+    //             "an entry has did_id={n}, which is higher than the current sequence: {current_seq}"
+    //         );
+    //         panic!("got a did to merge with higher-than-current did_id sequence");
+    //     }
+    // }
 
     for op in operands {
         let new_linkers: TargetLinkers = _vr(op).unwrap();
-        for DidId(ref n) in &new_linkers.0 {
-            if *n > current_seq {
-                let orig: Option<TargetLinkers> =
-                    existing.map(|existing_bytes| _vr(existing_bytes).unwrap());
-                eprintln!(
-                    "problem with merge_op_extend_did_ids. existing: {orig:?}\nnew linkers: {new_linkers:?}"
-                );
-                eprintln!("the current sequence is {current_seq}");
-                panic!("did_id a did to a number higher than the current sequence");
-            }
-        }
+        // for DidId(ref n) in &new_linkers.0 {
+        //     if *n > current_seq {
+        //         let orig: Option<TargetLinkers> =
+        //             existing.map(|existing_bytes| _vr(existing_bytes).unwrap());
+        //         eprintln!(
+        //             "problem with merge_op_extend_did_ids. existing: {orig:?}\nnew linkers: {new_linkers:?}"
+        //         );
+        //         eprintln!("the current sequence is {current_seq}");
+        //         panic!("did_id a did to a number higher than the current sequence");
+        //     }
+        // }
         tls.0.extend(&new_linkers.0);
     }
     Some(_rv(&tls))
@@ -445,8 +450,8 @@ impl LinkStorage for RocksStorage {
 
 impl LinkReader for RocksStorage {
     fn summarize(&self, qsize: u32) {
-        let did_seq = DID_ID_SEQ.load(Ordering::Relaxed);
-        let target_seq = TARGET_ID_SEQ.load(Ordering::Relaxed);
+        let did_seq = self.did_id_seq.load(Ordering::Relaxed);
+        let target_seq = self.target_id_seq.load(Ordering::Relaxed);
         println!("queue: {qsize}. did seq: {did_seq}, target seq: {target_seq}.");
     }
     fn get_count(&self, target: &str, collection: &str, path: &str) -> Result<u64> {
