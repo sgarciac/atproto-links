@@ -69,7 +69,7 @@ where
         if db.cf_handle(&self.name).is_none() {
             bail!("failed to get cf handle from db -- was the db open with our .cf_descriptor()?");
         }
-        if let Some(seq_bytes) = db.get(self.seq_key())? {
+        let priv_id_seq = if let Some(seq_bytes) = db.get(self.seq_key())? {
             if seq_bytes.len() != 8 {
                 bail!(
                     "reading bytes for u64 id seq {:?}: found the wrong number of bytes",
@@ -79,12 +79,16 @@ where
             let mut buf: [u8; 8] = [0; 8];
             seq_bytes.as_slice().read_exact(&mut buf)?;
             let last_seq = u64::from_le_bytes(buf);
-            self.id_seq.store(last_seq + 1, Ordering::SeqCst);
+            last_seq + 1
         } else {
-            self.id_seq.store(1, Ordering::SeqCst);
-        }
+            1
+        };
+        self.id_seq.store(priv_id_seq, Ordering::SeqCst);
         self.did_init = true;
-        Ok(IdTable { base: self })
+        Ok(IdTable {
+            base: self,
+            priv_id_seq,
+        })
     }
     fn seq_key(&self) -> Vec<u8> {
         let mut k = b"__id_seq_key_plz_be_unique:".to_vec();
@@ -111,6 +115,7 @@ where
     for<'a> &'a Orig: AsRocksKey,
 {
     base: IdTableBase<Orig, IdVal>,
+    priv_id_seq: u64,
 }
 impl<Orig: Clone, IdVal: IdTableValue> IdTable<Orig, IdVal>
 where
@@ -147,9 +152,15 @@ where
     ) -> Result<IdVal> {
         let cf = db.cf_handle(&self.base.name).unwrap();
         Ok(self.get_id_val(db, orig)?.unwrap_or_else(|| {
-            let id = self.base.id_seq.fetch_add(1, Ordering::SeqCst);
-            let id_value = IdVal::new(id);
-            batch.put(self.base.seq_key(), id.to_le_bytes());
+            let prev_priv_seq = self.priv_id_seq;
+            self.priv_id_seq += 1;
+            let prev_public_seq = self.base.id_seq.swap(self.priv_id_seq, Ordering::SeqCst);
+            assert_eq!(
+                prev_public_seq, prev_priv_seq,
+                "public seq may have been modified??"
+            );
+            let id_value = IdVal::new(self.priv_id_seq);
+            batch.put(self.base.seq_key(), self.priv_id_seq.to_le_bytes());
             batch.put_cf(&cf, _rk(orig), _rv(&id_value));
             id_value
         }))
