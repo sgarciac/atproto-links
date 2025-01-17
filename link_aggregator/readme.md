@@ -7,6 +7,7 @@ major todos
 - [x] handle account active status
 - [x] handle account deletion
 - [x] move ownership of canonical seq to an owned non-atomic
+- [x] custom path for db storage
 - [ ] handle account privacy setting? (is this a bsky nsid config and should that matter?)
 - [x] api server to look up backlink count
 - [ ] other useful endpoints for the api server
@@ -21,7 +22,7 @@ major todos
   - [ ] add a detection for no new links coming in after some period
 - [ ] handle jetstream restart: don't miss events
   - [ ] especially: figure out what the risk is to rotating to another jetstream server in terms of gap/overlap from a different jetstream instance's cursor
-- [ ] metrics!
+- [x] metrics!
 - [ ] make all storage apis return Result
 - [ ] handle all the unwraps
 - [ ] deadletter queue of some kind for failed db writes

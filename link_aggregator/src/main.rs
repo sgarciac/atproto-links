@@ -23,6 +23,10 @@ use storage::{LinkReader, LinkStorage, MemStorage};
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
+    // TODO: make this part of rocks' own sub-config?
+    /// Where to store data on disk, for backends that use disk storage
+    #[arg(short, long)]
+    data: Option<PathBuf>,
     /// Storage backend to use
     #[arg(short, long)]
     #[clap(value_enum, default_value_t = StorageBackend::Memory)]
@@ -52,7 +56,10 @@ fn main() -> Result<()> {
     match args.backend {
         StorageBackend::Memory => run(MemStorage::new(), fixture),
         #[cfg(feature = "rocks")]
-        StorageBackend::Rocks => run(RocksStorage::new("rocks.test")?, fixture),
+        StorageBackend::Rocks => {
+            let storage_dir = args.data.unwrap_or("rocks.test".into());
+            run(RocksStorage::new(storage_dir)?, fixture)
+        }
     }
 }
 
