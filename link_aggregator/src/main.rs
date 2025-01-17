@@ -14,7 +14,9 @@ use tokio::sync::oneshot;
 
 use consumer::consume;
 use server::serve;
-use storage::{LinkStorage, MemStorage, RocksStorage};
+#[cfg(feature = "rocks")]
+use storage::RocksStorage;
+use storage::{LinkReader, LinkStorage, MemStorage};
 
 /// Aggregate links in the at-mosphere
 #[derive(Parser, Debug)]
@@ -32,6 +34,7 @@ struct Args {
 #[derive(Debug, Clone, ValueEnum)]
 enum StorageBackend {
     Memory,
+    #[cfg(feature = "rocks")]
     Rocks,
 }
 
@@ -47,41 +50,43 @@ fn main() -> Result<()> {
 
     match args.backend {
         StorageBackend::Memory => run(MemStorage::new(), fixture),
+        #[cfg(feature = "rocks")]
         StorageBackend::Rocks => run(RocksStorage::new("rocks.test")?, fixture),
     }
 }
 
-fn run(storage: impl LinkStorage, fixture: Option<PathBuf>) -> Result<()> {
+fn run(mut storage: impl LinkStorage, fixture: Option<PathBuf>) -> Result<()> {
     let qsize = Arc::new(AtomicU32::new(0));
 
-    let consumer = thread::spawn({
-        let storage = storage.clone();
-        let qsize = qsize.clone();
-        move || consume(storage, qsize, fixture)
-    });
+    thread::scope(|s| {
+        let readable = storage.to_readable();
 
-    let (stop_server, shutdown) = oneshot::channel::<()>();
-    thread::spawn({
-        let storage = storage.clone();
-        move || {
-            runtime::Builder::new_multi_thread()
-                .worker_threads(1)
-                .max_blocking_threads(2)
-                .enable_all()
-                .build()?
-                .block_on(serve(storage.clone(), "127.0.0.1:6789", shutdown))
-        }
-    });
+        let consumer = s.spawn({
+            let qsize = qsize.clone();
+            move || consume(storage, qsize, fixture)
+        });
 
-    let mon = thread::spawn(move || {
-        while !consumer.is_finished() {
-            storage.summarize(qsize.load(Ordering::Relaxed));
-            thread::sleep(time::Duration::from_secs(3));
-        }
-        let _ = stop_server.send(());
-    });
+        let (stop_server, shutdown) = oneshot::channel::<()>();
+        s.spawn({
+            let readable = readable.clone();
+            || {
+                runtime::Builder::new_multi_thread()
+                    .worker_threads(1)
+                    .max_blocking_threads(2)
+                    .enable_all()
+                    .build()?
+                    .block_on(serve(readable, "127.0.0.1:6789", shutdown))
+            }
+        });
 
-    let _ = mon.join();
+        s.spawn(move || {
+            while !consumer.is_finished() {
+                readable.summarize(qsize.load(Ordering::Relaxed));
+                thread::sleep(time::Duration::from_secs(3));
+            }
+            let _ = stop_server.send(());
+        });
+    });
     println!("byeeee");
 
     Ok(())
@@ -90,11 +95,11 @@ fn run(storage: impl LinkStorage, fixture: Option<PathBuf>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use crate::consumer::get_actionable;
-    use crate::storage::{LinkStorage, MemStorage};
+    use crate::storage::{LinkReader, LinkStorage, MemStorage};
 
     #[test]
     fn test_create_like_integrated() {
-        let storage = MemStorage::new();
+        let mut storage = MemStorage::new();
 
         let rec = r#"{
             "did":"did:plc:icprmty6ticzracr5urz4uum",
