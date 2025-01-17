@@ -44,6 +44,8 @@ pub struct RocksStorage {
 
 impl RocksStorage {
     pub fn new(path: impl AsRef<Path>) -> Result<Self> {
+        let did_id_seq = Arc::new(AtomicU64::new(1)); // TODO: actually init
+        let target_id_seq = Arc::new(AtomicU64::new(1)); // TODO: actually init
         let db = DBWithThreadMode::open_cf_descriptors(
             &get_db_opts(),
             path,
@@ -52,10 +54,11 @@ impl RocksStorage {
                 ColumnFamilyDescriptor::new(TARGET_IDS_CF, rocks_opts_base()),
                 // the reverse links:
                 ColumnFamilyDescriptor::new(TARGET_LINKERS_CF, {
+                    let did_id_seq = did_id_seq.clone();
                     let mut opts = rocks_opts_base();
                     opts.set_merge_operator_associative(
                         "merge_op_extend_did_ids",
-                        merge_op_extend_did_ids,
+                        move |k, ex, ops| Self::merge_op_extend_did_ids(k, ex, ops, &did_id_seq),
                     );
                     opts
                 }),
@@ -63,12 +66,50 @@ impl RocksStorage {
                 ColumnFamilyDescriptor::new(LINK_TARGETS_CF, rocks_opts_base()),
             ],
         )?;
-        Ok(Self {
-            db: Arc::new(db),
-            did_id_seq: Arc::new(AtomicU64::new(1)), // TODO: actually init
-            target_id_seq: Arc::new(AtomicU64::new(1)),
-        })
+        Ok(Self { db: Arc::new(db), did_id_seq, target_id_seq })
     }
+
+    fn merge_op_extend_did_ids(
+        _new_key: &[u8],
+        existing: Option<&[u8]>,
+        operands: &MergeOperands,
+        current_did_id_seq: &AtomicU64,
+    ) -> Option<Vec<u8>> {
+        let mut tls: TargetLinkers = existing
+            .map(|existing_bytes| _vr(existing_bytes).unwrap())
+            .unwrap_or_default();
+
+        let current_seq = current_did_id_seq.load(Ordering::Relaxed);
+
+        for did_id in &tls.0 {
+            let DidId(ref n) = did_id;
+            if *n > current_seq {
+                eprintln!("problem with merge_op_extend_did_ids. existing: {tls:?}");
+                eprintln!(
+                    "an entry has did_id={n}, which is higher than the current sequence: {current_seq}"
+                );
+                panic!("got a did to merge with higher-than-current did_id sequence");
+            }
+        }
+
+        for op in operands {
+            let new_linkers: TargetLinkers = _vr(op).unwrap();
+            for DidId(ref n) in &new_linkers.0 {
+                if *n > current_seq {
+                    let orig: Option<TargetLinkers> =
+                        existing.map(|existing_bytes| _vr(existing_bytes).unwrap());
+                    eprintln!(
+                        "problem with merge_op_extend_did_ids. existing: {orig:?}\nnew linkers: {new_linkers:?}"
+                    );
+                    eprintln!("the current sequence is {current_seq}");
+                    panic!("did_id a did to a number higher than the current sequence");
+                }
+            }
+            tls.0.extend(&new_linkers.0);
+        }
+        Some(_rv(&tls))
+    }
+
     fn prefix_iter_cf<K, V, CF, P>(
         &self,
         cf: &CF,
@@ -260,46 +301,6 @@ impl RocksStorage {
         }
         eprintln!("done checking.");
     }
-}
-
-fn merge_op_extend_did_ids(
-    _new_key: &[u8],
-    existing: Option<&[u8]>,
-    operands: &MergeOperands,
-) -> Option<Vec<u8>> {
-    let mut tls: TargetLinkers = existing
-        .map(|existing_bytes| _vr(existing_bytes).unwrap())
-        .unwrap_or_default();
-
-    // let current_seq = DID_ID_SEQ.load(Ordering::Relaxed);
-
-    // for did_id in &tls.0 {
-    //     let DidId(ref n) = did_id;
-    //     if *n > current_seq {
-    //         eprintln!("problem with merge_op_extend_did_ids. existing: {tls:?}");
-    //         eprintln!(
-    //             "an entry has did_id={n}, which is higher than the current sequence: {current_seq}"
-    //         );
-    //         panic!("got a did to merge with higher-than-current did_id sequence");
-    //     }
-    // }
-
-    for op in operands {
-        let new_linkers: TargetLinkers = _vr(op).unwrap();
-        // for DidId(ref n) in &new_linkers.0 {
-        //     if *n > current_seq {
-        //         let orig: Option<TargetLinkers> =
-        //             existing.map(|existing_bytes| _vr(existing_bytes).unwrap());
-        //         eprintln!(
-        //             "problem with merge_op_extend_did_ids. existing: {orig:?}\nnew linkers: {new_linkers:?}"
-        //         );
-        //         eprintln!("the current sequence is {current_seq}");
-        //         panic!("did_id a did to a number higher than the current sequence");
-        //     }
-        // }
-        tls.0.extend(&new_linkers.0);
-    }
-    Some(_rv(&tls))
 }
 
 impl LinkStorage for RocksStorage {
