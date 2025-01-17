@@ -39,6 +39,13 @@ pub fn consume_jetstream(sender: flume::Sender<JsonValue>) -> anyhow::Result<()>
         };
 
         loop {
+            if !socket.can_read() {
+                eprintln!("jetstream: socket says we cannot read -- flushing then breaking out.");
+                if let Err(e) = socket.flush() {
+                    eprintln!("error while flushing socket: {e:?}");
+                }
+                break;
+            }
             let b = match socket.read() {
                 Ok(Message::Binary(b)) => b,
                 Ok(Message::Text(_)) => {

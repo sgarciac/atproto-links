@@ -6,7 +6,7 @@ major todos
 - [x] find links and write them to rocksdb
 - [x] handle account active status
 - [x] handle account deletion
-- [ ] move ownership of canonical seq to an owned non-atomic
+- [x] move ownership of canonical seq to an owned non-atomic
 - [ ] handle account privacy setting? (is this a bsky nsid config and should that matter?)
 - [x] api server to look up backlink count
 - [ ] other useful endpoints for the api server
@@ -26,3 +26,5 @@ major todos
 - [ ] get it running on raspi
 - [ ] get an estimate of disk usage per day after a few days of running
 - [ ] make the did_init check only happen on test config (or remove it)
+- [ ] actual error types (thiserror?) for lib-ish code
+- [ ] clean up the main readme
