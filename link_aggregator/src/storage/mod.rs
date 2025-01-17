@@ -51,6 +51,7 @@ pub trait LinkReader: Clone + Send + Sync + 'static {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use links::Link;
 
     macro_rules! test_each_storage {
         ($test_name:ident, |$storage_label:ident| $test_code:block) => {
@@ -98,7 +99,7 @@ mod tests {
                 rkey: "fdsa".into(),
             },
             links: vec![CollectedLink {
-                target: "e.com".into(),
+                target: Link::Uri("e.com".into()),
                 path: ".abc.uri".into(),
             }],
         })?;
@@ -115,7 +116,7 @@ mod tests {
                 rkey: "fdsa".into(),
             },
             links: vec![CollectedLink {
-                target: "e.com".into(),
+                target: Link::Uri("e.com".into()),
                 path: ".abc.uri".into(),
             }],
         })?;
@@ -152,7 +153,7 @@ mod tests {
                 rkey: "fdsa".into(),
             },
             links: vec![CollectedLink {
-                target: "e.com".into(),
+                target: Link::Uri("e.com".into()),
                 path: ".abc.uri".into(),
             }],
         })?;
@@ -166,7 +167,7 @@ mod tests {
                 rkey: "fdsa2".into(),
             },
             links: vec![CollectedLink {
-                target: "e.com".into(),
+                target: Link::Uri("e.com".into()),
                 path: ".abc.uri".into(),
             }],
         })?;
@@ -180,7 +181,7 @@ mod tests {
                 rkey: "fdsa".into(),
             },
             links: vec![CollectedLink {
-                target: "e.com".into(),
+                target: Link::Uri("e.com".into()),
                 path: ".abc.uri".into(),
             }],
         })?;
@@ -204,7 +205,7 @@ mod tests {
                 rkey: "A".into(),
             },
             links: vec![CollectedLink {
-                target: "e.com".into(),
+                target: Link::Uri("e.com".into()),
                 path: ".abc.uri".into(),
             }],
         })?;
@@ -218,7 +219,7 @@ mod tests {
                 rkey: "B".into(),
             },
             links: vec![CollectedLink {
-                target: "e.com".into(),
+                target: Link::Uri("e.com".into()),
                 path: ".abc.uri".into(),
             }],
         })?;
@@ -243,7 +244,7 @@ mod tests {
                 rkey: "A".into(),
             },
             links: vec![CollectedLink {
-                target: "a.com".into(),
+                target: Link::Uri("a.com".into()),
                 path: ".abc.uri".into(),
             }],
         })?;
@@ -254,7 +255,7 @@ mod tests {
                 rkey: "B".into(),
             },
             links: vec![CollectedLink {
-                target: "b.com".into(),
+                target: Link::Uri("b.com".into()),
                 path: ".abc.uri".into(),
             }],
         })?;
@@ -269,7 +270,7 @@ mod tests {
                 rkey: "A".into(),
             },
             links: vec![CollectedLink {
-                target: "a.com".into(),
+                target: Link::Uri("a.com".into()),
                 path: ".abc.uri".into(),
             }],
         })?;
@@ -290,15 +291,15 @@ mod tests {
             },
             links: vec![
                 CollectedLink {
-                    target: "e.com".into(),
+                    target: Link::Uri("e.com".into()),
                     path: ".abc.uri".into(),
                 },
                 CollectedLink {
-                    target: "f.com".into(),
+                    target: Link::Uri("f.com".into()),
                     path: ".xyz[].uri".into(),
                 },
                 CollectedLink {
-                    target: "g.com".into(),
+                    target: Link::Uri("g.com".into()),
                     path: ".xyz[].uri".into(),
                 },
             ],
@@ -327,15 +328,15 @@ mod tests {
             },
             links: vec![
                 CollectedLink {
-                    target: "e.com".into(),
+                    target: Link::Uri("e.com".into()),
                     path: ".abc.uri".into(),
                 },
                 CollectedLink {
-                    target: "f.com".into(),
+                    target: Link::Uri("f.com".into()),
                     path: ".xyz[].uri".into(),
                 },
                 CollectedLink {
-                    target: "g.com".into(),
+                    target: Link::Uri("g.com".into()),
                     path: ".xyz[].uri".into(),
                 },
             ],
@@ -353,15 +354,15 @@ mod tests {
             },
             new_links: vec![
                 CollectedLink {
-                    target: "h.com".into(),
+                    target: Link::Uri("h.com".into()),
                     path: ".abc.uri".into(),
                 },
                 CollectedLink {
-                    target: "f.com".into(),
+                    target: Link::Uri("f.com".into()),
                     path: ".xyz[].uri".into(),
                 },
                 CollectedLink {
-                    target: "i.com".into(),
+                    target: Link::Uri("i.com".into()),
                     path: ".xyz[].uri".into(),
                 },
             ],
@@ -382,7 +383,7 @@ mod tests {
                 rkey: "asdf".into(),
             },
             new_links: vec![CollectedLink {
-                target: "a.com".into(),
+                target: Link::Uri("a.com".into()),
                 path: ".abc.uri".into(),
             }],
         })?;
@@ -398,11 +399,11 @@ mod tests {
             },
             links: vec![
                 CollectedLink {
-                    target: "a.com".into(),
+                    target: Link::Uri("a.com".into()),
                     path: ".abc.uri".into(),
                 },
                 CollectedLink {
-                    target: "a.com".into(),
+                    target: Link::Uri("a.com".into()),
                     path: ".def.uri".into(),
                 },
             ],

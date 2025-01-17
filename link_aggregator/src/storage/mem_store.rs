@@ -28,7 +28,7 @@ impl LinkStorage for MemStorage {
         for link in links {
             data.dids.entry(record_id.did()).or_insert(true); // if they are inserting a link, presumably they are active
             data.targets
-                .entry(Target::new(&link.target))
+                .entry(Target::new(link.target.as_str()))
                 .or_default()
                 .entry(Source::new(&record_id.collection, &link.path))
                 .or_default()
@@ -38,7 +38,10 @@ impl LinkStorage for MemStorage {
                 .or_default()
                 .entry(RepoId::from_record_id(record_id))
                 .or_insert(Vec::with_capacity(1))
-                .push((RecordPath::new(&link.path), Target::new(&link.target)))
+                .push((
+                    RecordPath::new(&link.path),
+                    Target::new(link.target.as_str()),
+                ))
         }
     }
 

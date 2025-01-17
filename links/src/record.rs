@@ -19,7 +19,7 @@ pub fn walk_record(path: &str, v: &JsonValue, found: &mut Vec<CollectedLink>) {
             if let Some(link) = parse_any_link(s) {
                 found.push(CollectedLink {
                     path: path.to_string(),
-                    target: link.into_string(),
+                    target: link,
                 });
             }
         }
@@ -36,11 +36,12 @@ pub fn collect_links(v: &JsonValue) -> Vec<CollectedLink> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Link;
 
-    fn l(path: &str, target: &str) -> CollectedLink {
+    fn l(path: &str, target: Link) -> CollectedLink {
         CollectedLink {
             path: path.into(),
-            target: target.into(),
+            target,
         }
     }
 
@@ -48,7 +49,7 @@ mod tests {
     fn test_collect_links() {
         let rec = r#"{"a": "https://example.com", "b": "not a link"}"#;
         let json = collect_links(&rec.parse().unwrap());
-        assert_eq!(json, vec![l(".a", "https://example.com")]);
+        assert_eq!(json, vec![l(".a", Link::Uri("https://example.com".into()))]);
     }
 
     #[test]
@@ -78,11 +79,17 @@ mod tests {
             vec![
                 l(
                     ".reply.parent.uri",
-                    "at://did:plc:b3rzzkblqsxhr3dgcueymkqe/app.bsky.feed.post/3lf6yc4drhk2f"
+                    Link::AtUri(
+                        "at://did:plc:b3rzzkblqsxhr3dgcueymkqe/app.bsky.feed.post/3lf6yc4drhk2f"
+                            .into()
+                    )
                 ),
                 l(
                     ".reply.root.uri",
-                    "at://did:plc:b3rzzkblqsxhr3dgcueymkqe/app.bsky.feed.post/3lf6yc4drhk2f"
+                    Link::AtUri(
+                        "at://did:plc:b3rzzkblqsxhr3dgcueymkqe/app.bsky.feed.post/3lf6yc4drhk2f"
+                            .into()
+                    )
                 ),
             ]
         )
@@ -135,11 +142,11 @@ mod tests {
             vec![
                 l(
                     ".embed.external.uri",
-                    "https://youtu.be/oKXm4szEP1Q?si=_0n_uPu4qNKokMnq"
+                    Link::Uri("https://youtu.be/oKXm4szEP1Q?si=_0n_uPu4qNKokMnq".into()),
                 ),
                 l(
                     ".facets[].features[].uri",
-                    "https://youtu.be/oKXm4szEP1Q?si=_0n_uPu4qNKokMnq"
+                    Link::Uri("https://youtu.be/oKXm4szEP1Q?si=_0n_uPu4qNKokMnq".into()),
                 ),
             ]
         )

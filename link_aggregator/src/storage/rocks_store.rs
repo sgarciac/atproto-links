@@ -415,7 +415,7 @@ impl LinkStorage for RocksStorage {
 
         for CollectedLink { target, path } in links {
             let target_key = TargetKey(
-                Target(target.clone()),
+                Target(target.clone().into_string()),
                 Collection(record_id.collection()),
                 RPath(path.clone()),
             );
@@ -707,6 +707,7 @@ impl RecordLinkTargets {
 mod tests {
     use super::super::ActionableEvent;
     use super::*;
+    use links::Link;
     use tempfile::tempdir;
 
     #[test]
@@ -721,7 +722,7 @@ mod tests {
                 rkey: "asdf".into(),
             },
             links: vec![CollectedLink {
-                target: "example.com".into(),
+                target: Link::Uri("example.com".into()),
                 path: ".uri".into(),
             }],
         })?;
@@ -734,7 +735,7 @@ mod tests {
                 rkey: "asdf".into(),
             },
             links: vec![CollectedLink {
-                target: "another.example.com".into(),
+                target: Link::Uri("another.example.com".into()),
                 path: ".uri".into(),
             }],
         })?;

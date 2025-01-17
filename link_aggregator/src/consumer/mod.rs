@@ -6,11 +6,59 @@ use jetstream::consume_jetstream;
 use jsonl_file::consume_jsonl_file;
 use link_aggregator::{ActionableEvent, RecordId};
 use links::collect_links;
+use metrics::{counter, describe_counter, describe_histogram, histogram, Unit};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::thread;
 use tinyjson::JsonValue;
+
+pub fn consume(mut store: impl LinkStorage, qsize: Arc<AtomicU32>, fixture: Option<PathBuf>) {
+    describe_counter!(
+        "consumer.events.non_actionable",
+        Unit::Count,
+        "count of non-actionable events"
+    );
+    describe_counter!(
+        "consumer.events.actionable",
+        Unit::Count,
+        "count of action by type. *all* atproto record delete events are included"
+    );
+    describe_counter!(
+        "consumer.events.actionable.links",
+        Unit::Count,
+        "total links encountered"
+    );
+    describe_histogram!(
+        "consumer.events.actionable.links",
+        Unit::Count,
+        "number of links per message"
+    );
+
+    let (receiver, consumer_handle) = if let Some(f) = fixture {
+        let (sender, receiver) = flume::bounded(21);
+        (
+            receiver,
+            thread::spawn(move || consume_jsonl_file(f, sender)),
+        )
+    } else {
+        let (sender, receiver) = flume::unbounded(); // eek
+        (receiver, thread::spawn(move || consume_jetstream(sender)))
+    };
+
+    for update in receiver.iter() {
+        if let Some(action) = get_actionable(&update) {
+            {
+                store.push(&action).unwrap();
+                qsize.store(receiver.len().try_into().unwrap(), Ordering::Relaxed);
+            }
+        } else {
+            counter!("consumer.events.non_actionable").increment(1);
+        }
+    }
+
+    consumer_handle.join().unwrap().unwrap()
+}
 
 pub fn get_actionable(event: &JsonValue) -> Option<ActionableEvent> {
     match event {
@@ -32,6 +80,17 @@ pub fn get_actionable(event: &JsonValue) -> Option<ActionableEvent> {
             match commit.get("operation")? {
                 JsonValue::String(op) if op == "create" => {
                     let links = collect_links(commit.get("record")?);
+                    counter!("consumer.events.actionable", "action_type" => "create_links", "collection" => collection.clone()).increment(1);
+                    histogram!("consumer.events.actionable.links", "action_type" => "create_links", "collection" => collection.clone()).record(links.len() as f64);
+                    for link in &links {
+                        counter!("consumer.events.actionable.links",
+                            "action_type" => "create_links",
+                            "collection" => collection.clone(),
+                            "path" => link.path.clone(),
+                            "link_type" => link.target.name(),
+                        )
+                        .increment(links.len() as u64);
+                    }
                     if links.is_empty() {
                         None
                     } else {
@@ -45,15 +104,30 @@ pub fn get_actionable(event: &JsonValue) -> Option<ActionableEvent> {
                         })
                     }
                 }
-                JsonValue::String(op) if op == "update" => Some(ActionableEvent::UpdateLinks {
-                    record_id: RecordId {
-                        did: did.into(),
-                        collection: collection.clone(),
-                        rkey: rkey.clone(),
-                    },
-                    new_links: collect_links(commit.get("record")?),
-                }),
+                JsonValue::String(op) if op == "update" => {
+                    let links = collect_links(commit.get("record")?);
+                    counter!("consumer.events.actionable", "action_type" => "update_links", "collection" => collection.clone()).increment(1);
+                    histogram!("consumer.events.actionable.links", "action_type" => "update_links", "collection" => collection.clone()).record(links.len() as f64);
+                    for link in &links {
+                        counter!("consumer.events.actionable.links",
+                            "action_type" => "update_links",
+                            "collection" => collection.clone(),
+                            "path" => link.path.clone(),
+                            "link_type" => link.target.name(),
+                        )
+                        .increment(links.len() as u64);
+                    }
+                    Some(ActionableEvent::UpdateLinks {
+                        record_id: RecordId {
+                            did: did.into(),
+                            collection: collection.clone(),
+                            rkey: rkey.clone(),
+                        },
+                        new_links: links,
+                    })
+                }
                 JsonValue::String(op) if op == "delete" => {
+                    counter!("consumer.events.actionable", "action_type" => "delete_record", "collection" => collection.clone()).increment(1);
                     Some(ActionableEvent::DeleteRecord(RecordId {
                         did: did.into(),
                         collection: collection.clone(),
@@ -69,12 +143,22 @@ pub fn get_actionable(event: &JsonValue) -> Option<ActionableEvent> {
             let JsonValue::Object(account) = root.get("account")? else {
                 return None;
             };
+            // counter!("consumer.events.actionable", "action_type" => "delete_record").increment(1);
             let did = account.get("did")?.get::<String>()?.clone();
             match (account.get("active")?.get::<bool>()?, account.get("status")) {
-                (true, None) => Some(ActionableEvent::ActivateAccount(did.into())),
+                (true, None) => {
+                    counter!("consumer.events.actionable", "action_type" => "account", "action" => "activate").increment(1);
+                    Some(ActionableEvent::ActivateAccount(did.into()))
+                }
                 (false, Some(JsonValue::String(status))) => match status.as_ref() {
-                    "deactivated" => Some(ActionableEvent::DeactivateAccount(did.into())),
-                    "deleted" => Some(ActionableEvent::DeleteAccount(did.into())),
+                    "deactivated" => {
+                        counter!("consumer.events.actionable", "action_type" => "account", "action" => "deactivate").increment(1);
+                        Some(ActionableEvent::DeactivateAccount(did.into()))
+                    }
+                    "deleted" => {
+                        counter!("consumer.events.actionable", "action_type" => "account", "action" => "delete").increment(1);
+                        Some(ActionableEvent::DeleteAccount(did.into()))
+                    }
                     _ => None,
                 },
                 _ => None,
@@ -84,40 +168,10 @@ pub fn get_actionable(event: &JsonValue) -> Option<ActionableEvent> {
     }
 }
 
-pub fn consume(store: impl LinkStorage, qsize: Arc<AtomicU32>, fixture: Option<PathBuf>) {
-    let (receiver, consumer_handle) = if let Some(f) = fixture {
-        let (sender, receiver) = flume::bounded(21);
-        (
-            receiver,
-            thread::spawn(move || consume_jsonl_file(f, sender)),
-        )
-    } else {
-        let (sender, receiver) = flume::unbounded(); // eek
-        (receiver, thread::spawn(move || consume_jetstream(sender)))
-    };
-    persist_events(store, receiver, qsize);
-    consumer_handle.join().unwrap().unwrap()
-}
-
-fn persist_events(
-    mut store: impl LinkStorage,
-    receiver: flume::Receiver<JsonValue>,
-    qsize: Arc<AtomicU32>,
-) {
-    for update in receiver.iter() {
-        if let Some(event) = get_actionable(&update) {
-            {
-                store.push(&event).unwrap();
-                qsize.store(receiver.len().try_into().unwrap(), Ordering::Relaxed);
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use links::CollectedLink;
+    use links::{CollectedLink, Link};
 
     #[test]
     fn test_create_like() {
@@ -143,9 +197,10 @@ mod tests {
                 },
                 links: vec![CollectedLink {
                     path: ".subject.uri".into(),
-                    target:
+                    target: Link::AtUri(
                         "at://did:plc:lphckw3dz4mnh3ogmfpdgt6z/app.bsky.feed.post/3lfdau5f7wk23"
                             .into()
+                    )
                 },],
             })
         )
@@ -184,9 +239,10 @@ mod tests {
                 },
                 new_links: vec![CollectedLink {
                     path: ".pinnedPost.uri".into(),
-                    target:
+                    target: Link::AtUri(
                         "at://did:plc:tcmiubbjtkwhmnwmrvr2eqnx/app.bsky.feed.post/3lf66ri63u22t"
                             .into()
+                    ),
                 },],
             })
         )

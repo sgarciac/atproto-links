@@ -6,7 +6,7 @@ pub mod record;
 
 pub use record::collect_links;
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, Ord, Eq, PartialOrd, PartialEq)]
 pub enum Link {
     AtUri(String),
     Uri(String),
@@ -21,12 +21,26 @@ impl Link {
             Link::Did(s) => s,
         }
     }
+    pub fn as_str(&self) -> &str {
+        match self {
+            Link::AtUri(s) => s,
+            Link::Uri(s) => s,
+            Link::Did(s) => s,
+        }
+    }
+    pub fn name(&self) -> &'static str {
+        match self {
+            Link::AtUri(_) => "at-uri",
+            Link::Uri(_) => "uri",
+            Link::Did(_) => "did",
+        }
+    }
 }
 
 #[derive(Debug, PartialEq)]
 pub struct CollectedLink {
     pub path: String,
-    pub target: String,
+    pub target: Link,
 }
 
 // normalizing is a bit opinionated but eh

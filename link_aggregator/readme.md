@@ -17,6 +17,8 @@ major todos
   - [ ] get count with any dids from provided set
 - [ ] write this readme
 - [ ] fix it sometimes getting stuck
+  - seems to unstick in my possibly-different repro (letting laptop fall asleep) after a bit.
+  - [ ] add a detection for no new links coming in after some period
 - [ ] handle jetstream restart: don't miss events
   - [ ] especially: figure out what the risk is to rotating to another jetstream server in terms of gap/overlap from a different jetstream instance's cursor
 - [ ] metrics!
