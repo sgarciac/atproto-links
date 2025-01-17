@@ -58,28 +58,30 @@ fn main() -> Result<()> {
 fn run(mut storage: impl LinkStorage, fixture: Option<PathBuf>) -> Result<()> {
     let qsize = Arc::new(AtomicU32::new(0));
 
-    let read_storage = storage.to_readable();
-    let read2 = storage.to_readable();
-
     thread::scope(|s| {
+        let readable = storage.to_readable();
+
         let consumer = s.spawn({
             let qsize = qsize.clone();
             move || consume(storage, qsize, fixture)
         });
 
         let (stop_server, shutdown) = oneshot::channel::<()>();
-        s.spawn(move || {
-            runtime::Builder::new_multi_thread()
-                .worker_threads(1)
-                .max_blocking_threads(2)
-                .enable_all()
-                .build()?
-                .block_on(serve(read_storage, "127.0.0.1:6789", shutdown))
+        s.spawn({
+            let readable = readable.clone();
+            || {
+                runtime::Builder::new_multi_thread()
+                    .worker_threads(1)
+                    .max_blocking_threads(2)
+                    .enable_all()
+                    .build()?
+                    .block_on(serve(readable, "127.0.0.1:6789", shutdown))
+            }
         });
 
         s.spawn(move || {
             while !consumer.is_finished() {
-                read2.summarize(qsize.load(Ordering::Relaxed));
+                readable.summarize(qsize.load(Ordering::Relaxed));
                 thread::sleep(time::Duration::from_secs(3));
             }
             let _ = stop_server.send(());

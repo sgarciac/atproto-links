@@ -1,4 +1,4 @@
-use super::{LinkStorage, StorageBackend};
+use super::{LinkReader, LinkStorage};
 use anyhow::Result;
 use bincode::Options as BincodeOptions;
 use link_aggregator::{Did, RecordId};
@@ -39,79 +39,12 @@ fn get_db_opts() -> Options {
 }
 
 #[derive(Debug, Clone)]
-pub struct RocksStorage(RocksStorageData);
-
-#[derive(Debug, Clone)]
-struct RocksStorageData {
-    db: Arc<DBWithThreadMode<MultiThreaded>>,
+pub struct RocksStorage {
+    db: Arc<DBWithThreadMode<MultiThreaded>>, // TODO: mov seqs here (concat merge op will be fun)
 }
 
 impl RocksStorage {
     pub fn new(path: impl AsRef<Path>) -> Result<Self> {
-        Ok(Self(RocksStorageData::new(path)?))
-    }
-}
-
-impl LinkStorage for RocksStorage {
-    fn summarize(&self, qsize: u32) {
-        let did_seq = DID_ID_SEQ.load(Ordering::Relaxed);
-        let target_seq = TARGET_ID_SEQ.load(Ordering::Relaxed);
-        println!("queue: {qsize}. did seq: {did_seq}, target seq: {target_seq}.");
-    }
-}
-
-trait AsRocksKey: Serialize {}
-trait AsRocksKeyPrefix<K: KeyFromRocks>: Serialize {}
-trait AsRocksValue: Serialize {}
-trait KeyFromRocks: for<'de> Deserialize<'de> {}
-trait ValueFromRocks: for<'de> Deserialize<'de> {}
-
-// did_id table
-impl AsRocksKey for &Did {}
-impl AsRocksValue for &DidIdValue {}
-impl ValueFromRocks for DidIdValue {}
-
-// temp
-impl KeyFromRocks for Did {}
-
-// target_ids table
-impl AsRocksKey for &TargetKey {}
-impl AsRocksValue for &TargetId {}
-impl ValueFromRocks for TargetId {}
-
-// target_links table
-impl AsRocksKey for &TargetId {}
-impl AsRocksValue for &TargetLinkers {}
-impl ValueFromRocks for TargetLinkers {}
-
-// record_link_targets table
-impl AsRocksKey for &RecordLinkKey {}
-impl AsRocksKeyPrefix<RecordLinkKey> for &RecordLinkKeyDidIdPrefix {}
-impl AsRocksValue for &RecordLinkTargets {}
-impl KeyFromRocks for RecordLinkKey {}
-impl ValueFromRocks for RecordLinkTargets {}
-
-fn _bincode_opts() -> impl BincodeOptions {
-    bincode::DefaultOptions::new().with_big_endian() // happier db -- numeric prefixes in lsm
-}
-fn _rk(k: impl AsRocksKey) -> Vec<u8> {
-    _bincode_opts().serialize(&k).unwrap()
-}
-fn _rkp<K: KeyFromRocks>(kp: impl AsRocksKeyPrefix<K>) -> Vec<u8> {
-    _bincode_opts().serialize(&kp).unwrap()
-}
-fn _rv(v: impl AsRocksValue) -> Vec<u8> {
-    _bincode_opts().serialize(&v).unwrap()
-}
-fn _kr<T: KeyFromRocks>(bytes: &[u8]) -> Result<T> {
-    Ok(_bincode_opts().deserialize(bytes)?)
-}
-fn _vr<T: ValueFromRocks>(bytes: &[u8]) -> Result<T> {
-    Ok(_bincode_opts().deserialize(bytes)?)
-}
-
-impl RocksStorageData {
-    fn new(path: impl AsRef<Path>) -> Result<Self> {
         let db = DBWithThreadMode::open_cf_descriptors(
             &get_db_opts(),
             path,
@@ -121,7 +54,7 @@ impl RocksStorageData {
                 // the reverse links:
                 ColumnFamilyDescriptor::new(TARGET_LINKERS_CF, {
                     let mut opts = rocks_opts_base();
-                    opts.set_merge_operator_associative("concat_did_ids", concat_did_ids);
+                    opts.set_merge_operator_associative("merge_op_extend_did_ids", merge_op_extend_did_ids);
                     opts
                 }),
                 // unfortunately we also need forward links to handle deletes
@@ -130,7 +63,6 @@ impl RocksStorageData {
         )?;
         Ok(Self { db: Arc::new(db) })
     }
-
     fn prefix_iter_cf<K, V, CF, P>(
         &self,
         cf: &CF,
@@ -324,12 +256,52 @@ impl RocksStorageData {
     }
 }
 
-impl StorageBackend for RocksStorage {
-    fn add_links(&self, record_id: &RecordId, links: &[CollectedLink]) {
+
+fn merge_op_extend_did_ids(
+    _new_key: &[u8],
+    existing: Option<&[u8]>,
+    operands: &MergeOperands,
+) -> Option<Vec<u8>> {
+    let mut tls: TargetLinkers = existing
+        .map(|existing_bytes| _vr(existing_bytes).unwrap())
+        .unwrap_or_default();
+
+    let current_seq = DID_ID_SEQ.load(Ordering::Relaxed);
+
+    for did_id in &tls.0 {
+        let DidId(ref n) = did_id;
+        if *n > current_seq {
+            eprintln!("problem with merge_op_extend_did_ids. existing: {tls:?}");
+            eprintln!(
+                "an entry has did_id={n}, which is higher than the current sequence: {current_seq}"
+            );
+            panic!("got a did to merge with higher-than-current did_id sequence");
+        }
+    }
+
+    for op in operands {
+        let new_linkers: TargetLinkers = _vr(op).unwrap();
+        for DidId(ref n) in &new_linkers.0 {
+            if *n > current_seq {
+                let orig: Option<TargetLinkers> =
+                    existing.map(|existing_bytes| _vr(existing_bytes).unwrap());
+                eprintln!(
+                    "problem with merge_op_extend_did_ids. existing: {orig:?}\nnew linkers: {new_linkers:?}"
+                );
+                eprintln!("the current sequence is {current_seq}");
+                panic!("did_id a did to a number higher than the current sequence");
+            }
+        }
+        tls.0.extend(&new_linkers.0);
+    }
+    Some(_rv(&tls))
+}
+
+impl LinkStorage for RocksStorage {
+    fn add_links(&mut self, record_id: &RecordId, links: &[CollectedLink]) {
         let mut batch = WriteBatch::default();
 
         let DidIdValue(did_id, _) = self
-            .0
             .get_or_create_did_id_value(&mut batch, &record_id.did)
             .unwrap();
 
@@ -347,24 +319,22 @@ impl StorageBackend for RocksStorage {
                 RPath(path.clone()),
             );
             let target_id = self
-                .0
                 .get_or_create_target_id(&mut batch, &target_key)
                 .unwrap();
-            self.0.merge_target_linker(&mut batch, &target_id, &did_id);
+            self.merge_target_linker(&mut batch, &target_id, &did_id);
 
             record_link_targets.add(RecordLinkTarget(RPath(path.clone()), target_id))
         }
 
-        self.0
-            .put_link_targets(&mut batch, &record_link_key, &record_link_targets);
-        self.0.db.write(batch).unwrap();
+        self.put_link_targets(&mut batch, &record_link_key, &record_link_targets);
+        self.db.write(batch).unwrap();
     }
 
-    fn remove_links(&self, record_id: &RecordId) {
+    fn remove_links(&mut self, record_id: &RecordId) {
         let mut batch = WriteBatch::default();
 
         let Some(DidIdValue(linking_did_id, did_active)) =
-            self.0.get_did_id_value(&record_id.did).unwrap()
+            self.get_did_id_value(&record_id.did).unwrap()
         else {
             return; // we don't know her: nothing to do
         };
@@ -380,7 +350,7 @@ impl StorageBackend for RocksStorage {
             Collection(record_id.collection()),
             RKey(record_id.rkey()),
         );
-        let Some(record_link_targets) = self.0.get_record_link_targets(&record_link_key).unwrap()
+        let Some(record_link_targets) = self.get_record_link_targets(&record_link_key).unwrap()
         else {
             return; // we don't have these links
         };
@@ -388,7 +358,7 @@ impl StorageBackend for RocksStorage {
         // we do read -> modify -> write here: could merge-op in the deletes instead?
         // otherwise it's another single-thread-constraining thing.
         for (i, RecordLinkTarget(rpath, target_id)) in record_link_targets.0.iter().enumerate() {
-            self.0.update_target_linkers(&mut batch, target_id, |mut linkers| {
+            self.update_target_linkers(&mut batch, target_id, |mut linkers| {
                 if linkers.0.is_empty() {
                     eprintln!("about to blow up because a linked target is apparently missing.");
                     eprintln!("removing links for: {record_id:?}");
@@ -408,73 +378,139 @@ impl StorageBackend for RocksStorage {
             }).unwrap();
         }
 
-        self.0.delete_record_link(&mut batch, &record_link_key);
-        self.0.db.write(batch).unwrap();
+        self.delete_record_link(&mut batch, &record_link_key);
+        self.db.write(batch).unwrap();
     }
 
-    fn set_account(&self, did: &Did, active: bool) {
+    fn set_account(&mut self, did: &Did, active: bool) {
         // this needs to be read-modify-write since the did_id needs to stay the same,
         // which has a benefit of allowing to avoid adding entries for dids we don't
         // need. reading on dids needs to be cheap anyway for the current design, and
         // did active/inactive updates are low-freq in the firehose so, eh, it's fine.
         let mut batch = WriteBatch::default();
-        self.0
-            .update_did_id_value(&mut batch, did, |current_value| {
-                Some(DidIdValue(current_value.did_id(), active))
-            })
-            .unwrap();
-        self.0.db.write(batch).unwrap();
+        self.update_did_id_value(&mut batch, did, |current_value| {
+            Some(DidIdValue(current_value.did_id(), active))
+        })
+        .unwrap();
+        self.db.write(batch).unwrap();
     }
 
-    fn delete_account(&self, did: &Did) {
+    fn delete_account(&mut self, did: &Did) {
         let mut batch = WriteBatch::default();
 
-        let Some(DidIdValue(did_id, active)) = self.0.get_did_id_value(did).unwrap() else {
+        let Some(DidIdValue(did_id, active)) = self.get_did_id_value(did).unwrap() else {
             return; // ignore updates for dids we don't know about
         };
-        self.0.delete_did_id_value(&mut batch, did);
+        self.delete_did_id_value(&mut batch, did);
 
-        for (i, (record_link_key, links)) in self.0.iter_links_for_did_id(&did_id).enumerate() {
-            self.0.delete_record_link(&mut batch, &record_link_key); // _could_ use delete range here instead of individual deletes, but since we have to scan anyway it's not obvious if it's better
+        for (i, (record_link_key, links)) in self.iter_links_for_did_id(&did_id).enumerate() {
+            self.delete_record_link(&mut batch, &record_link_key); // _could_ use delete range here instead of individual deletes, but since we have to scan anyway it's not obvious if it's better
 
             for (j, RecordLinkTarget(path, target_link_id)) in links.0.iter().enumerate() {
-                self.0.update_target_linkers(&mut batch, target_link_id, |mut linkers| {
+                self.update_target_linkers(&mut batch, target_link_id, |mut linkers| {
                     if !linkers.remove_last_linker(&did_id) {
-                        eprintln!("DELETING ACCOUNT: blowing up: missing linker entry in linked target.");
+                        eprintln!(
+                            "DELETING ACCOUNT: blowing up: missing linker entry in linked target."
+                        );
                         eprintln!("account: {did:?}");
                         eprintln!("did_id: {did_id:?}, was active? {active:?}");
                         eprintln!("with links: {links:?}");
                         eprintln!("and linkers: {linkers:?}");
-                        eprintln!("working on #{i}.#{j}: {:?} / {path:?} / {target_link_id:?}", record_link_key.collection());
+                        eprintln!(
+                            "working on #{i}.#{j}: {:?} / {path:?} / {target_link_id:?}",
+                            record_link_key.collection()
+                        );
                         eprintln!("from record link key {record_link_key:?}");
                         eprintln!("but could not find this link :/");
                         eprintln!("checking for did_id dups...");
-                        self.0.check_for_did_dups(&did_id);
+                        self.check_for_did_dups(&did_id);
                         eprintln!("ok so what the heck. did_id again, for did {did:?}:");
-                        let did_id_again = self.0.get_did_id_value(did).unwrap().unwrap();
+                        let did_id_again = self.get_did_id_value(did).unwrap().unwrap();
                         eprintln!("did_id_value (again): {did_id_again:?}");
                         panic!("ohnoooo");
                     }
                     Some(linkers)
-                }).unwrap();
+                })
+                .unwrap();
             }
         }
 
-        self.0.db.write(batch).unwrap();
+        self.db.write(batch).unwrap();
     }
 
-    fn count(&self, target: &str, collection: &str, path: &str) -> Result<u64> {
+    fn to_readable(&mut self) -> impl LinkReader {
+        self.clone()
+    }
+}
+
+impl LinkReader for RocksStorage {
+    fn summarize(&self, qsize: u32) {
+        let did_seq = DID_ID_SEQ.load(Ordering::Relaxed);
+        let target_seq = TARGET_ID_SEQ.load(Ordering::Relaxed);
+        println!("queue: {qsize}. did seq: {did_seq}, target seq: {target_seq}.");
+    }
+    fn get_count(&self, target: &str, collection: &str, path: &str) -> Result<u64> {
         let target_key = TargetKey(
             Target(target.to_string()),
             Collection(collection.to_string()),
             RPath(path.to_string()),
         );
-        if let Some(target_id) = self.0.get_target_id(&target_key)? {
-            Ok(self.0.get_target_linkers(&target_id)?.count())
+        if let Some(target_id) = self.get_target_id(&target_key)? {
+            Ok(self.get_target_linkers(&target_id)?.count())
         } else {
             Ok(0)
         }
     }
+}
+
+trait AsRocksKey: Serialize {}
+trait AsRocksKeyPrefix<K: KeyFromRocks>: Serialize {}
+trait AsRocksValue: Serialize {}
+trait KeyFromRocks: for<'de> Deserialize<'de> {}
+trait ValueFromRocks: for<'de> Deserialize<'de> {}
+
+// did_id table
+impl AsRocksKey for &Did {}
+impl AsRocksValue for &DidIdValue {}
+impl ValueFromRocks for DidIdValue {}
+
+// temp
+impl KeyFromRocks for Did {}
+
+// target_ids table
+impl AsRocksKey for &TargetKey {}
+impl AsRocksValue for &TargetId {}
+impl ValueFromRocks for TargetId {}
+
+// target_links table
+impl AsRocksKey for &TargetId {}
+impl AsRocksValue for &TargetLinkers {}
+impl ValueFromRocks for TargetLinkers {}
+
+// record_link_targets table
+impl AsRocksKey for &RecordLinkKey {}
+impl AsRocksKeyPrefix<RecordLinkKey> for &RecordLinkKeyDidIdPrefix {}
+impl AsRocksValue for &RecordLinkTargets {}
+impl KeyFromRocks for RecordLinkKey {}
+impl ValueFromRocks for RecordLinkTargets {}
+
+fn _bincode_opts() -> impl BincodeOptions {
+    bincode::DefaultOptions::new().with_big_endian() // happier db -- numeric prefixes in lsm
+}
+fn _rk(k: impl AsRocksKey) -> Vec<u8> {
+    _bincode_opts().serialize(&k).unwrap()
+}
+fn _rkp<K: KeyFromRocks>(kp: impl AsRocksKeyPrefix<K>) -> Vec<u8> {
+    _bincode_opts().serialize(&kp).unwrap()
+}
+fn _rv(v: impl AsRocksValue) -> Vec<u8> {
+    _bincode_opts().serialize(&v).unwrap()
+}
+fn _kr<T: KeyFromRocks>(bytes: &[u8]) -> Result<T> {
+    Ok(_bincode_opts().deserialize(bytes)?)
+}
+fn _vr<T: ValueFromRocks>(bytes: &[u8]) -> Result<T> {
+    Ok(_bincode_opts().deserialize(bytes)?)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -558,46 +594,6 @@ impl RecordLinkTargets {
     }
 }
 
-fn concat_did_ids(
-    _new_key: &[u8],
-    existing: Option<&[u8]>,
-    operands: &MergeOperands,
-) -> Option<Vec<u8>> {
-    let mut tls: TargetLinkers = existing
-        .map(|existing_bytes| _vr(existing_bytes).unwrap())
-        .unwrap_or_default();
-
-    let current_seq = DID_ID_SEQ.load(Ordering::Relaxed);
-
-    for did_id in &tls.0 {
-        let DidId(ref n) = did_id;
-        if *n > current_seq {
-            eprintln!("problem with concat_did_ids. existing: {tls:?}");
-            eprintln!(
-                "an entry has did_id={n}, which is higher than the current sequence: {current_seq}"
-            );
-            panic!("got a did to merge with higher-than-current did_id sequence");
-        }
-    }
-
-    for op in operands {
-        let new_linkers: TargetLinkers = _vr(op).unwrap();
-        for DidId(ref n) in &new_linkers.0 {
-            if *n > current_seq {
-                let orig: Option<TargetLinkers> =
-                    existing.map(|existing_bytes| _vr(existing_bytes).unwrap());
-                eprintln!(
-                    "problem with concat_did_ids. existing: {orig:?}\nnew linkers: {new_linkers:?}"
-                );
-                eprintln!("the current sequence is {current_seq}");
-                panic!("did_id a did to a number higher than the current sequence");
-            }
-        }
-        tls.0.extend(&new_linkers.0);
-    }
-    Some(_rv(&tls))
-}
-
 #[cfg(test)]
 mod tests {
     use super::super::ActionableEvent;
@@ -606,7 +602,7 @@ mod tests {
 
     #[test]
     fn rocks_delete_iterator_regression() -> Result<()> {
-        let store = RocksStorage::new(tempdir()?)?;
+        let mut store = RocksStorage::new(tempdir()?)?;
 
         // create a link from the deleter account
         store.push(&ActionableEvent::CreateLinks {
@@ -660,7 +656,7 @@ mod tests {
         impl KeyFromRocks for Key {}
         impl ValueFromRocks for Value {}
 
-        let data = RocksStorageData::new(tempdir()?)?;
+        let data = RocksStorage::new(tempdir()?)?;
         let cf = data.db.cf_handle(DID_IDS_CF).unwrap();
         let mut batch = WriteBatch::default();
 
