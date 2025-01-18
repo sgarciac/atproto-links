@@ -58,7 +58,10 @@ fn main() -> Result<()> {
         #[cfg(feature = "rocks")]
         StorageBackend::Rocks => {
             let storage_dir = args.data.unwrap_or("rocks.test".into());
-            run(RocksStorage::new(storage_dir)?, fixture)
+            println!("starting rocksdb...");
+            let rocks = RocksStorage::new(storage_dir)?;
+            println!("rocks ready.");
+            run(rocks, fixture)
         }
     }
 }

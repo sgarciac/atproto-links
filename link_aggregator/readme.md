@@ -20,9 +20,10 @@ some todos
 - [ ] fix it sometimes getting stuck
   - seems to unstick in my possibly-different repro (letting laptop fall asleep) after a bit.
   - [ ] add a detection for no new links coming in after some period
-- [ ] handle jetstream restart: don't miss events
+- [x] handle jetstream restart: don't miss events (currently sketch: rewinds cursor by 1us so we will always double-count at least one event)
   - [ ] especially: figure out what the risk is to rotating to another jetstream server in terms of gap/overlap from a different jetstream instance's cursor
 - [x] metrics!
+  - [x] event ts lag
 - [ ] machine resource metrics
   - [ ] disk consumption
   - [ ] cpu usage
@@ -31,6 +32,7 @@ some todos
 - [ ] make all storage apis return Result
 - [ ] handle all the unwraps
 - [ ] deadletter queue of some kind for failed db writes
+  - [ ] also for valid json that was rejected?
 - [x] get it running on raspi
 - [ ] get an estimate of disk usage per day after a few days of running
 - [ ] make the did_init check only happen on test config (or remove it)
