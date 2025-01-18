@@ -85,7 +85,7 @@ fn run(mut storage: impl LinkStorage, fixture: Option<PathBuf>) -> Result<()> {
                     .build()?
                     .block_on(async {
                         install_metrics_server()?;
-                        serve(readable, "127.0.0.1:6789", shutdown).await
+                        serve(readable, "0.0.0.0:6789", shutdown).await
                     })
             }
         });
