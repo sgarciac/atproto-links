@@ -20,12 +20,12 @@ some todos
 - [ ] fix it sometimes getting stuck
   - seems to unstick in my possibly-different repro (letting laptop fall asleep) after a bit.
   - [ ] add a detection for no new links coming in after some period
-- [x] handle jetstream restart: don't miss events (currently sketch: rewinds cursor by 1us so we will always double-count at least one event)
+- [~] handle jetstream restart: don't miss events (currently sketch: rewinds cursor by 1us so we will always double-count at least one event)
   - [ ] especially: figure out what the risk is to rotating to another jetstream server in terms of gap/overlap from a different jetstream instance's cursor
 - [x] metrics!
   - [x] event ts lag
-- [ ] machine resource metrics
-  - [ ] disk consumption
+- [~] machine resource metrics
+  - [x] disk consumption
   - [x] cpu usage
   - [x] mem usage
   - [ ] network?

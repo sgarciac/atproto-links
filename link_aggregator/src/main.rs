@@ -54,19 +54,23 @@ fn main() -> Result<()> {
     }
 
     match args.backend {
-        StorageBackend::Memory => run(MemStorage::new(), fixture),
+        StorageBackend::Memory => run(MemStorage::new(), fixture, None),
         #[cfg(feature = "rocks")]
         StorageBackend::Rocks => {
-            let storage_dir = args.data.unwrap_or("rocks.test".into());
+            let storage_dir = args.data.clone().unwrap_or("rocks.test".into());
             println!("starting rocksdb...");
             let rocks = RocksStorage::new(storage_dir)?;
             println!("rocks ready.");
-            run(rocks, fixture)
+            run(rocks, fixture, args.data)
         }
     }
 }
 
-fn run(mut storage: impl LinkStorage, fixture: Option<PathBuf>) -> Result<()> {
+fn run(
+    mut storage: impl LinkStorage,
+    fixture: Option<PathBuf>,
+    data_dir: Option<PathBuf>,
+) -> Result<()> {
     let qsize = Arc::new(AtomicU32::new(0));
 
     thread::scope(|s| {
@@ -96,10 +100,34 @@ fn run(mut storage: impl LinkStorage, fixture: Option<PathBuf>) -> Result<()> {
         s.spawn(move || {
             let process_collector = metrics_process::Collector::default();
             process_collector.describe();
-
+            metrics::describe_gauge!(
+                "storage.available",
+                metrics::Unit::Bytes,
+                "available to be allocated"
+            );
+            metrics::describe_gauge!(
+                "storage.free",
+                metrics::Unit::Bytes,
+                "unused bytes in filesystem"
+            );
+            if let Some(ref p) = data_dir {
+                if let Err(e) = fs4::available_space(p) {
+                    eprintln!("fs4 failed to get available space. may not be supported here? space metrics may be absent. e: {e:?}");
+                } else {
+                    println!("disk space monitoring should work, watching at {p:?}");
+                }
+            }
             while !consumer.is_finished() {
                 readable.summarize(qsize.load(Ordering::Relaxed));
                 process_collector.collect();
+                if let Some(ref p) = data_dir {
+                    if let Ok(avail) = fs4::available_space(p) {
+                        metrics::gauge!("storage.available").set(avail as f64);
+                    }
+                    if let Ok(free) = fs4::free_space(p) {
+                        metrics::gauge!("storage.free").set(free as f64);
+                    }
+                }
                 thread::sleep(time::Duration::from_secs(3));
             }
             let _ = stop_server.send(());
