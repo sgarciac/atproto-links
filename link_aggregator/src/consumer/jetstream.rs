@@ -238,10 +238,7 @@ pub fn consume_jetstream(
 
             // only actually update our cursor after we've managed to queue the event
             latest_cursor = Some(ts);
-            match ts_age(ts) {
-                Ok(age) => gauge!("jetstream.cursor.age", "url" => url).set(age.as_micros() as f64),
-                Err(e) => eprintln!("jetstream: failed to compute cursor age: {e:?}"),
-            }
+            gauge!("jetstream.cursor.age", "url" => url).set(ts_age(ts).as_micros() as f64);
         }
     }
     Err(anyhow::anyhow!("broke out of jetstream loop"))
@@ -256,6 +253,8 @@ fn get_event_time(v: &JsonValue) -> Option<u64> {
     None
 }
 
-fn ts_age(ts: u64) -> anyhow::Result<time::Duration> {
-    Ok((time::UNIX_EPOCH + time::Duration::from_micros(ts)).elapsed()?)
+fn ts_age(ts: u64) -> time::Duration {
+    (time::UNIX_EPOCH + time::Duration::from_micros(ts))
+        .elapsed()
+        .unwrap_or(time::Duration::from_secs(0)) // saturate zero if ts > our system time
 }
