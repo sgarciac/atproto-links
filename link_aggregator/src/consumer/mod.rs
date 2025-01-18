@@ -43,13 +43,17 @@ pub fn consume(mut store: impl LinkStorage, qsize: Arc<AtomicU32>, fixture: Opti
         )
     } else {
         let (sender, receiver) = flume::unbounded(); // eek
-        (receiver, thread::spawn(move || consume_jetstream(sender)))
+        let cursor = store.get_cursor().unwrap();
+        (
+            receiver,
+            thread::spawn(move || consume_jetstream(sender, cursor)),
+        )
     };
 
     for update in receiver.iter() {
-        if let Some(action) = get_actionable(&update) {
+        if let Some((action, ts)) = get_actionable(&update) {
             {
-                store.push(&action).unwrap();
+                store.push(&action, ts).unwrap();
                 qsize.store(receiver.len().try_into().unwrap(), Ordering::Relaxed);
             }
         } else {
@@ -60,7 +64,15 @@ pub fn consume(mut store: impl LinkStorage, qsize: Arc<AtomicU32>, fixture: Opti
     consumer_handle.join().unwrap().unwrap()
 }
 
-pub fn get_actionable(event: &JsonValue) -> Option<ActionableEvent> {
+pub fn get_actionable(event: &JsonValue) -> Option<(ActionableEvent, u64)> {
+    let JsonValue::Object(root) = event else {
+        return None;
+    };
+    let JsonValue::Number(time_us) = root.get("time_us")? else {
+        return None;
+    };
+    let cursor = *time_us as u64;
+    // todo: clean up
     match event {
         JsonValue::Object(root)
             if root.get("kind") == Some(&JsonValue::String("commit".to_string())) =>
@@ -94,14 +106,17 @@ pub fn get_actionable(event: &JsonValue) -> Option<ActionableEvent> {
                     if links.is_empty() {
                         None
                     } else {
-                        Some(ActionableEvent::CreateLinks {
-                            record_id: RecordId {
-                                did: did.into(),
-                                collection: collection.clone(),
-                                rkey: rkey.clone(),
+                        Some((
+                            ActionableEvent::CreateLinks {
+                                record_id: RecordId {
+                                    did: did.into(),
+                                    collection: collection.clone(),
+                                    rkey: rkey.clone(),
+                                },
+                                links,
                             },
-                            links,
-                        })
+                            cursor,
+                        ))
                     }
                 }
                 JsonValue::String(op) if op == "update" => {
@@ -117,22 +132,28 @@ pub fn get_actionable(event: &JsonValue) -> Option<ActionableEvent> {
                         )
                         .increment(links.len() as u64);
                     }
-                    Some(ActionableEvent::UpdateLinks {
-                        record_id: RecordId {
-                            did: did.into(),
-                            collection: collection.clone(),
-                            rkey: rkey.clone(),
+                    Some((
+                        ActionableEvent::UpdateLinks {
+                            record_id: RecordId {
+                                did: did.into(),
+                                collection: collection.clone(),
+                                rkey: rkey.clone(),
+                            },
+                            new_links: links,
                         },
-                        new_links: links,
-                    })
+                        cursor,
+                    ))
                 }
                 JsonValue::String(op) if op == "delete" => {
                     counter!("consumer.events.actionable", "action_type" => "delete_record", "collection" => collection.clone()).increment(1);
-                    Some(ActionableEvent::DeleteRecord(RecordId {
-                        did: did.into(),
-                        collection: collection.clone(),
-                        rkey: rkey.clone(),
-                    }))
+                    Some((
+                        ActionableEvent::DeleteRecord(RecordId {
+                            did: did.into(),
+                            collection: collection.clone(),
+                            rkey: rkey.clone(),
+                        }),
+                        cursor,
+                    ))
                 }
                 _ => None,
             }
@@ -143,21 +164,20 @@ pub fn get_actionable(event: &JsonValue) -> Option<ActionableEvent> {
             let JsonValue::Object(account) = root.get("account")? else {
                 return None;
             };
-            // counter!("consumer.events.actionable", "action_type" => "delete_record").increment(1);
             let did = account.get("did")?.get::<String>()?.clone();
             match (account.get("active")?.get::<bool>()?, account.get("status")) {
                 (true, None) => {
                     counter!("consumer.events.actionable", "action_type" => "account", "action" => "activate").increment(1);
-                    Some(ActionableEvent::ActivateAccount(did.into()))
+                    Some((ActionableEvent::ActivateAccount(did.into()), cursor))
                 }
                 (false, Some(JsonValue::String(status))) => match status.as_ref() {
                     "deactivated" => {
                         counter!("consumer.events.actionable", "action_type" => "account", "action" => "deactivate").increment(1);
-                        Some(ActionableEvent::DeactivateAccount(did.into()))
+                        Some((ActionableEvent::DeactivateAccount(did.into()), cursor))
                     }
                     "deleted" => {
                         counter!("consumer.events.actionable", "action_type" => "account", "action" => "delete").increment(1);
-                        Some(ActionableEvent::DeleteAccount(did.into()))
+                        Some((ActionableEvent::DeleteAccount(did.into()), cursor))
                     }
                     _ => None,
                 },
@@ -189,20 +209,23 @@ mod tests {
         let action = get_actionable(&rec);
         assert_eq!(
             action,
-            Some(ActionableEvent::CreateLinks {
-                record_id: RecordId {
-                    did: "did:plc:icprmty6ticzracr5urz4uum".into(),
-                    collection: "app.bsky.feed.like".into(),
-                    rkey: "3lfddpt5djw2c".into(),
-                },
-                links: vec![CollectedLink {
+            Some((
+                ActionableEvent::CreateLinks {
+                    record_id: RecordId {
+                        did: "did:plc:icprmty6ticzracr5urz4uum".into(),
+                        collection: "app.bsky.feed.like".into(),
+                        rkey: "3lfddpt5djw2c".into(),
+                    },
+                    links: vec![CollectedLink {
                     path: ".subject.uri".into(),
                     target: Link::AtUri(
                         "at://did:plc:lphckw3dz4mnh3ogmfpdgt6z/app.bsky.feed.post/3lfdau5f7wk23"
                             .into()
                     )
                 },],
-            })
+                },
+                1736448492661668
+            ))
         )
     }
 
@@ -231,20 +254,23 @@ mod tests {
         let action = get_actionable(&rec);
         assert_eq!(
             action,
-            Some(ActionableEvent::UpdateLinks {
-                record_id: RecordId {
-                    did: "did:plc:tcmiubbjtkwhmnwmrvr2eqnx".into(),
-                    collection: "app.bsky.actor.profile".into(),
-                    rkey: "self".into(),
-                },
-                new_links: vec![CollectedLink {
+            Some((
+                ActionableEvent::UpdateLinks {
+                    record_id: RecordId {
+                        did: "did:plc:tcmiubbjtkwhmnwmrvr2eqnx".into(),
+                        collection: "app.bsky.actor.profile".into(),
+                        rkey: "self".into(),
+                    },
+                    new_links: vec![CollectedLink {
                     path: ".pinnedPost.uri".into(),
                     target: Link::AtUri(
                         "at://did:plc:tcmiubbjtkwhmnwmrvr2eqnx/app.bsky.feed.post/3lf66ri63u22t"
                             .into()
                     ),
                 },],
-            })
+                },
+                1736453696817289
+            ))
         )
     }
 
@@ -259,11 +285,14 @@ mod tests {
         let action = get_actionable(&rec);
         assert_eq!(
             action,
-            Some(ActionableEvent::DeleteRecord(RecordId {
-                did: "did:plc:3pa2ss4l2sqzhy6wud4btqsj".into(),
-                collection: "app.bsky.feed.like".into(),
-                rkey: "3lbiu72lczk2w".into(),
-            }))
+            Some((
+                ActionableEvent::DeleteRecord(RecordId {
+                    did: "did:plc:3pa2ss4l2sqzhy6wud4btqsj".into(),
+                    collection: "app.bsky.feed.like".into(),
+                    rkey: "3lbiu72lczk2w".into(),
+                }),
+                1736448492690783
+            ))
         )
     }
 
@@ -278,8 +307,9 @@ mod tests {
         let action = get_actionable(&rec);
         assert_eq!(
             action,
-            Some(ActionableEvent::DeleteAccount(
-                "did:plc:zsgqovouzm2gyksjkqrdodsw".into()
+            Some((
+                ActionableEvent::DeleteAccount("did:plc:zsgqovouzm2gyksjkqrdodsw".into()),
+                1736451739215876
             ))
         )
     }
@@ -292,8 +322,9 @@ mod tests {
         let action = get_actionable(&rec);
         assert_eq!(
             action,
-            Some(ActionableEvent::DeactivateAccount(
-                "did:plc:l4jb3hkq7lrblferbywxkiol".into()
+            Some((
+                ActionableEvent::DeactivateAccount("did:plc:l4jb3hkq7lrblferbywxkiol".into()),
+                1736451745611273
             ))
         )
     }
@@ -306,8 +337,9 @@ mod tests {
         let action = get_actionable(&rec);
         assert_eq!(
             action,
-            Some(ActionableEvent::ActivateAccount(
-                "did:plc:nct6zfb2j4emoj4yjomxwml2".into()
+            Some((
+                ActionableEvent::ActivateAccount("did:plc:nct6zfb2j4emoj4yjomxwml2".into()),
+                1736451747292706
             ))
         )
     }

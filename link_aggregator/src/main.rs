@@ -138,8 +138,8 @@ mod tests {
             },
             "cid":"bafyreidgcs2id7nsbp6co42ind2wcig3riwcvypwan6xdywyfqklovhdjq"}
         }"#.parse().unwrap();
-        let action = get_actionable(&rec).unwrap();
-        storage.push(&action).unwrap();
+        let (action, ts) = get_actionable(&rec).unwrap();
+        storage.push(&action, ts).unwrap();
         assert_eq!(
             storage
                 .get_count(

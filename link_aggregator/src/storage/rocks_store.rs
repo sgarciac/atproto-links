@@ -1,4 +1,4 @@
-use super::{LinkReader, LinkStorage};
+use super::{ActionableEvent, LinkReader, LinkStorage};
 use anyhow::{bail, Result};
 use bincode::Options as BincodeOptions;
 use link_aggregator::{Did, RecordId};
@@ -21,6 +21,8 @@ static DID_IDS_CF: &str = "did_ids";
 static TARGET_IDS_CF: &str = "target_ids";
 static TARGET_LINKERS_CF: &str = "target_links";
 static LINK_TARGETS_CF: &str = "link_targets";
+
+static JETSTREAM_CURSOR_KEY: &str = "jetstream_cursor";
 
 // todo: actually understand and set these options probably better
 fn rocks_opts_base() -> Options {
@@ -395,15 +397,15 @@ impl RocksStorage {
         }
         eprintln!("done checking.");
     }
-}
 
-impl LinkStorage for RocksStorage {
-    fn add_links(&mut self, record_id: &RecordId, links: &[CollectedLink]) {
-        let mut batch = WriteBatch::default();
+    //
+    // higher-level event action handlers
+    //
 
+    fn add_links(&mut self, record_id: &RecordId, links: &[CollectedLink], batch: &mut WriteBatch) {
         let DidIdValue(did_id, _) = self
             .did_id_table
-            .get_or_create_id_val(&self.db, &mut batch, &record_id.did)
+            .get_or_create_id_val(&self.db, batch, &record_id.did)
             .unwrap();
 
         let record_link_key = RecordLinkKey(
@@ -421,20 +423,17 @@ impl LinkStorage for RocksStorage {
             );
             let target_id = self
                 .target_id_table
-                .get_or_create_id_val(&self.db, &mut batch, &target_key)
+                .get_or_create_id_val(&self.db, batch, &target_key)
                 .unwrap();
-            self.merge_target_linker(&mut batch, &target_id, &did_id);
+            self.merge_target_linker(batch, &target_id, &did_id);
 
             record_link_targets.add(RecordLinkTarget(RPath(path.clone()), target_id))
         }
 
-        self.put_link_targets(&mut batch, &record_link_key, &record_link_targets);
-        self.db.write(batch).unwrap();
+        self.put_link_targets(batch, &record_link_key, &record_link_targets);
     }
 
-    fn remove_links(&mut self, record_id: &RecordId) {
-        let mut batch = WriteBatch::default();
-
+    fn remove_links(&mut self, record_id: &RecordId, batch: &mut WriteBatch) {
         let Some(DidIdValue(linking_did_id, did_active)) = self
             .did_id_table
             .get_id_val(&self.db, &record_id.did)
@@ -462,7 +461,7 @@ impl LinkStorage for RocksStorage {
         // we do read -> modify -> write here: could merge-op in the deletes instead?
         // otherwise it's another single-thread-constraining thing.
         for (i, RecordLinkTarget(rpath, target_id)) in record_link_targets.0.iter().enumerate() {
-            self.update_target_linkers(&mut batch, target_id, |mut linkers| {
+            self.update_target_linkers(batch, target_id, |mut linkers| {
                 if linkers.0.is_empty() {
                     eprintln!("about to blow up because a linked target is apparently missing.");
                     eprintln!("removing links for: {record_id:?}");
@@ -482,37 +481,42 @@ impl LinkStorage for RocksStorage {
             }).unwrap();
         }
 
-        self.delete_record_link(&mut batch, &record_link_key);
-        self.db.write(batch).unwrap();
+        self.delete_record_link(batch, &record_link_key);
     }
 
-    fn set_account(&mut self, did: &Did, active: bool) {
+    fn update_links(
+        &mut self,
+        record_id: &RecordId,
+        new_links: &[CollectedLink],
+        batch: &mut WriteBatch,
+    ) {
+        self.remove_links(record_id, batch);
+        self.add_links(record_id, new_links, batch);
+    }
+
+    fn set_account(&mut self, did: &Did, active: bool, batch: &mut WriteBatch) {
         // this needs to be read-modify-write since the did_id needs to stay the same,
         // which has a benefit of allowing to avoid adding entries for dids we don't
         // need. reading on dids needs to be cheap anyway for the current design, and
         // did active/inactive updates are low-freq in the firehose so, eh, it's fine.
-        let mut batch = WriteBatch::default();
-        self.update_did_id_value(&mut batch, did, |current_value| {
+        self.update_did_id_value(batch, did, |current_value| {
             Some(DidIdValue(current_value.did_id(), active))
         })
         .unwrap();
-        self.db.write(batch).unwrap();
     }
 
-    fn delete_account(&mut self, did: &Did) {
-        let mut batch = WriteBatch::default();
-
+    fn delete_account(&mut self, did: &Did, batch: &mut WriteBatch) {
         let Some(DidIdValue(did_id, active)) = self.did_id_table.get_id_val(&self.db, did).unwrap()
         else {
             return; // ignore updates for dids we don't know about
         };
-        self.delete_did_id_value(&mut batch, did);
+        self.delete_did_id_value(batch, did);
 
         for (i, (record_link_key, links)) in self.iter_links_for_did_id(&did_id).enumerate() {
-            self.delete_record_link(&mut batch, &record_link_key); // _could_ use delete range here instead of individual deletes, but since we have to scan anyway it's not obvious if it's better
+            self.delete_record_link(batch, &record_link_key); // _could_ use delete range here instead of individual deletes, but since we have to scan anyway it's not obvious if it's better
 
             for (j, RecordLinkTarget(path, target_link_id)) in links.0.iter().enumerate() {
-                self.update_target_linkers(&mut batch, target_link_id, |mut linkers| {
+                self.update_target_linkers(batch, target_link_id, |mut linkers| {
                     if !linkers.remove_last_linker(&did_id) {
                         eprintln!(
                             "DELETING ACCOUNT: blowing up: missing linker entry in linked target."
@@ -543,8 +547,51 @@ impl LinkStorage for RocksStorage {
                 .unwrap();
             }
         }
+    }
+}
 
-        self.db.write(batch).unwrap();
+impl AsRocksValue for u64 {}
+impl ValueFromRocks for u64 {}
+
+impl LinkStorage for RocksStorage {
+    fn get_cursor(&mut self) -> Result<Option<u64>> {
+        self.db
+            .get(JETSTREAM_CURSOR_KEY)?
+            .map(|b| _vr(&b))
+            .transpose()
+    }
+
+    fn push(&mut self, event: &ActionableEvent, cursor: u64) -> Result<()> {
+        let mut batch = WriteBatch::default();
+        match event {
+            ActionableEvent::CreateLinks { record_id, links } => {
+                self.add_links(record_id, links, &mut batch)
+            }
+            ActionableEvent::UpdateLinks {
+                record_id,
+                new_links,
+            } => self.update_links(record_id, new_links, &mut batch),
+            ActionableEvent::DeleteRecord(record_id) => self.remove_links(record_id, &mut batch),
+            ActionableEvent::ActivateAccount(did) => self.set_account(did, true, &mut batch),
+            ActionableEvent::DeactivateAccount(did) => self.set_account(did, false, &mut batch),
+            ActionableEvent::DeleteAccount(did) => self.delete_account(did, &mut batch),
+        }
+        batch.put(JETSTREAM_CURSOR_KEY.as_bytes(), _rv(cursor));
+        self.db.write(batch)?;
+        Ok(())
+    }
+
+    fn add_links(&mut self, _record_id: &RecordId, _links: &[CollectedLink]) {
+        unimplemented!("customized push");
+    }
+    fn remove_links(&mut self, _record_id: &RecordId) {
+        unimplemented!("customized push");
+    }
+    fn set_account(&mut self, _did: &Did, _active: bool) {
+        unimplemented!("customized push");
+    }
+    fn delete_account(&mut self, _did: &Did) {
+        unimplemented!("customized push");
     }
 
     fn to_readable(&mut self) -> impl LinkReader {
@@ -715,35 +762,42 @@ mod tests {
         let mut store = RocksStorage::new(tempdir()?)?;
 
         // create a link from the deleter account
-        store.push(&ActionableEvent::CreateLinks {
-            record_id: RecordId {
-                did: "did:plc:will-shortly-delete".into(),
-                collection: "a.b.c".into(),
-                rkey: "asdf".into(),
+        store.push(
+            &ActionableEvent::CreateLinks {
+                record_id: RecordId {
+                    did: "did:plc:will-shortly-delete".into(),
+                    collection: "a.b.c".into(),
+                    rkey: "asdf".into(),
+                },
+                links: vec![CollectedLink {
+                    target: Link::Uri("example.com".into()),
+                    path: ".uri".into(),
+                }],
             },
-            links: vec![CollectedLink {
-                target: Link::Uri("example.com".into()),
-                path: ".uri".into(),
-            }],
-        })?;
+            0,
+        )?;
 
         // and a different link from a separate, new account (later in didid prefix iteration)
-        store.push(&ActionableEvent::CreateLinks {
-            record_id: RecordId {
-                did: "did:plc:someone-else".into(),
-                collection: "a.b.c".into(),
-                rkey: "asdf".into(),
+        store.push(
+            &ActionableEvent::CreateLinks {
+                record_id: RecordId {
+                    did: "did:plc:someone-else".into(),
+                    collection: "a.b.c".into(),
+                    rkey: "asdf".into(),
+                },
+                links: vec![CollectedLink {
+                    target: Link::Uri("another.example.com".into()),
+                    path: ".uri".into(),
+                }],
             },
-            links: vec![CollectedLink {
-                target: Link::Uri("another.example.com".into()),
-                path: ".uri".into(),
-            }],
-        })?;
+            0,
+        )?;
 
         // now delete the first account (this is where the buggy version explodes)
-        store.push(&ActionableEvent::DeleteAccount(
-            "did:plc:will-shortly-delete".into(),
-        ))?;
+        store.push(
+            &ActionableEvent::DeleteAccount("did:plc:will-shortly-delete".into()),
+            0,
+        )?;
 
         Ok(())
     }

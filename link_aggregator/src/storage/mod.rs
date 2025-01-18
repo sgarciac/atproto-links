@@ -11,7 +11,10 @@ pub mod rocks_store;
 pub use rocks_store::RocksStorage;
 
 pub trait LinkStorage: Send + Sync {
-    fn push(&mut self, event: &ActionableEvent) -> Result<()> {
+    fn get_cursor(&mut self) -> Result<Option<u64>> {
+        Ok(None)
+    }
+    fn push(&mut self, event: &ActionableEvent, _cursor: u64) -> Result<()> {
         match event {
             ActionableEvent::CreateLinks { record_id, links } => self.add_links(record_id, links),
             ActionableEvent::UpdateLinks {
@@ -92,227 +95,278 @@ mod tests {
     });
 
     test_each_storage!(test_add_link, |storage| {
-        storage.push(&ActionableEvent::CreateLinks {
-            record_id: RecordId {
-                did: "did:plc:asdf".into(),
-                collection: "app.t.c".into(),
-                rkey: "fdsa".into(),
+        storage.push(
+            &ActionableEvent::CreateLinks {
+                record_id: RecordId {
+                    did: "did:plc:asdf".into(),
+                    collection: "app.t.c".into(),
+                    rkey: "fdsa".into(),
+                },
+                links: vec![CollectedLink {
+                    target: Link::Uri("e.com".into()),
+                    path: ".abc.uri".into(),
+                }],
             },
-            links: vec![CollectedLink {
-                target: Link::Uri("e.com".into()),
-                path: ".abc.uri".into(),
-            }],
-        })?;
+            0,
+        )?;
         assert_eq!(storage.get_count("e.com", "app.t.c", ".abc.uri")?, 1);
         assert_eq!(storage.get_count("bad.com", "app.t.c", ".abc.uri")?, 0);
         assert_eq!(storage.get_count("e.com", "app.t.c", ".bad.uri")?, 0);
     });
 
     test_each_storage!(test_links, |storage| {
-        storage.push(&ActionableEvent::CreateLinks {
-            record_id: RecordId {
-                did: "did:plc:asdf".into(),
-                collection: "app.t.c".into(),
-                rkey: "fdsa".into(),
+        storage.push(
+            &ActionableEvent::CreateLinks {
+                record_id: RecordId {
+                    did: "did:plc:asdf".into(),
+                    collection: "app.t.c".into(),
+                    rkey: "fdsa".into(),
+                },
+                links: vec![CollectedLink {
+                    target: Link::Uri("e.com".into()),
+                    path: ".abc.uri".into(),
+                }],
             },
-            links: vec![CollectedLink {
-                target: Link::Uri("e.com".into()),
-                path: ".abc.uri".into(),
-            }],
-        })?;
+            0,
+        )?;
 
         // delete under the wrong collection
-        storage.push(&ActionableEvent::DeleteRecord(RecordId {
-            did: "did:plc:asdf".into(),
-            collection: "app.test.wrongcollection".into(),
-            rkey: "fdsa".into(),
-        }))?;
+        storage.push(
+            &ActionableEvent::DeleteRecord(RecordId {
+                did: "did:plc:asdf".into(),
+                collection: "app.test.wrongcollection".into(),
+                rkey: "fdsa".into(),
+            }),
+            0,
+        )?;
         assert_eq!(storage.get_count("e.com", "app.t.c", ".abc.uri")?, 1);
 
         // delete under the wrong rkey
-        storage.push(&ActionableEvent::DeleteRecord(RecordId {
-            did: "did:plc:asdf".into(),
-            collection: "app.t.c".into(),
-            rkey: "wrongkey".into(),
-        }))?;
+        storage.push(
+            &ActionableEvent::DeleteRecord(RecordId {
+                did: "did:plc:asdf".into(),
+                collection: "app.t.c".into(),
+                rkey: "wrongkey".into(),
+            }),
+            0,
+        )?;
         assert_eq!(storage.get_count("e.com", "app.t.c", ".abc.uri")?, 1);
 
         // finally actually delete it
-        storage.push(&ActionableEvent::DeleteRecord(RecordId {
-            did: "did:plc:asdf".into(),
-            collection: "app.t.c".into(),
-            rkey: "fdsa".into(),
-        }))?;
+        storage.push(
+            &ActionableEvent::DeleteRecord(RecordId {
+                did: "did:plc:asdf".into(),
+                collection: "app.t.c".into(),
+                rkey: "fdsa".into(),
+            }),
+            0,
+        )?;
         assert_eq!(storage.get_count("e.com", "app.t.c", ".abc.uri")?, 0);
 
         // put it back
-        storage.push(&ActionableEvent::CreateLinks {
-            record_id: RecordId {
-                did: "did:plc:asdf".into(),
-                collection: "app.t.c".into(),
-                rkey: "fdsa".into(),
+        storage.push(
+            &ActionableEvent::CreateLinks {
+                record_id: RecordId {
+                    did: "did:plc:asdf".into(),
+                    collection: "app.t.c".into(),
+                    rkey: "fdsa".into(),
+                },
+                links: vec![CollectedLink {
+                    target: Link::Uri("e.com".into()),
+                    path: ".abc.uri".into(),
+                }],
             },
-            links: vec![CollectedLink {
-                target: Link::Uri("e.com".into()),
-                path: ".abc.uri".into(),
-            }],
-        })?;
+            0,
+        )?;
         assert_eq!(storage.get_count("e.com", "app.t.c", ".abc.uri")?, 1);
 
         // add another link from this user
-        storage.push(&ActionableEvent::CreateLinks {
-            record_id: RecordId {
-                did: "did:plc:asdf".into(),
-                collection: "app.t.c".into(),
-                rkey: "fdsa2".into(),
+        storage.push(
+            &ActionableEvent::CreateLinks {
+                record_id: RecordId {
+                    did: "did:plc:asdf".into(),
+                    collection: "app.t.c".into(),
+                    rkey: "fdsa2".into(),
+                },
+                links: vec![CollectedLink {
+                    target: Link::Uri("e.com".into()),
+                    path: ".abc.uri".into(),
+                }],
             },
-            links: vec![CollectedLink {
-                target: Link::Uri("e.com".into()),
-                path: ".abc.uri".into(),
-            }],
-        })?;
+            0,
+        )?;
         assert_eq!(storage.get_count("e.com", "app.t.c", ".abc.uri")?, 2);
 
         // add a link from someone else
-        storage.push(&ActionableEvent::CreateLinks {
-            record_id: RecordId {
-                did: "did:plc:asdfasdf".into(),
-                collection: "app.t.c".into(),
-                rkey: "fdsa".into(),
+        storage.push(
+            &ActionableEvent::CreateLinks {
+                record_id: RecordId {
+                    did: "did:plc:asdfasdf".into(),
+                    collection: "app.t.c".into(),
+                    rkey: "fdsa".into(),
+                },
+                links: vec![CollectedLink {
+                    target: Link::Uri("e.com".into()),
+                    path: ".abc.uri".into(),
+                }],
             },
-            links: vec![CollectedLink {
-                target: Link::Uri("e.com".into()),
-                path: ".abc.uri".into(),
-            }],
-        })?;
+            0,
+        )?;
         assert_eq!(storage.get_count("e.com", "app.t.c", ".abc.uri")?, 3);
 
         // aaaand delete the first one again
-        storage.push(&ActionableEvent::DeleteRecord(RecordId {
-            did: "did:plc:asdf".into(),
-            collection: "app.t.c".into(),
-            rkey: "fdsa".into(),
-        }))?;
+        storage.push(
+            &ActionableEvent::DeleteRecord(RecordId {
+                did: "did:plc:asdf".into(),
+                collection: "app.t.c".into(),
+                rkey: "fdsa".into(),
+            }),
+            0,
+        )?;
         assert_eq!(storage.get_count("e.com", "app.t.c", ".abc.uri")?, 2);
     });
 
     test_each_storage!(test_two_user_links_delete_one, |storage| {
         // create the first link
-        storage.push(&ActionableEvent::CreateLinks {
-            record_id: RecordId {
-                did: "did:plc:asdf".into(),
-                collection: "app.t.c".into(),
-                rkey: "A".into(),
+        storage.push(
+            &ActionableEvent::CreateLinks {
+                record_id: RecordId {
+                    did: "did:plc:asdf".into(),
+                    collection: "app.t.c".into(),
+                    rkey: "A".into(),
+                },
+                links: vec![CollectedLink {
+                    target: Link::Uri("e.com".into()),
+                    path: ".abc.uri".into(),
+                }],
             },
-            links: vec![CollectedLink {
-                target: Link::Uri("e.com".into()),
-                path: ".abc.uri".into(),
-            }],
-        })?;
+            0,
+        )?;
         assert_eq!(storage.get_count("e.com", "app.t.c", ".abc.uri")?, 1);
 
         // create the second link (same user, different rkey)
-        storage.push(&ActionableEvent::CreateLinks {
-            record_id: RecordId {
-                did: "did:plc:asdf".into(),
-                collection: "app.t.c".into(),
-                rkey: "B".into(),
+        storage.push(
+            &ActionableEvent::CreateLinks {
+                record_id: RecordId {
+                    did: "did:plc:asdf".into(),
+                    collection: "app.t.c".into(),
+                    rkey: "B".into(),
+                },
+                links: vec![CollectedLink {
+                    target: Link::Uri("e.com".into()),
+                    path: ".abc.uri".into(),
+                }],
             },
-            links: vec![CollectedLink {
-                target: Link::Uri("e.com".into()),
-                path: ".abc.uri".into(),
-            }],
-        })?;
+            0,
+        )?;
         assert_eq!(storage.get_count("e.com", "app.t.c", ".abc.uri")?, 2);
 
         // aaaand delete the first link
-        storage.push(&ActionableEvent::DeleteRecord(RecordId {
-            did: "did:plc:asdf".into(),
-            collection: "app.t.c".into(),
-            rkey: "A".into(),
-        }))?;
+        storage.push(
+            &ActionableEvent::DeleteRecord(RecordId {
+                did: "did:plc:asdf".into(),
+                collection: "app.t.c".into(),
+                rkey: "A".into(),
+            }),
+            0,
+        )?;
 
         assert_eq!(storage.get_count("e.com", "app.t.c", ".abc.uri")?, 1);
     });
 
     test_each_storage!(test_accounts, |storage| {
         // create two links
-        storage.push(&ActionableEvent::CreateLinks {
-            record_id: RecordId {
-                did: "did:plc:asdf".into(),
-                collection: "app.t.c".into(),
-                rkey: "A".into(),
+        storage.push(
+            &ActionableEvent::CreateLinks {
+                record_id: RecordId {
+                    did: "did:plc:asdf".into(),
+                    collection: "app.t.c".into(),
+                    rkey: "A".into(),
+                },
+                links: vec![CollectedLink {
+                    target: Link::Uri("a.com".into()),
+                    path: ".abc.uri".into(),
+                }],
             },
-            links: vec![CollectedLink {
-                target: Link::Uri("a.com".into()),
-                path: ".abc.uri".into(),
-            }],
-        })?;
-        storage.push(&ActionableEvent::CreateLinks {
-            record_id: RecordId {
-                did: "did:plc:asdf".into(),
-                collection: "app.t.c".into(),
-                rkey: "B".into(),
+            0,
+        )?;
+        storage.push(
+            &ActionableEvent::CreateLinks {
+                record_id: RecordId {
+                    did: "did:plc:asdf".into(),
+                    collection: "app.t.c".into(),
+                    rkey: "B".into(),
+                },
+                links: vec![CollectedLink {
+                    target: Link::Uri("b.com".into()),
+                    path: ".abc.uri".into(),
+                }],
             },
-            links: vec![CollectedLink {
-                target: Link::Uri("b.com".into()),
-                path: ".abc.uri".into(),
-            }],
-        })?;
+            0,
+        )?;
         assert_eq!(storage.get_count("a.com", "app.t.c", ".abc.uri")?, 1);
         assert_eq!(storage.get_count("b.com", "app.t.c", ".abc.uri")?, 1);
 
         // and a third from a different account
-        storage.push(&ActionableEvent::CreateLinks {
-            record_id: RecordId {
-                did: "did:plc:fdsa".into(),
-                collection: "app.t.c".into(),
-                rkey: "A".into(),
+        storage.push(
+            &ActionableEvent::CreateLinks {
+                record_id: RecordId {
+                    did: "did:plc:fdsa".into(),
+                    collection: "app.t.c".into(),
+                    rkey: "A".into(),
+                },
+                links: vec![CollectedLink {
+                    target: Link::Uri("a.com".into()),
+                    path: ".abc.uri".into(),
+                }],
             },
-            links: vec![CollectedLink {
-                target: Link::Uri("a.com".into()),
-                path: ".abc.uri".into(),
-            }],
-        })?;
+            0,
+        )?;
         assert_eq!(storage.get_count("a.com", "app.t.c", ".abc.uri")?, 2);
 
         // delete the first account
-        storage.push(&ActionableEvent::DeleteAccount("did:plc:asdf".into()))?;
+        storage.push(&ActionableEvent::DeleteAccount("did:plc:asdf".into()), 0)?;
         assert_eq!(storage.get_count("a.com", "app.t.c", ".abc.uri")?, 1);
         assert_eq!(storage.get_count("b.com", "app.t.c", ".abc.uri")?, 0);
     });
 
     test_each_storage!(multi_link, |storage| {
-        storage.push(&ActionableEvent::CreateLinks {
-            record_id: RecordId {
-                did: "did:plc:asdf".into(),
-                collection: "app.t.c".into(),
-                rkey: "fdsa".into(),
+        storage.push(
+            &ActionableEvent::CreateLinks {
+                record_id: RecordId {
+                    did: "did:plc:asdf".into(),
+                    collection: "app.t.c".into(),
+                    rkey: "fdsa".into(),
+                },
+                links: vec![
+                    CollectedLink {
+                        target: Link::Uri("e.com".into()),
+                        path: ".abc.uri".into(),
+                    },
+                    CollectedLink {
+                        target: Link::Uri("f.com".into()),
+                        path: ".xyz[].uri".into(),
+                    },
+                    CollectedLink {
+                        target: Link::Uri("g.com".into()),
+                        path: ".xyz[].uri".into(),
+                    },
+                ],
             },
-            links: vec![
-                CollectedLink {
-                    target: Link::Uri("e.com".into()),
-                    path: ".abc.uri".into(),
-                },
-                CollectedLink {
-                    target: Link::Uri("f.com".into()),
-                    path: ".xyz[].uri".into(),
-                },
-                CollectedLink {
-                    target: Link::Uri("g.com".into()),
-                    path: ".xyz[].uri".into(),
-                },
-            ],
-        })?;
+            0,
+        )?;
         assert_eq!(storage.get_count("e.com", "app.t.c", ".abc.uri")?, 1);
         assert_eq!(storage.get_count("f.com", "app.t.c", ".xyz[].uri")?, 1);
         assert_eq!(storage.get_count("g.com", "app.t.c", ".xyz[].uri")?, 1);
 
-        storage.push(&ActionableEvent::DeleteRecord(RecordId {
-            did: "did:plc:asdf".into(),
-            collection: "app.t.c".into(),
-            rkey: "fdsa".into(),
-        }))?;
+        storage.push(
+            &ActionableEvent::DeleteRecord(RecordId {
+                did: "did:plc:asdf".into(),
+                collection: "app.t.c".into(),
+                rkey: "fdsa".into(),
+            }),
+            0,
+        )?;
         assert_eq!(storage.get_count("e.com", "app.t.c", ".abc.uri")?, 0);
         assert_eq!(storage.get_count("f.com", "app.t.c", ".xyz[].uri")?, 0);
         assert_eq!(storage.get_count("g.com", "app.t.c", ".xyz[].uri")?, 0);
@@ -320,53 +374,59 @@ mod tests {
 
     test_each_storage!(update_link, |storage| {
         // create the links
-        storage.push(&ActionableEvent::CreateLinks {
-            record_id: RecordId {
-                did: "did:plc:asdf".into(),
-                collection: "app.t.c".into(),
-                rkey: "fdsa".into(),
+        storage.push(
+            &ActionableEvent::CreateLinks {
+                record_id: RecordId {
+                    did: "did:plc:asdf".into(),
+                    collection: "app.t.c".into(),
+                    rkey: "fdsa".into(),
+                },
+                links: vec![
+                    CollectedLink {
+                        target: Link::Uri("e.com".into()),
+                        path: ".abc.uri".into(),
+                    },
+                    CollectedLink {
+                        target: Link::Uri("f.com".into()),
+                        path: ".xyz[].uri".into(),
+                    },
+                    CollectedLink {
+                        target: Link::Uri("g.com".into()),
+                        path: ".xyz[].uri".into(),
+                    },
+                ],
             },
-            links: vec![
-                CollectedLink {
-                    target: Link::Uri("e.com".into()),
-                    path: ".abc.uri".into(),
-                },
-                CollectedLink {
-                    target: Link::Uri("f.com".into()),
-                    path: ".xyz[].uri".into(),
-                },
-                CollectedLink {
-                    target: Link::Uri("g.com".into()),
-                    path: ".xyz[].uri".into(),
-                },
-            ],
-        })?;
+            0,
+        )?;
         assert_eq!(storage.get_count("e.com", "app.t.c", ".abc.uri")?, 1);
         assert_eq!(storage.get_count("f.com", "app.t.c", ".xyz[].uri")?, 1);
         assert_eq!(storage.get_count("g.com", "app.t.c", ".xyz[].uri")?, 1);
 
         // update them
-        storage.push(&ActionableEvent::UpdateLinks {
-            record_id: RecordId {
-                did: "did:plc:asdf".into(),
-                collection: "app.t.c".into(),
-                rkey: "fdsa".into(),
+        storage.push(
+            &ActionableEvent::UpdateLinks {
+                record_id: RecordId {
+                    did: "did:plc:asdf".into(),
+                    collection: "app.t.c".into(),
+                    rkey: "fdsa".into(),
+                },
+                new_links: vec![
+                    CollectedLink {
+                        target: Link::Uri("h.com".into()),
+                        path: ".abc.uri".into(),
+                    },
+                    CollectedLink {
+                        target: Link::Uri("f.com".into()),
+                        path: ".xyz[].uri".into(),
+                    },
+                    CollectedLink {
+                        target: Link::Uri("i.com".into()),
+                        path: ".xyz[].uri".into(),
+                    },
+                ],
             },
-            new_links: vec![
-                CollectedLink {
-                    target: Link::Uri("h.com".into()),
-                    path: ".abc.uri".into(),
-                },
-                CollectedLink {
-                    target: Link::Uri("f.com".into()),
-                    path: ".xyz[].uri".into(),
-                },
-                CollectedLink {
-                    target: Link::Uri("i.com".into()),
-                    path: ".xyz[].uri".into(),
-                },
-            ],
-        })?;
+            0,
+        )?;
         assert_eq!(storage.get_count("e.com", "app.t.c", ".abc.uri")?, 0);
         assert_eq!(storage.get_count("h.com", "app.t.c", ".abc.uri")?, 1);
         assert_eq!(storage.get_count("f.com", "app.t.c", ".xyz[].uri")?, 1);
@@ -376,46 +436,55 @@ mod tests {
 
     test_each_storage!(update_no_links_to_links, |storage| {
         // update without prior create (consumer would have filtered out the original)
-        storage.push(&ActionableEvent::UpdateLinks {
-            record_id: RecordId {
-                did: "did:plc:asdf".into(),
-                collection: "app.t.c".into(),
-                rkey: "asdf".into(),
+        storage.push(
+            &ActionableEvent::UpdateLinks {
+                record_id: RecordId {
+                    did: "did:plc:asdf".into(),
+                    collection: "app.t.c".into(),
+                    rkey: "asdf".into(),
+                },
+                new_links: vec![CollectedLink {
+                    target: Link::Uri("a.com".into()),
+                    path: ".abc.uri".into(),
+                }],
             },
-            new_links: vec![CollectedLink {
-                target: Link::Uri("a.com".into()),
-                path: ".abc.uri".into(),
-            }],
-        })?;
+            0,
+        )?;
         assert_eq!(storage.get_count("a.com", "app.t.c", ".abc.uri")?, 1);
     });
 
     test_each_storage!(delete_multi_link_same_target, |storage| {
-        storage.push(&ActionableEvent::CreateLinks {
-            record_id: RecordId {
-                did: "did:plc:asdf".into(),
-                collection: "app.t.c".into(),
-                rkey: "asdf".into(),
+        storage.push(
+            &ActionableEvent::CreateLinks {
+                record_id: RecordId {
+                    did: "did:plc:asdf".into(),
+                    collection: "app.t.c".into(),
+                    rkey: "asdf".into(),
+                },
+                links: vec![
+                    CollectedLink {
+                        target: Link::Uri("a.com".into()),
+                        path: ".abc.uri".into(),
+                    },
+                    CollectedLink {
+                        target: Link::Uri("a.com".into()),
+                        path: ".def.uri".into(),
+                    },
+                ],
             },
-            links: vec![
-                CollectedLink {
-                    target: Link::Uri("a.com".into()),
-                    path: ".abc.uri".into(),
-                },
-                CollectedLink {
-                    target: Link::Uri("a.com".into()),
-                    path: ".def.uri".into(),
-                },
-            ],
-        })?;
+            0,
+        )?;
         assert_eq!(storage.get_count("a.com", "app.t.c", ".abc.uri")?, 1);
         assert_eq!(storage.get_count("a.com", "app.t.c", ".def.uri")?, 1);
 
-        storage.push(&ActionableEvent::DeleteRecord(RecordId {
-            did: "did:plc:asdf".into(),
-            collection: "app.t.c".into(),
-            rkey: "asdf".into(),
-        }))?;
+        storage.push(
+            &ActionableEvent::DeleteRecord(RecordId {
+                did: "did:plc:asdf".into(),
+                collection: "app.t.c".into(),
+                rkey: "asdf".into(),
+            }),
+            0,
+        )?;
         assert_eq!(storage.get_count("a.com", "app.t.c", ".abc.uri")?, 0);
         assert_eq!(storage.get_count("a.com", "app.t.c", ".def.uri")?, 0);
     });
