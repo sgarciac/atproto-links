@@ -26,8 +26,8 @@ some todos
   - [x] event ts lag
 - [ ] machine resource metrics
   - [ ] disk consumption
-  - [ ] cpu usage
-  - [ ] mem usage
+  - [x] cpu usage
+  - [x] mem usage
   - [ ] network?
 - [ ] make all storage apis return Result
 - [ ] handle all the unwraps
@@ -40,3 +40,4 @@ some todos
 - [ ] clean up the main readme
 - [ ] web server metrics
 - [ ] tokio metrics?
+- [ ] handle shutdown cleanly -- be nice to rocksdb

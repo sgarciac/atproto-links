@@ -94,8 +94,12 @@ fn run(mut storage: impl LinkStorage, fixture: Option<PathBuf>) -> Result<()> {
         });
 
         s.spawn(move || {
+            let process_collector = metrics_process::Collector::default();
+            process_collector.describe();
+
             while !consumer.is_finished() {
                 readable.summarize(qsize.load(Ordering::Relaxed));
+                process_collector.collect();
                 thread::sleep(time::Duration::from_secs(3));
             }
             let _ = stop_server.send(());
