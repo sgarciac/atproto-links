@@ -22,47 +22,47 @@ pub fn consume_jetstream(
     cursor: Option<u64>,
 ) -> anyhow::Result<()> {
     describe_counter!(
-        "jetstream.connnect",
+        "jetstream_connnect",
         Unit::Count,
         "attempts to connect to a jetstream server"
     );
     describe_counter!(
-        "jetstream.read",
+        "jetstream_read",
         Unit::Count,
         "attempts to read an event from jetstream"
     );
     describe_counter!(
-        "jetstream.read.fail",
+        "jetstream_read_fail",
         Unit::Count,
         "failures to read events from jetstream"
     );
     describe_counter!(
-        "jetstream.read.bytes",
+        "jetstream_read_bytes",
         Unit::Bytes,
         "total received message bytes from jetstream"
     );
     describe_counter!(
-        "jetstream.read.bytes.decompressed",
+        "jetstream_read_bytes_decompressed",
         Unit::Bytes,
         "total decompressed message bytes from jetstream"
     );
     describe_histogram!(
-        "jetstream.read.bytes.decompressed",
+        "jetstream_read_bytes_decompressed",
         Unit::Bytes,
         "decompressed size of jetstream messages"
     );
     describe_counter!(
-        "jetstream.events",
+        "jetstream_events",
         Unit::Count,
         "valid json messages received"
     );
     describe_histogram!(
-        "jetstream.events.queued",
+        "jetstream_events_queued",
         Unit::Count,
         "event messages waiting in queue"
     );
     describe_gauge!(
-        "jetstream.cursor.age",
+        "jetstream_cursor_age",
         Unit::Microseconds,
         "microseconds between our clock and the jetstream event's time_us"
     );
@@ -81,7 +81,7 @@ pub fn consume_jetstream(
                 })
                 .unwrap_or("".into())
         );
-        counter!("jetstream.connect", "url" => url, "is_retry" => (connect_retries > 0).to_string()).increment(1);
+        counter!("jetstream_connect", "url" => url, "is_retry" => (connect_retries > 0).to_string()).increment(1);
         println!("jetstream connecting, attempt #{connect_retries}: {stream}...");
         let mut socket = match tungstenite::connect(&stream) {
             Ok((socket, _)) => {
@@ -110,36 +110,36 @@ pub fn consume_jetstream(
                 break;
             }
 
-            counter!("jetstream.read").increment(1);
+            counter!("jetstream_read").increment(1);
             let b = match socket.read() {
                 Ok(Message::Binary(b)) => b,
                 Ok(Message::Text(_)) => {
-                    counter!("jetstream.read.fail", "url" => url, "reason" => "received text")
+                    counter!("jetstream_read_fail", "url" => url, "reason" => "received text")
                         .increment(1);
                     eprintln!("jetstream: unexpected text message, should be binary for compressed (ignoring)");
                     continue;
                 }
                 Ok(Message::Close(f)) => {
-                    counter!("jetstream.read.fail", "url" => url, "reason" => "server closed")
+                    counter!("jetstream_read_fail", "url" => url, "reason" => "server closed")
                         .increment(1);
                     println!("jetstream: closing the connection: {f:?}");
                     continue;
                 }
                 Ok(m) => {
-                    counter!("jetstream.read.fail", "url" => url, "reason" => "unexpected message", "message" => format!("{m:?}")).increment(1);
+                    counter!("jetstream_read_fail", "url" => url, "reason" => "unexpected message", "message" => format!("{m:?}")).increment(1);
                     eprintln!("jetstream: unexpected from read (ignoring): {m:?}");
                     continue;
                 }
                 Err(TError::ConnectionClosed) => {
                     // clean exit
-                    counter!("jetstream.read.fail", "url" => url, "reason" => "clean close")
+                    counter!("jetstream_read_fail", "url" => url, "reason" => "clean close")
                         .increment(1);
                     println!("jetstream closed the websocket cleanly.");
                     break;
                 }
                 Err(TError::AlreadyClosed) => {
                     // programming error
-                    counter!("jetstream.read.fail", "url" => url, "reason" => "already closed")
+                    counter!("jetstream_read_fail", "url" => url, "reason" => "already closed")
                         .increment(1);
                     eprintln!(
                         "jetstream: got AlreadyClosed trying to .read() websocket. probably a bug."
@@ -147,13 +147,13 @@ pub fn consume_jetstream(
                     break;
                 }
                 Err(TError::Capacity(e)) => {
-                    counter!("jetstream.read.fail", "url" => url, "reason" => "capacity error")
+                    counter!("jetstream_read_fail", "url" => url, "reason" => "capacity error")
                         .increment(1);
                     eprintln!("jetstream: capacity error (ignoring): {e:?}");
                     continue;
                 }
                 Err(TError::Utf8) => {
-                    counter!("jetstream.read.fail", "url" => url, "reason" => "utf8 error")
+                    counter!("jetstream_read_fail", "url" => url, "reason" => "utf8 error")
                         .increment(1);
                     eprintln!("jetstream: utf8 error (ignoring)");
                     continue;
@@ -162,13 +162,13 @@ pub fn consume_jetstream(
                     eprintln!("jetstream: could not read message from socket. closing: {e:?}");
                     match socket.close(None) {
                         Err(TError::ConnectionClosed) => {
-                            counter!("jetstream.read.fail", "url" => url, "reason" => "clean close").increment(1);
+                            counter!("jetstream_read_fail", "url" => url, "reason" => "clean close").increment(1);
                             println!("jetstream closed the websocket cleanly.");
                             break;
                         }
                         r => eprintln!("jetstream: close result after error: {r:?}"),
                     }
-                    counter!("jetstream.read.fail", "url" => url, "reason" => "read error")
+                    counter!("jetstream_read_fail", "url" => url, "reason" => "read error")
                         .increment(1);
                     // if we didn't immediately get ConnectionClosed, we should keep polling read
                     // until we get it.
@@ -176,13 +176,13 @@ pub fn consume_jetstream(
                 }
             };
 
-            counter!("jetstream.read.bytes", "url" => url).increment(b.len() as u64);
+            counter!("jetstream_read_bytes", "url" => url).increment(b.len() as u64);
             let mut cursor = Cursor::new(b);
             let mut decoder =
                 match zstd::stream::Decoder::with_prepared_dictionary(&mut cursor, &dict) {
                     Ok(d) => d,
                     Err(e) => {
-                        counter!("jetstream.read.fail", "url" => url, "reason" => "zstd decompress")
+                        counter!("jetstream_read_fail", "url" => url, "reason" => "zstd decompress")
                         .increment(1);
                         eprintln!("jetstream: failed to decompress zstd message: {e:?}");
                         continue;
@@ -192,11 +192,11 @@ pub fn consume_jetstream(
             let mut s = String::new();
             match decoder.read_to_string(&mut s) {
                 Ok(n) => {
-                    counter!("jetstream.read.bytes.decompressed", "url" => url).increment(n as u64);
-                    histogram!("jetstream.read.bytes.decompressed", "url" => url).record(n as f64);
+                    counter!("jetstream_read_bytes_decompressed", "url" => url).increment(n as u64);
+                    histogram!("jetstream_read_bytes_decompressed", "url" => url).record(n as f64);
                 }
                 Err(e) => {
-                    counter!("jetstream.read.fail", "url" => url, "reason" => "zstd string decode")
+                    counter!("jetstream_read_fail", "url" => url, "reason" => "zstd string decode")
                         .increment(1);
                     eprintln!("jetstream: failed to decode zstd: {e:?}");
                     continue;
@@ -206,7 +206,7 @@ pub fn consume_jetstream(
             let v = match s.parse() {
                 Ok(v) => v,
                 Err(e) => {
-                    counter!("jetstream.read.fail", "url" => url, "reason" => "json parse")
+                    counter!("jetstream_read_fail", "url" => url, "reason" => "json parse")
                         .increment(1);
                     eprintln!("jetstream: failed to parse message as json: {e:?}");
                     continue;
@@ -217,7 +217,7 @@ pub fn consume_jetstream(
             let ts = match get_event_time(&v) {
                 Some(ts) => ts,
                 None => {
-                    counter!("jetstream.read.fail", "url" => url, "reason" => "invalid event")
+                    counter!("jetstream_read_fail", "url" => url, "reason" => "invalid event")
                         .increment(1);
                     eprintln!("jetstream: encountered an event without a timestamp: ignoring it.");
                     continue;
@@ -225,7 +225,7 @@ pub fn consume_jetstream(
             };
 
             if let Err(flume::SendError(_rejected)) = sender.send(v) {
-                counter!("jetstream.events", "url" => url).increment(1);
+                counter!("jetstream_events", "url" => url).increment(1);
                 if sender.is_disconnected() {
                     eprintln!("jetstream: send channel disconnected -- nothing to do, bye.");
                     break 'outer;
@@ -234,11 +234,11 @@ pub fn consume_jetstream(
                     "jetstream: failed to send on channel, dropping update! (FIXME / HANDLEME)"
                 );
             }
-            histogram!("jetstream.events.queued", "url" => url).record(sender.len() as f64);
+            histogram!("jetstream_events_queued", "url" => url).record(sender.len() as f64);
 
             // only actually update our cursor after we've managed to queue the event
             latest_cursor = Some(ts);
-            gauge!("jetstream.cursor.age", "url" => url).set(ts_age(ts).as_micros() as f64);
+            gauge!("jetstream_cursor_age", "url" => url).set(ts_age(ts).as_micros() as f64);
         }
     }
     Err(anyhow::anyhow!("broke out of jetstream loop"))

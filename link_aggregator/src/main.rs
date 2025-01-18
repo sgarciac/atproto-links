@@ -101,12 +101,12 @@ fn run(
             let process_collector = metrics_process::Collector::default();
             process_collector.describe();
             metrics::describe_gauge!(
-                "storage.available",
+                "storage_available",
                 metrics::Unit::Bytes,
                 "available to be allocated"
             );
             metrics::describe_gauge!(
-                "storage.free",
+                "storage_free",
                 metrics::Unit::Bytes,
                 "unused bytes in filesystem"
             );
