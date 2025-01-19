@@ -5,7 +5,7 @@ use std::io::{Cursor, Read};
 use std::thread;
 use std::time;
 use tinyjson::JsonValue;
-use tungstenite::{Error as TError, Message};
+use tungstenite::{client::IntoClientRequest, Error as TError, Message};
 use zstd::dict::DecoderDictionary;
 
 const JETSTREAM_ZSTD_DICTIONARY: &[u8] = include_bytes!("../../zstd/dictionary");
@@ -72,7 +72,7 @@ pub fn consume_jetstream(
     let mut latest_cursor = cursor;
     'outer: loop {
         let url = WS_URLS[connect_retries % WS_URLS.len()];
-        let stream = format!(
+        let stream_url = format!(
             "{url}?compress=true{}",
             latest_cursor
                 .map(|c| {
@@ -81,9 +81,13 @@ pub fn consume_jetstream(
                 })
                 .unwrap_or("".into())
         );
+        let mut req = (&stream_url).into_client_request()?;
+        let ua = format!("ucosm/link aggregator v{}", env!("CARGO_PKG_VERSION"));
+        req.headers_mut().insert("user-agent", ua.parse()?);
+
         counter!("jetstream_connect", "url" => url, "is_retry" => (connect_retries > 0).to_string()).increment(1);
-        println!("jetstream connecting, attempt #{connect_retries}: {stream}...");
-        let mut socket = match tungstenite::connect(&stream) {
+        println!("jetstream connecting, attempt #{connect_retries}, {stream_url:?} with user-agent: {ua:?}");
+        let mut socket = match tungstenite::connect(req) {
             Ok((socket, _)) => {
                 println!("jetstream connected.");
                 connect_retries = 0;
@@ -92,6 +96,7 @@ pub fn consume_jetstream(
             Err(e) => {
                 connect_retries += 1;
                 if connect_retries >= 7 {
+                    eprintln!("jetstream: no more connect retries, breaking out.");
                     break;
                 }
                 let backoff = time::Duration::from_secs(connect_retries.try_into().unwrap());

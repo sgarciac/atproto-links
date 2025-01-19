@@ -41,3 +41,4 @@ some todos
 - [ ] web server metrics
 - [ ] tokio metrics?
 - [ ] handle shutdown cleanly -- be nice to rocksdb
+- [x] add user-agent to jetstream request
