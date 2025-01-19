@@ -11,7 +11,7 @@ terms as used here:
 
 The number of backlinks to a URI from a specified collection + json path.
 
-Required URL parameters
+#### Required URL parameters
 
 - `target` (required): the URI. must be URL-encoded.
   - example: `at%3A%2F%2Fdid%3Aplc%3A57vlzz2egy6eqr4nksacmbht%2Fapp.bsky.feed.post%2F3lg2pgq3gq22b`
@@ -20,12 +20,48 @@ Required URL parameters
 - `path` (required): the JSON path in referring documents to consider.
   - example: `.subject.uri`
 
-cURL Example: Get a count of all bluesky likes for a post
+#### Response
+
+A number (u64) in plain text format
+
+#### cURL example: Get a count of all bluesky likes for a post
 
 ```bash
-curl 'http://raspberrypi.local:6789/links/count?target=at%3A%2F%2Fdid%3Aplc%3A57vlzz2egy6eqr4nksacmbht%2Fapp.bsky.feed.post%2F3lg2pgq3gq22b&collection=app.bsky.feed.like&path=.subject.uri'
+curl '<HOST>/links/count?target=at%3A%2F%2Fdid%3Aplc%3A57vlzz2egy6eqr4nksacmbht%2Fapp.bsky.feed.post%2F3lg2pgq3gq22b&collection=app.bsky.feed.like&path=.subject.uri'
 
 40
+```
+
+### `GET /links/all/count`
+
+The number of backlinks to a URI from any source collection or json path
+
+#### Required URL parameters
+
+- `target` (required): the URI. must be URL-encoded.
+  - example: `did:plc:vc7f4oafdgxsihk4cry2xpze`
+
+#### Response
+
+A JSON object `{[NSID]: {[JSON path]: [N]}}`
+
+#### cURL example: Get reference counts to a DID from any collection at any path
+
+```bash
+curl '<HOST>/links/all/count?target=did:plc:vc7f4oafdgxsihk4cry2xpze'
+
+curl '<HOST>/links/all/count?target=did:plc:vc7f4oafdgxsihk4cry2xpze'
+{
+    "app.bsky.graph.block": { ".subject": 13 },
+    "app.bsky.graph.follow": { ".subject": 159 },
+    "app.bsky.feed.post": { ".facets[].features[].did": 16 },
+    "app.bsky.graph.listitem": { ".subject": 6 },
+    "app.bsky.graph.starterpack":
+    {
+        ".feeds[].creator.did": 1,
+        ".feeds[].creator.labels[].src": 1
+    }
+}
 ```
 
 

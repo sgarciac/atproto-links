@@ -371,6 +371,13 @@ impl RocksStorage {
         let cf = self.db.cf_handle(LINK_TARGETS_CF).unwrap();
         self.prefix_iter_cf(&cf, RecordLinkKeyDidIdPrefix(*did_id))
     }
+    fn iter_targets_for_target(
+        &self,
+        target: &Target,
+    ) -> impl Iterator<Item = (TargetKey, TargetId)> + use<'_> {
+        let cf = self.db.cf_handle(TARGET_IDS_CF).unwrap();
+        self.prefix_iter_cf(&cf, TargetIdTargetPrefix(target.clone()))
+    }
 
     fn check_for_did_dups(&self, problem_did_id: &DidId) {
         let cf = self.db.cf_handle(DID_IDS_CF).unwrap();
@@ -617,6 +624,17 @@ impl LinkReader for RocksStorage {
             Ok(0)
         }
     }
+    fn get_all_counts(&self, target: &str) -> Result<HashMap<String, HashMap<String, u64>>> {
+        let mut out: HashMap<String, HashMap<String, u64>> = HashMap::new();
+        for (target_key, target_id) in self.iter_targets_for_target(&Target(target.into())) {
+            let TargetKey(_, Collection(ref collection), RPath(ref path)) = target_key;
+            let count = self.get_target_linkers(&target_id)?.count();
+            out.entry(collection.into())
+                .or_default()
+                .insert(path.clone(), count);
+        }
+        Ok(out)
+    }
 }
 
 trait AsRocksKey: Serialize {}
@@ -635,7 +653,9 @@ impl KeyFromRocks for Did {}
 
 // target_ids table
 impl AsRocksKey for &TargetKey {}
+impl AsRocksKeyPrefix<TargetKey> for &TargetIdTargetPrefix {}
 impl AsRocksValue for &TargetId {}
+impl KeyFromRocks for TargetKey {}
 impl ValueFromRocks for TargetId {}
 
 // target_links table
@@ -734,6 +754,9 @@ impl RecordLinkKey {
 // does this even work????
 #[derive(Debug, Serialize, Deserialize)]
 struct RecordLinkKeyDidIdPrefix(DidId);
+
+#[derive(Debug, Serialize, Deserialize)]
+struct TargetIdTargetPrefix(Target);
 
 #[derive(Debug, Serialize, Deserialize)]
 struct RecordLinkTarget(RPath, TargetId);

@@ -1,6 +1,7 @@
 use anyhow::Result;
 use link_aggregator::{ActionableEvent, Did, RecordId};
 use links::CollectedLink;
+use std::collections::HashMap;
 
 pub mod mem_store;
 pub use mem_store::MemStorage;
@@ -44,6 +45,9 @@ pub trait LinkStorage: Send + Sync {
 
 pub trait LinkReader: Clone + Send + Sync + 'static {
     fn get_count(&self, target: &str, collection: &str, path: &str) -> Result<u64>;
+    fn get_all_counts(&self, _target: &str) -> Result<HashMap<String, HashMap<String, u64>>> {
+        Ok(HashMap::new())
+    }
 
     // todo: remove it
     fn summarize(&self, qsize: u32) {
