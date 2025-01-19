@@ -11,10 +11,13 @@ where
     S: LinkReader,
     A: ToSocketAddrs,
 {
-    let app = Router::new().route("/", get(hello)).route(
-        "/links/count",
-        get(move |query| async { block_in_place(|| count_links(query, store)) }),
-    );
+    let app = Router::new()
+        .route("/", get(hello))
+        .route(
+            "/links/count",
+            get(move |query| async { block_in_place(|| count_links(query, store)) }),
+        )
+        .layer(axum_metrics::MetricLayer::default());
 
     let listener = TcpListener::bind(addr).await?;
     println!("api: listening at http://{:?}", listener.local_addr()?);

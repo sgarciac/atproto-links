@@ -161,6 +161,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "axum-metrics"
+version = "0.1.0"
+source = "git+https://github.com/uniphil/axum-metrics.git#0835d58b628104ada1f1c89c9d52bbedf34f921f"
+dependencies = [
+ "axum",
+ "bytes",
+ "http-body",
+ "metrics",
+ "pin-project-lite",
+ "tower-layer",
+ "tower-service",
+]
+
+[[package]]
 name = "backtrace"
 version = "0.3.74"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -845,6 +859,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "axum-metrics",
  "bincode",
  "clap",
  "flume",

@@ -38,7 +38,8 @@ some todos
 - [ ] make the did_init check only happen on test config (or remove it)
 - [ ] actual error types (thiserror?) for lib-ish code
 - [ ] clean up the main readme
-- [ ] web server metrics
+- [x] web server metrics
 - [ ] tokio metrics?
 - [ ] handle shutdown cleanly -- be nice to rocksdb
 - [x] add user-agent to jetstream request
+- [ ] possibly add tracing stuff also to complement metrics (at least for web reqs)
