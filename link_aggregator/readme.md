@@ -1,5 +1,33 @@
 # link_aggregator
 
+## endpoints
+
+terms as used here:
+
+- "URI": a URI, AT-URI, or DID.
+- "JSON path": a dot-separated (and dot-prefixed, for now) path to a field in an atproto record. Arrays are noted by `[]` and cannot contain a specific index.
+
+### `GET /links/count`
+
+The number of backlinks to a URI from a specified collection + json path.
+
+Required URL parameters
+
+- `target` (required): the URI. must be URL-encoded.
+  - example: `at%3A%2F%2Fdid%3Aplc%3A57vlzz2egy6eqr4nksacmbht%2Fapp.bsky.feed.post%2F3lg2pgq3gq22b`
+- `collection` (required): the source NSID of referring documents to consider.
+  - example: `app.bsky.feed.post`
+- `path` (required): the JSON path in referring documents to consider.
+  - example: `.subject.uri`
+
+cURL Example: Get a count of all bluesky likes for a post
+
+```bash
+curl 'http://raspberrypi.local:6789/links/count?target=at%3A%2F%2Fdid%3Aplc%3A57vlzz2egy6eqr4nksacmbht%2Fapp.bsky.feed.post%2F3lg2pgq3gq22b&collection=app.bsky.feed.like&path=.subject.uri'
+
+40
+```
+
 
 some todos
 
