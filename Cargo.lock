@@ -162,8 +162,9 @@ dependencies = [
 
 [[package]]
 name = "axum-metrics"
-version = "0.1.0"
-source = "git+https://github.com/uniphil/axum-metrics.git#0835d58b628104ada1f1c89c9d52bbedf34f921f"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5534db72cef9897272302f3eb28c43a1a3bbd20fb40b4956da8d32366d7c8c69"
 dependencies = [
  "axum",
  "bytes",
