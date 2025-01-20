@@ -42,7 +42,7 @@ pub fn consume(mut store: impl LinkStorage, qsize: Arc<AtomicU32>, fixture: Opti
             thread::spawn(move || consume_jsonl_file(f, sender)),
         )
     } else {
-        let (sender, receiver) = flume::unbounded(); // eek
+        let (sender, receiver) = flume::bounded(2048); // eek
         let cursor = store.get_cursor().unwrap();
         (
             receiver,
