@@ -27,7 +27,7 @@ version = "1.41"
 features = ["full"]
 
 [dependencies.tungstenite]
-version = "0.24"
+version = "0.26.1"
 features = ["native-tls"]
 
 [dev-dependencies]
