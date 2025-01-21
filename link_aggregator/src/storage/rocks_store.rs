@@ -44,6 +44,7 @@ pub struct RocksStorage {
     db: Arc<DBWithThreadMode<MultiThreaded>>, // TODO: mov seqs here (concat merge op will be fun)
     did_id_table: IdTable<Did, DidIdValue>,
     target_id_table: IdTable<TargetKey, TargetId>,
+    is_writer: bool,
 }
 
 trait IdTableValue: ValueFromRocks + Clone {
@@ -213,6 +214,7 @@ impl RocksStorage {
             db,
             did_id_table,
             target_id_table,
+            is_writer: true,
         })
     }
 
@@ -557,6 +559,25 @@ impl RocksStorage {
     }
 }
 
+impl Drop for RocksStorage {
+    fn drop(&mut self) {
+        if self.is_writer {
+            println!("rocksdb writer: cleaning up for shutdown...");
+            if let Err(e) = self.db.flush_wal(true) {
+                eprintln!("rocks: flushing wal failed: {e:?}");
+            }
+            if let Err(e) = self.db.flush_opt(&{
+                let mut opt = rocksdb::FlushOptions::default();
+                opt.set_wait(true);
+                opt
+            }) {
+                eprintln!("rocks: flushing memtables failed: {e:?}");
+            }
+            self.db.cancel_all_background_work(true);
+        }
+    }
+}
+
 impl AsRocksValue for u64 {}
 impl ValueFromRocks for u64 {}
 
@@ -602,7 +623,9 @@ impl LinkStorage for RocksStorage {
     }
 
     fn to_readable(&mut self) -> impl LinkReader {
-        self.clone()
+        let mut readable = self.clone();
+        readable.is_writer = false;
+        readable
     }
 }
 

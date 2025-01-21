@@ -75,12 +75,12 @@ some todos
 - [x] custom path for db storage
 - [x] api server to look up backlink count
 - [ ] other useful endpoints for the api server
-  - [ ] show all nisd/path links to target
+  - [x] show all nisd/path links to target
   - [ ] get backlinking dids
   - [ ] paging for all backlinking dids
   - [ ] get count + most recent dids
   - [ ] get count with any dids from provided set
-- [ ] write this readme
+- [~] write this readme
 - [ ] fix it sometimes getting stuck
   - seems to unstick in my possibly-different repro (letting laptop fall asleep) after a bit.
   - [ ] add a detection for no new links coming in after some period
@@ -98,12 +98,19 @@ some todos
 - [ ] deadletter queue of some kind for failed db writes
   - [ ] also for valid json that was rejected?
 - [x] get it running on raspi
-- [ ] get an estimate of disk usage per day after a few days of running
+- [~] get an estimate of disk usage per day after a few days of running
 - [ ] make the did_init check only happen on test config (or remove it)
 - [ ] actual error types (thiserror?) for lib-ish code
 - [ ] clean up the main readme
 - [x] web server metrics
 - [ ] tokio metrics?
-- [ ] handle shutdown cleanly -- be nice to rocksdb
+- [x] handle shutdown cleanly -- be nice to rocksdb
 - [x] add user-agent to jetstream request
-- [ ] possibly add tracing stuff also to complement metrics (at least for web reqs)
+
+data fixes
+- [ ] add rkey to linkers 🤦‍♀️
+- [ ] links:
+  - [ ] pull `$type`/`type` from object children of arrays (distinguish replies, quotes, etc)
+  - [ ] actually define the format (deal with in-band dots etc)
+  - [ ] _could_ throw cid neighbour into the target. probably should? but it's a lot of high volume uncompressible bytes
+      - and it could be looked up from the linker's doc

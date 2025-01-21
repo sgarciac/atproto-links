@@ -2,6 +2,7 @@ mod jetstream;
 mod jsonl_file;
 
 use crate::storage::LinkStorage;
+use anyhow::Result;
 use jetstream::consume_jetstream;
 use jsonl_file::consume_jsonl_file;
 use link_aggregator::{ActionableEvent, RecordId};
@@ -12,8 +13,14 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::thread;
 use tinyjson::JsonValue;
+use tokio_util::sync::CancellationToken;
 
-pub fn consume(mut store: impl LinkStorage, qsize: Arc<AtomicU32>, fixture: Option<PathBuf>) {
+pub fn consume(
+    mut store: impl LinkStorage,
+    qsize: Arc<AtomicU32>,
+    fixture: Option<PathBuf>,
+    staying_alive: CancellationToken,
+) -> Result<()> {
     describe_counter!(
         "consumer_events_non_actionable",
         Unit::Count,
@@ -46,7 +53,7 @@ pub fn consume(mut store: impl LinkStorage, qsize: Arc<AtomicU32>, fixture: Opti
         let cursor = store.get_cursor().unwrap();
         (
             receiver,
-            thread::spawn(move || consume_jetstream(sender, cursor)),
+            thread::spawn(move || consume_jetstream(sender, cursor, staying_alive)),
         )
     };
 
@@ -61,7 +68,7 @@ pub fn consume(mut store: impl LinkStorage, qsize: Arc<AtomicU32>, fixture: Opti
         }
     }
 
-    consumer_handle.join().unwrap().unwrap()
+    consumer_handle.join().unwrap()
 }
 
 pub fn get_actionable(event: &JsonValue) -> Option<(ActionableEvent, u64)> {

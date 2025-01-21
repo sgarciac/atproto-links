@@ -6,18 +6,22 @@ use anyhow::Result;
 use clap::{Parser, ValueEnum};
 use metrics_exporter_prometheus::PrometheusBuilder;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicU32, Ordering},
+    Arc,
+};
 use std::thread;
 use std::time;
 use tokio::runtime;
-use tokio::sync::oneshot;
+use tokio_util::sync::CancellationToken;
 
 use consumer::consume;
 use server::serve;
 #[cfg(feature = "rocks")]
 use storage::RocksStorage;
 use storage::{LinkReader, LinkStorage, MemStorage};
+
+const MONITOR_INTERVAL: time::Duration = time::Duration::from_secs(2);
 
 /// Aggregate links in the at-mosphere
 #[derive(Parser, Debug)]
@@ -71,33 +75,64 @@ fn run(
     fixture: Option<PathBuf>,
     data_dir: Option<PathBuf>,
 ) -> Result<()> {
+    let stay_alive = CancellationToken::new();
+
+    ctrlc::set_handler({
+        let mut desperation: u8 = 0;
+        let stay_alive = stay_alive.clone();
+        move || {
+            match desperation {
+                0 => {
+                    println!("ok, shutting down...");
+                    stay_alive.cancel();
+                }
+                1.. => panic!("fine, panicking!"),
+            }
+            desperation += 1;
+        }
+    })?;
+
     let qsize = Arc::new(AtomicU32::new(0));
 
     thread::scope(|s| {
         let readable = storage.to_readable();
 
-        let consumer = s.spawn({
+        s.spawn({
             let qsize = qsize.clone();
-            move || consume(storage, qsize, fixture)
+            let stay_alive = stay_alive.clone();
+            let staying_alive = stay_alive.clone();
+            move || {
+                if let Err(e) = consume(storage, qsize, fixture, staying_alive) {
+                    eprintln!("jetstream finished with error: {e}");
+                }
+                stay_alive.drop_guard();
+            }
         });
 
-        let (stop_server, shutdown) = oneshot::channel::<()>();
         s.spawn({
             let readable = readable.clone();
+            let stay_alive = stay_alive.clone();
+            let staying_alive = stay_alive.clone();
             || {
                 runtime::Builder::new_multi_thread()
                     .worker_threads(1)
                     .max_blocking_threads(2)
                     .enable_all()
-                    .build()?
+                    .build()
+                    .expect("axum startup")
                     .block_on(async {
                         install_metrics_server()?;
-                        serve(readable, "0.0.0.0:6789", shutdown).await
+                        serve(readable, "0.0.0.0:6789", staying_alive).await
                     })
+                    .unwrap();
+                stay_alive.drop_guard();
             }
         });
 
-        s.spawn(move || {
+        s.spawn(move || { // monitor thread
+            let stay_alive = stay_alive.clone();
+            let check_alive = stay_alive.clone();
+
             let process_collector = metrics_process::Collector::default();
             process_collector.describe();
             metrics::describe_gauge!(
@@ -117,7 +152,8 @@ fn run(
                     println!("disk space monitoring should work, watching at {p:?}");
                 }
             }
-            while !consumer.is_finished() {
+
+            'monitor: loop {
                 readable.summarize(qsize.load(Ordering::Relaxed));
                 process_collector.collect();
                 if let Some(ref p) = data_dir {
@@ -128,11 +164,18 @@ fn run(
                         metrics::gauge!("storage.free").set(free as f64);
                     }
                 }
-                thread::sleep(time::Duration::from_secs(3));
+                let wait = time::Instant::now();
+                while wait.elapsed() < MONITOR_INTERVAL {
+                    thread::sleep(time::Duration::from_millis(100));
+                    if check_alive.is_cancelled() {
+                        break 'monitor
+                    }
+                }
             }
-            let _ = stop_server.send(());
+            stay_alive.drop_guard();
         });
     });
+
     println!("byeeee");
 
     Ok(())

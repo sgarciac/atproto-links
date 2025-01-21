@@ -1,3 +1,4 @@
+use anyhow::{bail, Result};
 use metrics::{
     counter, describe_counter, describe_gauge, describe_histogram, gauge, histogram, Unit,
 };
@@ -5,6 +6,7 @@ use std::io::{Cursor, Read};
 use std::thread;
 use std::time;
 use tinyjson::JsonValue;
+use tokio_util::sync::CancellationToken;
 use tungstenite::{client::IntoClientRequest, Error as TError, Message};
 use zstd::dict::DecoderDictionary;
 
@@ -20,7 +22,8 @@ const WS_URLS: [&str; 4] = [
 pub fn consume_jetstream(
     sender: flume::Sender<JsonValue>,
     cursor: Option<u64>,
-) -> anyhow::Result<()> {
+    staying_alive: CancellationToken,
+) -> Result<()> {
     describe_counter!(
         "jetstream_connnect",
         Unit::Count,
@@ -113,6 +116,12 @@ pub fn consume_jetstream(
                     eprintln!("error while flushing socket: {e:?}");
                 }
                 break;
+            }
+
+            if staying_alive.is_cancelled() {
+                eprintln!("jetstream: cancelling");
+                // TODO: cleanly close the connection?
+                break 'outer;
             }
 
             counter!("jetstream_read").increment(1);
@@ -233,7 +242,7 @@ pub fn consume_jetstream(
                 counter!("jetstream_events", "url" => url).increment(1);
                 if sender.is_disconnected() {
                     eprintln!("jetstream: send channel disconnected -- nothing to do, bye.");
-                    break 'outer;
+                    bail!("jetstream: send channel disconnected");
                 }
                 eprintln!(
                     "jetstream: failed to send on channel, dropping update! (FIXME / HANDLEME)"
@@ -246,7 +255,7 @@ pub fn consume_jetstream(
             gauge!("jetstream_cursor_age", "url" => url).set(ts_age(ts).as_micros() as f64);
         }
     }
-    Err(anyhow::anyhow!("broke out of jetstream loop"))
+    Ok(())
 }
 
 fn get_event_time(v: &JsonValue) -> Option<u64> {

@@ -2,12 +2,12 @@ use axum::{extract::Query, http, routing::get, Json, Router};
 use serde::Deserialize;
 use std::collections::HashMap;
 use tokio::net::{TcpListener, ToSocketAddrs};
-use tokio::sync::oneshot::Receiver;
 use tokio::task::block_in_place;
+use tokio_util::sync::CancellationToken;
 
 use crate::storage::LinkReader;
 
-pub async fn serve<S, A>(store: S, addr: A, cancel: Receiver<()>) -> anyhow::Result<()>
+pub async fn serve<S, A>(store: S, addr: A, stay_alive: CancellationToken) -> anyhow::Result<()>
 where
     S: LinkReader,
     A: ToSocketAddrs,
@@ -33,9 +33,7 @@ where
     let listener = TcpListener::bind(addr).await?;
     println!("api: listening at http://{:?}", listener.local_addr()?);
     axum::serve(listener, app)
-        .with_graceful_shutdown(async {
-            cancel.await.ok();
-        })
+        .with_graceful_shutdown(async move { stay_alive.cancelled().await })
         .await?;
 
     Ok(())
