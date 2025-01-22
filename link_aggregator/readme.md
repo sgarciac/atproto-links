@@ -106,6 +106,9 @@ some todos
 - [ ] tokio metrics?
 - [x] handle shutdown cleanly -- be nice to rocksdb
 - [x] add user-agent to jetstream request
+- [ ] wow the shutdown stuff i wrote is really bad and doesn't work a lot
+- [ ] serve html for browser requests
+- [ ] add a health check endpoint
 
 data fixes
 - [ ] add rkey to linkers 🤦‍♀️
