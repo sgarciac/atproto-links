@@ -34,7 +34,31 @@ cozy-ucosm
 
         links.bsky.bad-example.com {
           reverse_proxy link-aggregator:6789
-          respond /souin-api/metrics "denied" 403
+
+          @browser `{header.Origin.startsWith("Mozilla/5.0")`
+          rate_limit {
+            zone global_burst {
+              key {remote_host}
+              events 10
+              window 1s
+            }
+            zone global_general {
+              key {remote_host}
+              events 100
+              window 60s
+              log_key true
+            }
+            zone website_harsh_limit {
+              key {header.Origin}
+              match {
+                expression {header.User-Agent}.startsWith("Mozilla/5.0")
+              }
+              events 2
+              window 15s
+              log_key true
+            }
+          }
+          respond /souin-api/metrics "denied" 403 # does not work
           cache {
             ttl 3s
             stale 1h
@@ -96,7 +120,35 @@ scrape_configs:
     sudo grafana-cli --pluginUrl https://github.com/VictoriaMetrics/victoriametrics-datasource/releases/download/v0.11.1/victoriametrics-datasource-v0.11.1.zip plugins install victoriametrics
     ```
 
+- raspi node_exporter
 
+    ```bash
+    curl -LO https://github.com/prometheus/node_exporter/releases/download/v1.8.2/node_exporter-1.8.2.linux-armv7.tar.g
+    tar xzf node_exporter-1.8.2.linux-armv7.tar.gz
+    sudo cp node_exporter-1.8.2.linux-armv7/node_exporter /usr/local/bin/
+    sudo useradd --no-create-home --shell /bin/false node_exporter
+    sudo nano /etc/systemd/system/node_exporter.service
+      # [Unit]
+      # Description=Node Exporter
+      # Wants=network-online.target
+      # After=network-online.target
+
+      # [Service]
+      # User=node_exporter
+      # Group=node_exporter
+      # Type=simple
+      # ExecStart=/usr/local/bin/node_exporter
+      # Restart=always
+      # RestartSec=3
+
+      # [Install]
+      # WantedBy=multi-user.target
+    sudo systemctl daemon-reload
+    sudo systemctl enable node_exporter.service
+    sudo systemctl start node_exporter.service
+    ```
+
+    todo: get raspi vcgencmd outputs into metrics
 
 ---
 
@@ -108,8 +160,8 @@ some todos
 - [x] caddy: reverse proxy
   - [x] build with cache and rate-limit plugins
   - [x] configure systemd to keep it alive
-- [ ] configure caddy cache
-- [ ] configure caddy rate-limit
+- [x] configure caddy cache
+- [x] configure caddy rate-limit
 - [ ] configure caddy to use a health check (once it's added)
 - [ ] configure caddy to only expose cache metrics to tailnet :/
 - [ ] make some grafana dashboards

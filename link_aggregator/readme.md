@@ -109,6 +109,7 @@ some todos
 - [ ] wow the shutdown stuff i wrote is really bad and doesn't work a lot
 - [ ] serve html for browser requests
 - [ ] add a health check endpoint
+- [ ] add seq numbers to metrics
 
 data fixes
 - [ ] add rkey to linkers 🤦‍♀️
