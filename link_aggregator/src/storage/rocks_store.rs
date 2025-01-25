@@ -521,40 +521,52 @@ impl RocksStorage {
         };
         self.delete_did_id_value(batch, did);
 
-        for (i, (record_link_key, links)) in self.iter_links_for_did_id(&did_id).enumerate() {
-            self.delete_record_link(batch, &record_link_key); // _could_ use delete range here instead of individual deletes, but since we have to scan anyway it's not obvious if it's better
+        // use a separate batch for all their links, since it can be a lot and make us crash at around 1GiB batch size.
+        // this should still hopefully be crash-safe: as long as we don't actually delete the DidId entry until after all links are cleared.
+        // the above .delete_did_id_value is batched, so it shouldn't be written until we've returned from this fn successfully
+        // TODO: queue a background delete task or whatever
+        // TODO: test delete account with more links than chunk size
+        let stuff: Vec<_> = self.iter_links_for_did_id(&did_id).collect();
+        for chunk in stuff.chunks(1024) {
+            let mut mini_batch = WriteBatch::default();
 
-            for (j, RecordLinkTarget(path, target_link_id)) in links.0.iter().enumerate() {
-                self.update_target_linkers(batch, target_link_id, |mut linkers| {
-                    if !linkers.remove_last_linker(&did_id) {
-                        eprintln!(
-                            "DELETING ACCOUNT: blowing up: missing linker entry in linked target."
-                        );
-                        eprintln!("account: {did:?}");
-                        eprintln!("did_id: {did_id:?}, was active? {active:?}");
-                        eprintln!("with links: {links:?}");
-                        eprintln!("and linkers: {linkers:?}");
-                        eprintln!(
-                            "working on #{i}.#{j}: {:?} / {path:?} / {target_link_id:?}",
-                            record_link_key.collection()
-                        );
-                        eprintln!("from record link key {record_link_key:?}");
-                        eprintln!("but could not find this link :/");
-                        eprintln!("checking for did_id dups...");
-                        self.check_for_did_dups(&did_id);
-                        eprintln!("ok so what the heck. did_id again, for did {did:?}:");
-                        let did_id_again = self
-                            .did_id_table
-                            .get_id_val(&self.db, did)
-                            .unwrap()
-                            .unwrap();
-                        eprintln!("did_id_value (again): {did_id_again:?}");
-                        panic!("ohnoooo");
-                    }
-                    Some(linkers)
-                })
-                .unwrap();
+            for (i, (record_link_key, links)) in chunk.iter().enumerate() {
+                self.delete_record_link(&mut mini_batch, &record_link_key); // _could_ use delete range here instead of individual deletes, but since we have to scan anyway it's not obvious if it's better
+
+                for (j, RecordLinkTarget(path, target_link_id)) in links.0.iter().enumerate() {
+                    self.update_target_linkers(&mut mini_batch, target_link_id, |mut linkers| {
+                        if !linkers.remove_last_linker(&did_id) {
+                            eprintln!(
+                                "DELETING ACCOUNT: blowing up: missing linker entry in linked target."
+                            );
+                            eprintln!("account: {did:?}");
+                            eprintln!("did_id: {did_id:?}, was active? {active:?}");
+                            eprintln!("with links: {links:?}");
+                            eprintln!("and linkers: {linkers:?}");
+                            eprintln!(
+                                "working on #{i}.#{j}: {:?} / {path:?} / {target_link_id:?}",
+                                record_link_key.collection()
+                            );
+                            eprintln!("from record link key {record_link_key:?}");
+                            eprintln!("but could not find this link :/");
+                            eprintln!("checking for did_id dups...");
+                            self.check_for_did_dups(&did_id);
+                            eprintln!("ok so what the heck. did_id again, for did {did:?}:");
+                            let did_id_again = self
+                                .did_id_table
+                                .get_id_val(&self.db, did)
+                                .unwrap()
+                                .unwrap();
+                            eprintln!("did_id_value (again): {did_id_again:?}");
+                            panic!("ohnoooo");
+                        }
+                        Some(linkers)
+                    })
+                    .unwrap();
+                }
             }
+
+            self.db.write(mini_batch).unwrap(); // todo
         }
     }
 }
