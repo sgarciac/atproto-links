@@ -3,6 +3,7 @@ use metrics::{
     counter, describe_counter, describe_gauge, describe_histogram, gauge, histogram, Unit,
 };
 use std::io::{Cursor, Read};
+use std::net::ToSocketAddrs;
 use std::thread;
 use std::time;
 use tinyjson::JsonValue;
@@ -81,9 +82,20 @@ pub fn consume_jetstream(
         let ua = format!("ucosm/link aggregator v{}", env!("CARGO_PKG_VERSION"));
         req.headers_mut().insert("user-agent", ua.parse()?);
 
+        let host = req.uri().host().expect("jetstream request uri has a host");
+        let port = req.uri().port().map(|p| p.as_u16()).unwrap_or(443);
+        let dest = format!("{host}:{port}");
+        let addr = dest
+            .to_socket_addrs()?
+            .next()
+            .expect("can resolve the jetstream address"); // TODO ugh
+        let tcp_stream = std::net::TcpStream::connect_timeout(&addr, time::Duration::from_secs(8))?; // TODO: handle
+        tcp_stream.set_read_timeout(Some(time::Duration::from_secs(4)))?;
+        tcp_stream.set_write_timeout(Some(time::Duration::from_secs(4)))?;
+
         counter!("jetstream_connect", "url" => stream.clone(), "is_retry" => (connect_retries > 0).to_string()).increment(1);
         println!("jetstream connecting, attempt #{connect_retries}, {stream_url:?} with user-agent: {ua:?}");
-        let mut socket = match tungstenite::connect(req) {
+        let mut socket = match tungstenite::client_tls(req, tcp_stream) {
             Ok((socket, _)) => {
                 println!("jetstream connected.");
                 connect_retries = 0;

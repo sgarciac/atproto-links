@@ -81,9 +81,10 @@ some todos
   - [ ] get count + most recent dids
   - [ ] get count with any dids from provided set
 - [~] write this readme
-- [ ] fix it sometimes getting stuck
+- [?] fix it sometimes getting stuck
   - seems to unstick in my possibly-different repro (letting laptop fall asleep) after a bit.
   - [ ] add a detection for no new links coming in after some period
+  - [x] add tcp connect, read, and write timeouts 🤞
 - [x] handle jetstream restart: don't miss events (currently sketch: rewinds cursor by 1us so we will always double-count at least one event)
   - [x] especially: figure out what the risk is to rotating to another jetstream server in terms of gap/overlap from a different jetstream instance's cursor (follow up separately)
   - [x] jetstream: don't rotate servers, explicitly pass via cli
@@ -112,6 +113,7 @@ some todos
 - [ ] add a health check endpoint
 - [ ] add seq numbers to metrics
 - [ ] persist the jetstream server url, error if started with a different one (maybe with --switch-streams or something)
+- [ ] put delete-account tasks into a separate (persisted?) task queue for the writer so it can work on them incrementally.
 
 data fixes
 - [ ] add rkey to linkers 🤦‍♀️

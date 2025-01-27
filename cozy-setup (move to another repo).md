@@ -164,5 +164,7 @@ some todos
 - [x] configure caddy rate-limit
 - [ ] configure caddy to use a health check (once it's added)
 - [ ] configure caddy to only expose cache metrics to tailnet :/
-- [ ] make some grafana dashboards
+- [x] make some grafana dashboards
+- [ ] raspi: mount /dev/sda on boot
+- [ ] raspi: run link_aggregator via systemd so it starts on startup (and restarts?)
 
