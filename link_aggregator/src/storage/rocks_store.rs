@@ -531,7 +531,7 @@ impl RocksStorage {
             let mut mini_batch = WriteBatch::default();
 
             for (i, (record_link_key, links)) in chunk.iter().enumerate() {
-                self.delete_record_link(&mut mini_batch, &record_link_key); // _could_ use delete range here instead of individual deletes, but since we have to scan anyway it's not obvious if it's better
+                self.delete_record_link(&mut mini_batch, record_link_key); // _could_ use delete range here instead of individual deletes, but since we have to scan anyway it's not obvious if it's better
 
                 for (j, RecordLinkTarget(path, target_link_id)) in links.0.iter().enumerate() {
                     self.update_target_linkers(&mut mini_batch, target_link_id, |mut linkers| {

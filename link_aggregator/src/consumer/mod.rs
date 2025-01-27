@@ -19,6 +19,7 @@ pub fn consume(
     mut store: impl LinkStorage,
     qsize: Arc<AtomicU32>,
     fixture: Option<PathBuf>,
+    stream: String,
     staying_alive: CancellationToken,
 ) -> Result<()> {
     describe_counter!(
@@ -53,7 +54,7 @@ pub fn consume(
         let cursor = store.get_cursor().unwrap();
         (
             receiver,
-            thread::spawn(move || consume_jetstream(sender, cursor, staying_alive)),
+            thread::spawn(move || consume_jetstream(sender, cursor, stream, staying_alive)),
         )
     };
 

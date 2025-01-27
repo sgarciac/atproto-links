@@ -84,15 +84,16 @@ some todos
 - [ ] fix it sometimes getting stuck
   - seems to unstick in my possibly-different repro (letting laptop fall asleep) after a bit.
   - [ ] add a detection for no new links coming in after some period
-- [~] handle jetstream restart: don't miss events (currently sketch: rewinds cursor by 1us so we will always double-count at least one event)
-  - [ ] especially: figure out what the risk is to rotating to another jetstream server in terms of gap/overlap from a different jetstream instance's cursor
+- [x] handle jetstream restart: don't miss events (currently sketch: rewinds cursor by 1us so we will always double-count at least one event)
+  - [x] especially: figure out what the risk is to rotating to another jetstream server in terms of gap/overlap from a different jetstream instance's cursor (follow up separately)
+  - [x] jetstream: don't rotate servers, explicitly pass via cli
 - [x] metrics!
   - [x] event ts lag
 - [~] machine resource metrics
   - [x] disk consumption
   - [x] cpu usage
   - [x] mem usage
-  - [ ] network?
+  - [x] network?
 - [ ] make all storage apis return Result
 - [ ] handle all the unwraps
 - [ ] deadletter queue of some kind for failed db writes
@@ -110,6 +111,7 @@ some todos
 - [ ] serve html for browser requests
 - [ ] add a health check endpoint
 - [ ] add seq numbers to metrics
+- [ ] persist the jetstream server url, error if started with a different one (maybe with --switch-streams or something)
 
 data fixes
 - [ ] add rkey to linkers 🤦‍♀️

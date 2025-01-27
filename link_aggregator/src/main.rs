@@ -27,6 +27,11 @@ const MONITOR_INTERVAL: time::Duration = time::Duration::from_secs(2);
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
+    #[arg(short, long)]
+    /// Jetstream server to connect to (exclusive with --fixture). Provide either a wss:// URL, or a shorhand value:
+    /// 'us-east-1', 'us-east-2', 'us-west-1', or 'us-west-2'
+    #[arg(short, long)]
+    jetstream: String,
     // TODO: make this part of rocks' own sub-config?
     /// Where to store data on disk, for backends that use disk storage
     #[arg(short, long)]
@@ -47,6 +52,16 @@ enum StorageBackend {
     Rocks,
 }
 
+fn jetstream_url(provided: &str) -> String {
+    match provided {
+        "us-east-1" => "wss://jetstream1.us-east.bsky.network/subscribe".into(),
+        "us-east-2" => "wss://jetstream2.us-east.bsky.network/subscribe".into(),
+        "us-west-1" => "wss://jetstream1.us-west.bsky.network/subscribe".into(),
+        "us-west-2" => "wss://jetstream2.us-west.bsky.network/subscribe".into(),
+        custom => custom.into(),
+    }
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
 
@@ -57,15 +72,18 @@ fn main() -> Result<()> {
         println!("using fixture at {p:?}...");
     }
 
+    let stream = jetstream_url(&args.jetstream);
+    println!("using jetstream server {stream:?}...",);
+
     match args.backend {
-        StorageBackend::Memory => run(MemStorage::new(), fixture, None),
+        StorageBackend::Memory => run(MemStorage::new(), fixture, None, stream),
         #[cfg(feature = "rocks")]
         StorageBackend::Rocks => {
             let storage_dir = args.data.clone().unwrap_or("rocks.test".into());
             println!("starting rocksdb...");
             let rocks = RocksStorage::new(storage_dir)?;
             println!("rocks ready.");
-            run(rocks, fixture, args.data)
+            run(rocks, fixture, args.data, stream)
         }
     }
 }
@@ -74,6 +92,7 @@ fn run(
     mut storage: impl LinkStorage,
     fixture: Option<PathBuf>,
     data_dir: Option<PathBuf>,
+    stream: String,
 ) -> Result<()> {
     let stay_alive = CancellationToken::new();
 
@@ -102,7 +121,7 @@ fn run(
             let stay_alive = stay_alive.clone();
             let staying_alive = stay_alive.clone();
             move || {
-                if let Err(e) = consume(storage, qsize, fixture, staying_alive) {
+                if let Err(e) = consume(storage, qsize, fixture, stream, staying_alive) {
                     eprintln!("jetstream finished with error: {e}");
                 }
                 stay_alive.drop_guard();
