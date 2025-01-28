@@ -2,7 +2,7 @@ use anyhow::{bail, Result};
 use metrics::{
     counter, describe_counter, describe_gauge, describe_histogram, gauge, histogram, Unit,
 };
-use std::io::{Cursor, Read};
+use std::io::{Cursor, ErrorKind, Read};
 use std::net::ToSocketAddrs;
 use std::thread;
 use std::time;
@@ -183,6 +183,13 @@ pub fn consume_jetstream(
                         Err(TError::ConnectionClosed) => {
                             counter!("jetstream_read_fail", "url" => stream.clone(), "reason" => "clean close").increment(1);
                             println!("jetstream closed the websocket cleanly.");
+                            break;
+                        }
+                        Err(TError::Io(e))
+                            if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) =>
+                        {
+                            counter!("jetstream_read_fail", "url" => stream.clone(), "reason" => "timed out").increment(1);
+                            println!("jetstream socket timed out. bailing to reconnect -- should we be trying to close first?");
                             break;
                         }
                         r => eprintln!("jetstream: close result after error: {r:?}"),
