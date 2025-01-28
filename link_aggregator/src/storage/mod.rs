@@ -533,6 +533,8 @@ mod tests {
         );
     });
 
+    // todo: create get_links_paged test
+
     test_each_storage!(get_all_counts, |storage| {
         storage.push(
             &ActionableEvent::CreateLinks {

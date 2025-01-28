@@ -126,9 +126,29 @@ impl LinkReader for MemStorage {
         limit: u64,
         until: Option<u64>,
     ) -> Result<PagedAppendingCollection<RecordId>> {
+        let data = self.0.lock().unwrap();
+        let Some(paths) = data.targets.get(&Target::new(target)) else {
+            return Ok(PagedAppendingCollection {
+                version: (0, 0),
+                items: Vec::new(),
+            });
+        };
+        let Some(did_rkeys) = paths.get(&Source::new(collection, path)) else {
+            return Ok(PagedAppendingCollection {
+                version: (0, 0),
+                items: Vec::new(),
+            });
+        };
         Ok(PagedAppendingCollection {
-            version: (0, 0),
-            items: Vec::new(),
+            version: (did_rkeys.len() as u64, 0),
+            items: did_rkeys
+                .iter()
+                .map(|(did, rkey)| RecordId {
+                    did: did.clone(),
+                    rkey: rkey.0.clone(),
+                    collection: collection.to_string(),
+                })
+                .collect(),
         })
     }
 
