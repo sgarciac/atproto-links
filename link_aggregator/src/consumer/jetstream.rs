@@ -179,17 +179,17 @@ pub fn consume_jetstream(
                 }
                 Err(e) => {
                     eprintln!("jetstream: could not read message from socket. closing: {e:?}");
+                    if let TError::Io(io_err) = e {
+                        if matches!(io_err.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) {
+                            counter!("jetstream_read_fail", "url" => stream.clone(), "reason" => "timed out").increment(1);
+                            println!("jetstream socket timed out. bailing to reconnect -- should we be trying to close first?");
+                            break;
+                        }
+                    }
                     match socket.close(None) {
                         Err(TError::ConnectionClosed) => {
                             counter!("jetstream_read_fail", "url" => stream.clone(), "reason" => "clean close").increment(1);
                             println!("jetstream closed the websocket cleanly.");
-                            break;
-                        }
-                        Err(TError::Io(e))
-                            if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) =>
-                        {
-                            counter!("jetstream_read_fail", "url" => stream.clone(), "reason" => "timed out").increment(1);
-                            println!("jetstream socket timed out. bailing to reconnect -- should we be trying to close first?");
                             break;
                         }
                         r => eprintln!("jetstream: close result after error: {r:?}"),
