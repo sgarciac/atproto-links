@@ -11,6 +11,12 @@ pub mod rocks_store;
 #[cfg(feature = "rocks")]
 pub use rocks_store::RocksStorage;
 
+#[derive(Debug, PartialEq)]
+pub struct PagedAppendingCollection<T> {
+    version: (u64, u64), // (collection length, deleted item count)
+    items: Vec<T>,
+}
+
 pub trait LinkStorage: Send + Sync {
     fn get_cursor(&mut self) -> Result<Option<u64>> {
         Ok(None)
@@ -45,6 +51,14 @@ pub trait LinkStorage: Send + Sync {
 
 pub trait LinkReader: Clone + Send + Sync + 'static {
     fn get_count(&self, target: &str, collection: &str, path: &str) -> Result<u64>;
+    fn get_links(
+        &self,
+        target: &str,
+        collection: &str,
+        path: &str,
+        limit: u64,
+        until: Option<u64>,
+    ) -> Result<PagedAppendingCollection<RecordId>>;
     fn get_all_counts(&self, _target: &str) -> Result<HashMap<String, HashMap<String, u64>>>;
 
     // todo: remove it
@@ -489,6 +503,34 @@ mod tests {
         )?;
         assert_eq!(storage.get_count("a.com", "app.t.c", ".abc.uri")?, 0);
         assert_eq!(storage.get_count("a.com", "app.t.c", ".def.uri")?, 0);
+    });
+
+    test_each_storage!(get_links_basic, |storage| {
+        storage.push(
+            &ActionableEvent::CreateLinks {
+                record_id: RecordId {
+                    did: "did:plc:asdf".into(),
+                    collection: "app.t.c".into(),
+                    rkey: "asdf".into(),
+                },
+                links: vec![CollectedLink {
+                    target: Link::Uri("a.com".into()),
+                    path: ".abc.uri".into(),
+                }],
+            },
+            0,
+        )?;
+        assert_eq!(
+            storage.get_links("a.com", "app.t.c", ".abc.uri", 100, None)?,
+            PagedAppendingCollection {
+                version: (1, 0),
+                items: vec![RecordId {
+                    did: "did:plc:asdf".into(),
+                    collection: "app.t.c".into(),
+                    rkey: "asdf".into(),
+                }],
+            }
+        );
     });
 
     test_each_storage!(get_all_counts, |storage| {

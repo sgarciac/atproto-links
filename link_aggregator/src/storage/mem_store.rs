@@ -1,4 +1,4 @@
-use super::{LinkReader, LinkStorage};
+use super::{LinkReader, LinkStorage, PagedAppendingCollection};
 use anyhow::Result;
 use link_aggregator::{Did, RecordId};
 use links::CollectedLink;
@@ -116,6 +116,20 @@ impl LinkReader for MemStorage {
         };
         let count = dids.len().try_into()?;
         Ok(count)
+    }
+
+    fn get_links(
+        &self,
+        target: &str,
+        collection: &str,
+        path: &str,
+        limit: u64,
+        until: Option<u64>,
+    ) -> Result<PagedAppendingCollection<RecordId>> {
+        Ok(PagedAppendingCollection {
+            version: (0, 0),
+            items: Vec::new(),
+        })
     }
 
     fn get_all_counts(&self, target: &str) -> Result<HashMap<String, HashMap<String, u64>>> {
