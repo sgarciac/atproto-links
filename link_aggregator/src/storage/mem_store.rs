@@ -12,7 +12,7 @@ pub struct MemStorage(Arc<Mutex<MemStorageData>>);
 #[derive(Debug, Default)]
 struct MemStorageData {
     dids: HashMap<Did, bool>,                            // bool: active or nah
-    targets: HashMap<Target, HashMap<Source, Vec<Did>>>, // target -> (collection, path) -> did[]
+    targets: HashMap<Target, HashMap<Source, Vec<(Did, RKey)>>>, // target -> (collection, path) -> (did, rkey)[]
     links: HashMap<Did, HashMap<RepoId, Vec<(RecordPath, Target)>>>, // did -> collection:rkey -> (path, target)[]
 }
 
@@ -32,7 +32,7 @@ impl LinkStorage for MemStorage {
                 .or_default()
                 .entry(Source::new(&record_id.collection, &link.path))
                 .or_default()
-                .push(record_id.did());
+                .push((record_id.did(), RKey(record_id.rkey())));
             data.links
                 .entry(record_id.did())
                 .or_default()
@@ -63,7 +63,7 @@ impl LinkStorage for MemStorage {
                 // (we don't know which one in the list we should be deleting, and it hopefully mostly doesn't matter)
                 let pos = dids
                     .iter()
-                    .rposition(|d| *d == record_id.did)
+                    .rposition(|d| *d == (record_id.did(), RKey(record_id.rkey())))
                     .expect("must be in dids list if we have a link to it");
                 dids.remove(pos);
             }
@@ -92,7 +92,7 @@ impl LinkStorage for MemStorage {
                         .expect("must have the target if we have a link saved")
                         .get_mut(&Source::new(&repo_id.collection, &record_path.0))
                         .expect("must have the target at this path if we have a link to it saved")
-                        .retain(|d| d != did);
+                        .retain(|d| &d.0 != did);
                 }
             }
         }
@@ -116,6 +116,20 @@ impl LinkReader for MemStorage {
         };
         let count = dids.len().try_into()?;
         Ok(count)
+    }
+
+    fn get_all_counts(&self, target: &str) -> Result<HashMap<String, HashMap<String, u64>>> {
+        let data = self.0.lock().unwrap();
+        let mut out: HashMap<String, HashMap<String, u64>> = HashMap::new();
+        if let Some(asdf) = data.targets.get(&Target::new(target)) {
+            for (Source { collection, path }, linkers) in asdf {
+                out
+                    .entry(collection.to_string())
+                    .or_default()
+                    .insert(path.to_string(), linkers.len() as u64);
+            }
+        }
+        Ok(out)
     }
 
     fn summarize(&self, qsize: u32) {
@@ -156,16 +170,19 @@ impl Source {
 }
 
 #[derive(Debug, PartialEq, Hash, Eq, Clone)]
+struct RKey(String);
+
+#[derive(Debug, PartialEq, Hash, Eq, Clone)]
 struct RepoId {
     collection: String,
-    rkey: String,
+    rkey: RKey,
 }
 
 impl RepoId {
     fn from_record_id(record_id: &RecordId) -> Self {
         Self {
             collection: record_id.collection.clone(),
-            rkey: record_id.rkey.clone(),
+            rkey: RKey(record_id.rkey.clone()),
         }
     }
 }

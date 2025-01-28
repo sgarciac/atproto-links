@@ -45,9 +45,7 @@ pub trait LinkStorage: Send + Sync {
 
 pub trait LinkReader: Clone + Send + Sync + 'static {
     fn get_count(&self, target: &str, collection: &str, path: &str) -> Result<u64>;
-    fn get_all_counts(&self, _target: &str) -> Result<HashMap<String, HashMap<String, u64>>> {
-        Ok(HashMap::new())
-    }
+    fn get_all_counts(&self, _target: &str) -> Result<HashMap<String, HashMap<String, u64>>>;
 
     // todo: remove it
     fn summarize(&self, qsize: u32) {
@@ -493,5 +491,35 @@ mod tests {
         assert_eq!(storage.get_count("a.com", "app.t.c", ".def.uri")?, 0);
     });
 
-    // todo: test update where the new record has no links -> this test might need to be in main?
+    test_each_storage!(get_all_counts, |storage| {
+        storage.push(
+            &ActionableEvent::CreateLinks {
+                record_id: RecordId {
+                    did: "did:plc:asdf".into(),
+                    collection: "app.t.c".into(),
+                    rkey: "asdf".into(),
+                },
+                links: vec![
+                    CollectedLink {
+                        target: Link::Uri("a.com".into()),
+                        path: ".abc.uri".into(),
+                    },
+                    CollectedLink {
+                        target: Link::Uri("a.com".into()),
+                        path: ".def.uri".into(),
+                    },
+                ],
+            },
+            0,
+        )?;
+        assert_eq!(storage.get_all_counts("a.com")?, {
+            let mut counts = HashMap::new();
+            let mut t_c_counts = HashMap::new();
+            t_c_counts.insert(".abc.uri".into(), 1);
+            t_c_counts.insert(".def.uri".into(), 1);
+            counts.insert("app.t.c".into(), t_c_counts);
+            counts
+        });
+    });
+
 }

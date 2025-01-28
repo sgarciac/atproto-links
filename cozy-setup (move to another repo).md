@@ -53,8 +53,8 @@ cozy-ucosm
               match {
                 expression {header.User-Agent}.startsWith("Mozilla/5.0")
               }
-              events 2
-              window 15s
+              events 1000
+              window 30s
               log_key true
             }
           }
@@ -74,6 +74,23 @@ cozy-ucosm
           cache
         }
         ```
+  well... the gateway fell over IMMEDIATELY with like 2 req/sec from deletions, with that ^^ config. for now i removed everything except the reverse proxy config + normal caddy metrics and it's running fine on vanilla caddy. i did try reducing the rate-limiting configs to a single, fixed-key global limit but it still ate all the ram and died. maybe badger w/ the cache config was still a problem. maybe it would have been ok on a machine with more than 1GB mem.
+
+
+  alternative proxies:
+
+    - nginx. i should probably just use this. acme-client is a piece of cake to set up, and i know how to configure it.
+    - haproxy. also kind of familiar, it's old and stable. no idea how it handle low-mem (our 1gb) vs nginx.
+    - sozu. popular rust thing, fast. doesn't have rate-limiting or cache feature?
+    - rpxy. like caddy (auto-tls) but in rust and actually fast? has an "experimental" cache feature. but the cache feature looks good.
+    - rama. build-your-own proxy. not sure that it has both cache and limiter in their standard features?
+    - pingora. build-your-own cloudflare, so like, probably stable. has tools for cache and limiting. low-mem...?
+      - cache stuff in pingora seems a little... hit and miss (byeeeee). only a test impl for Storage for the main cache feature?
+      - but the rate-limiter has a guide: https://github.com/cloudflare/pingora/blob/main/docs/user_guide/rate_limiter.md
+
+  what i want is low-resource reverse proxy with built-in rate-limiting and caching. but maybe cache (and/or ratelimiting) could be external to the reverse proxy
+    - varnish is a dedicated cache. has https://github.com/varnish/varnish-modules/blob/master/src/vmod_vsthrottle.vcc
+    - apache traffic control has experimental rate-limiting plugins
 
 
 - victoriametrics
