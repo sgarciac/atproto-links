@@ -11,7 +11,7 @@ pub struct MemStorage(Arc<Mutex<MemStorageData>>);
 
 #[derive(Debug, Default)]
 struct MemStorageData {
-    dids: HashMap<Did, bool>,                            // bool: active or nah
+    dids: HashMap<Did, bool>, // bool: active or nah
     targets: HashMap<Target, HashMap<Source, Vec<(Did, RKey)>>>, // target -> (collection, path) -> (did, rkey)[]
     links: HashMap<Did, HashMap<RepoId, Vec<(RecordPath, Target)>>>, // did -> collection:rkey -> (path, target)[]
 }
@@ -123,8 +123,7 @@ impl LinkReader for MemStorage {
         let mut out: HashMap<String, HashMap<String, u64>> = HashMap::new();
         if let Some(asdf) = data.targets.get(&Target::new(target)) {
             for (Source { collection, path }, linkers) in asdf {
-                out
-                    .entry(collection.to_string())
+                out.entry(collection.to_string())
                     .or_default()
                     .insert(path.to_string(), linkers.len() as u64);
             }

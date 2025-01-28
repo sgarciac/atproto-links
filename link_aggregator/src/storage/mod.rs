@@ -522,4 +522,7 @@ mod tests {
         });
     });
 
+    test_each_storage!(get_all_counts_no_links, |storage| {
+        assert_eq!(storage.get_all_counts("bad-example.com")?, HashMap::new());
+    });
 }
