@@ -118,7 +118,8 @@ some todos
 
 data fixes
 - [x] add rkey to linkers 🤦‍♀️
-- [ ] don't remove deleted links from the reverse records -- null them out. this will keep things stable for paging.
+- [x] don't remove deleted links from the reverse records -- null them out. this will keep things stable for paging.
+- [x] don't show deactivated accounts in link responses
 - [ ] links:
   - [ ] pull `$type`/`type` from object children of arrays (distinguish replies, quotes, etc)
   - [ ] actually define the format (deal with in-band dots etc)

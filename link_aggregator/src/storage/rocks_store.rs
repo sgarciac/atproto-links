@@ -588,6 +588,7 @@ impl RocksStorage {
             return; // ignore updates for dids we don't know about
         };
         self.delete_did_id_value(batch, did);
+        // TODO: also delete the reverse!!
 
         // use a separate batch for all their links, since it can be a lot and make us crash at around 1GiB batch size.
         // this should still hopefully be crash-safe: as long as we don't actually delete the DidId entry until after all links are cleared.
@@ -754,6 +755,12 @@ impl LinkReader for RocksStorage {
         // TODO: use get-many (or multi-get or whatever it's called)
         for (did_id, rkey) in did_id_rkeys {
             if let Some(did) = self.did_id_table.get_val_from_id(&self.db, did_id.0)? {
+                let Some(DidIdValue(_, active)) = self.did_id_table.get_id_val(&self.db, &did)? else {
+                    panic!("booo"); // TODO
+                };
+                if !active {
+                    continue
+                }
                 items.push(RecordId {
                     did,
                     collection: collection.to_string(),
