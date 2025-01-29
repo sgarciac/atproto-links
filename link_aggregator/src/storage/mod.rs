@@ -1,6 +1,5 @@
 use anyhow::Result;
-use link_aggregator::{ActionableEvent, Did, RecordId};
-use links::CollectedLink;
+use link_aggregator::{ActionableEvent, RecordId};
 use std::collections::HashMap;
 
 pub mod mem_store;
@@ -13,38 +12,18 @@ pub use rocks_store::RocksStorage;
 
 #[derive(Debug, PartialEq)]
 pub struct PagedAppendingCollection<T> {
-    version: (u64, u64), // (collection length, deleted item count)
-    items: Vec<T>,
-    next: Option<u64>,
+    pub version: (u64, u64), // (collection length, deleted item count)
+    pub items: Vec<T>,
+    pub next: Option<u64>,
 }
 
 pub trait LinkStorage: Send + Sync {
+    /// jetstream cursor from last saved actions, if available
     fn get_cursor(&mut self) -> Result<Option<u64>> {
         Ok(None)
     }
-    fn push(&mut self, event: &ActionableEvent, _cursor: u64) -> Result<()> {
-        match event {
-            ActionableEvent::CreateLinks { record_id, links } => self.add_links(record_id, links),
-            ActionableEvent::UpdateLinks {
-                record_id,
-                new_links,
-            } => self.update_links(record_id, new_links),
-            ActionableEvent::DeleteRecord(record_id) => self.remove_links(record_id),
-            ActionableEvent::ActivateAccount(did) => self.set_account(did, true),
-            ActionableEvent::DeactivateAccount(did) => self.set_account(did, false),
-            ActionableEvent::DeleteAccount(did) => self.delete_account(did),
-        }
-        Ok(())
-    }
 
-    fn add_links(&mut self, record_id: &RecordId, links: &[CollectedLink]);
-    fn remove_links(&mut self, record_id: &RecordId);
-    fn update_links(&mut self, record_id: &RecordId, new_links: &[CollectedLink]) {
-        self.remove_links(record_id);
-        self.add_links(record_id, new_links);
-    }
-    fn set_account(&mut self, did: &Did, active: bool);
-    fn delete_account(&mut self, did: &Did);
+    fn push(&mut self, event: &ActionableEvent, cursor: u64) -> Result<()>;
 
     // readers are  off from the writer instance
     fn to_readable(&mut self) -> impl LinkReader;
@@ -52,6 +31,7 @@ pub trait LinkStorage: Send + Sync {
 
 pub trait LinkReader: Clone + Send + Sync + 'static {
     fn get_count(&self, target: &str, collection: &str, path: &str) -> Result<u64>;
+
     fn get_links(
         &self,
         target: &str,
@@ -60,6 +40,7 @@ pub trait LinkReader: Clone + Send + Sync + 'static {
         limit: u64,
         until: Option<u64>,
     ) -> Result<PagedAppendingCollection<RecordId>>;
+
     fn get_all_counts(&self, _target: &str) -> Result<HashMap<String, HashMap<String, u64>>>;
 
     // todo: remove it
@@ -71,7 +52,7 @@ pub trait LinkReader: Clone + Send + Sync + 'static {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use links::Link;
+    use links::{CollectedLink, Link};
 
     macro_rules! test_each_storage {
         ($test_name:ident, |$storage_label:ident| $test_code:block) => {

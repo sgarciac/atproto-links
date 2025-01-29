@@ -1,6 +1,6 @@
 use super::{LinkReader, LinkStorage, PagedAppendingCollection};
 use anyhow::Result;
-use link_aggregator::{Did, RecordId};
+use link_aggregator::{ActionableEvent, Did, RecordId};
 use links::CollectedLink;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -20,9 +20,7 @@ impl MemStorage {
     pub fn new() -> Self {
         Self(Arc::new(Mutex::new(MemStorageData::default())))
     }
-}
 
-impl LinkStorage for MemStorage {
     fn add_links(&mut self, record_id: &RecordId, links: &[CollectedLink]) {
         let mut data = self.0.lock().unwrap();
         for link in links {
@@ -73,6 +71,11 @@ impl LinkStorage for MemStorage {
             .map(|cr| cr.remove(&repo_id));
     }
 
+    fn update_links(&mut self, record_id: &RecordId, new_links: &[CollectedLink]) {
+        self.remove_links(record_id);
+        self.add_links(record_id, new_links);
+    }
+
     fn set_account(&mut self, did: &Did, active: bool) {
         let mut data = self.0.lock().unwrap();
         if let Some(account) = data.dids.get_mut(did) {
@@ -98,6 +101,23 @@ impl LinkStorage for MemStorage {
         }
         data.links.remove(did); // nb: this is removing by a whole prefix in kv context
         data.dids.remove(did);
+    }
+}
+
+impl LinkStorage for MemStorage {
+    fn push(&mut self, event: &ActionableEvent, _cursor: u64) -> Result<()> {
+        match event {
+            ActionableEvent::CreateLinks { record_id, links } => self.add_links(record_id, links),
+            ActionableEvent::UpdateLinks {
+                record_id,
+                new_links,
+            } => self.update_links(record_id, new_links),
+            ActionableEvent::DeleteRecord(record_id) => self.remove_links(record_id),
+            ActionableEvent::ActivateAccount(did) => self.set_account(did, true),
+            ActionableEvent::DeactivateAccount(did) => self.set_account(did, false),
+            ActionableEvent::DeleteAccount(did) => self.delete_account(did),
+        }
+        Ok(())
     }
 
     fn to_readable(&mut self) -> impl LinkReader {

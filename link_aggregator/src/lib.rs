@@ -27,7 +27,7 @@ impl<T: Into<String>> From<T> for Did {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub struct RecordId {
     pub did: Did,
     pub collection: String,
