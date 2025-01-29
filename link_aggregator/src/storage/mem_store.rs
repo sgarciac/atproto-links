@@ -180,7 +180,7 @@ impl LinkReader for MemStorage {
             .collect();
 
         Ok(PagedAppendingCollection {
-            version: (did_rkeys.len() as u64, 0),
+            version: (total as u64, 0),
             items,
             next,
         })
