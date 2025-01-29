@@ -658,6 +658,195 @@ mod tests {
         );
     });
 
+    test_each_storage!(page_links_while_new_links_arrive, |storage| {
+        for i in 1..=4 {
+            storage.push(
+                &ActionableEvent::CreateLinks {
+                    record_id: RecordId {
+                        did: format!("did:plc:asdf-{i}").into(),
+                        collection: "app.t.c".into(),
+                        rkey: "asdf".into(),
+                    },
+                    links: vec![CollectedLink {
+                        target: Link::Uri("a.com".into()),
+                        path: ".abc.uri".into(),
+                    }],
+                },
+                0,
+            )?;
+        }
+        let links = storage.get_links("a.com", "app.t.c", ".abc.uri", 2, None)?;
+        assert_eq!(
+            links,
+            PagedAppendingCollection {
+                version: (4, 0),
+                items: vec![
+                    RecordId {
+                        did: "did:plc:asdf-4".into(),
+                        collection: "app.t.c".into(),
+                        rkey: "asdf".into(),
+                    },
+                    RecordId {
+                        did: "did:plc:asdf-3".into(),
+                        collection: "app.t.c".into(),
+                        rkey: "asdf".into(),
+                    },
+                ],
+                next: Some(2),
+            }
+        );
+        storage.push(
+            &ActionableEvent::CreateLinks {
+                record_id: RecordId {
+                    did: format!("did:plc:asdf-5").into(),
+                    collection: "app.t.c".into(),
+                    rkey: "asdf".into(),
+                },
+                links: vec![CollectedLink {
+                    target: Link::Uri("a.com".into()),
+                    path: ".abc.uri".into(),
+                }],
+            },
+            0,
+        )?;
+        let links = storage.get_links("a.com", "app.t.c", ".abc.uri", 2, links.next)?;
+        assert_eq!(
+            links,
+            PagedAppendingCollection {
+                version: (5, 0),
+                items: vec![
+                    RecordId {
+                        did: "did:plc:asdf-2".into(),
+                        collection: "app.t.c".into(),
+                        rkey: "asdf".into(),
+                    },
+                    RecordId {
+                        did: "did:plc:asdf-1".into(),
+                        collection: "app.t.c".into(),
+                        rkey: "asdf".into(),
+                    },
+                ],
+                next: None,
+            }
+        );
+    });
+
+    test_each_storage!(page_links_while_some_are_deleted, |storage| {
+        for i in 1..=4 {
+            storage.push(
+                &ActionableEvent::CreateLinks {
+                    record_id: RecordId {
+                        did: format!("did:plc:asdf-{i}").into(),
+                        collection: "app.t.c".into(),
+                        rkey: "asdf".into(),
+                    },
+                    links: vec![CollectedLink {
+                        target: Link::Uri("a.com".into()),
+                        path: ".abc.uri".into(),
+                    }],
+                },
+                0,
+            )?;
+        }
+        let links = storage.get_links("a.com", "app.t.c", ".abc.uri", 2, None)?;
+        assert_eq!(
+            links,
+            PagedAppendingCollection {
+                version: (4, 0),
+                items: vec![
+                    RecordId {
+                        did: "did:plc:asdf-4".into(),
+                        collection: "app.t.c".into(),
+                        rkey: "asdf".into(),
+                    },
+                    RecordId {
+                        did: "did:plc:asdf-3".into(),
+                        collection: "app.t.c".into(),
+                        rkey: "asdf".into(),
+                    },
+                ],
+                next: Some(2),
+            }
+        );
+        storage.push(
+            &ActionableEvent::DeleteRecord(RecordId {
+                did: "did:plc:asdf-2".into(),
+                collection: "app.t.c".into(),
+                rkey: "asdf".into(),
+            }),
+            0,
+        )?;
+        let links = storage.get_links("a.com", "app.t.c", ".abc.uri", 2, links.next)?;
+        assert_eq!(
+            links,
+            PagedAppendingCollection {
+                version: (4, 1),
+                items: vec![RecordId {
+                    did: "did:plc:asdf-1".into(),
+                    collection: "app.t.c".into(),
+                    rkey: "asdf".into(),
+                },],
+                next: None,
+            }
+        );
+    });
+
+    test_each_storage!(page_links_accounts_inactive, |storage| {
+        for i in 1..=4 {
+            storage.push(
+                &ActionableEvent::CreateLinks {
+                    record_id: RecordId {
+                        did: format!("did:plc:asdf-{i}").into(),
+                        collection: "app.t.c".into(),
+                        rkey: "asdf".into(),
+                    },
+                    links: vec![CollectedLink {
+                        target: Link::Uri("a.com".into()),
+                        path: ".abc.uri".into(),
+                    }],
+                },
+                0,
+            )?;
+        }
+        let links = storage.get_links("a.com", "app.t.c", ".abc.uri", 2, None)?;
+        assert_eq!(
+            links,
+            PagedAppendingCollection {
+                version: (4, 0),
+                items: vec![
+                    RecordId {
+                        did: "did:plc:asdf-4".into(),
+                        collection: "app.t.c".into(),
+                        rkey: "asdf".into(),
+                    },
+                    RecordId {
+                        did: "did:plc:asdf-3".into(),
+                        collection: "app.t.c".into(),
+                        rkey: "asdf".into(),
+                    },
+                ],
+                next: Some(2),
+            }
+        );
+        storage.push(
+            &ActionableEvent::DeactivateAccount("did:plc:asdf-1".into()),
+            0,
+        )?;
+        let links = storage.get_links("a.com", "app.t.c", ".abc.uri", 2, links.next)?;
+        assert_eq!(
+            links,
+            PagedAppendingCollection {
+                version: (4, 0),
+                items: vec![RecordId {
+                    did: "did:plc:asdf-2".into(),
+                    collection: "app.t.c".into(),
+                    rkey: "asdf".into(),
+                },],
+                next: None,
+            }
+        );
+    });
+
     test_each_storage!(get_all_counts, |storage| {
         storage.push(
             &ActionableEvent::CreateLinks {

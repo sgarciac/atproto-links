@@ -101,7 +101,7 @@ some todos
   - [ ] also for valid json that was rejected?
 - [x] get it running on raspi
 - [x] get an estimate of disk usage per day after a few days of running
-  - bit over 1GB with data model before adding rkeys to linkers + fixing paths
+  - very close to 1GB with data model before adding rkeys to linkers + fixing paths
 - [ ] make the did_init check only happen on test config (or remove it)
 - [ ] actual error types (thiserror?) for lib-ish code
 - [ ] clean up the main readme
@@ -117,7 +117,7 @@ some todos
 - [ ] put delete-account tasks into a separate (persisted?) task queue for the writer so it can work on them incrementally.
 
 data fixes
-- [~] add rkey to linkers 🤦‍♀️
+- [x] add rkey to linkers 🤦‍♀️
 - [ ] don't remove deleted links from the reverse records -- null them out. this will keep things stable for paging.
 - [ ] links:
   - [ ] pull `$type`/`type` from object children of arrays (distinguish replies, quotes, etc)
