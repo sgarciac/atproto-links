@@ -142,8 +142,16 @@ impl LinkReader for MemStorage {
             });
         };
 
-        let items = did_rkeys
+        let total = did_rkeys.len();
+        let end = until
+            .map(|u| std::cmp::min(u as usize, total))
+            .unwrap_or(total);
+        let begin = end.saturating_sub(limit as usize);
+        let next = if begin == 0 { None } else { Some(begin as u64) };
+
+        let items: Vec<_> = did_rkeys[begin..end]
             .iter()
+            .rev()
             .map(|(did, rkey)| RecordId {
                 did: did.clone(),
                 rkey: rkey.0.clone(),
@@ -154,7 +162,7 @@ impl LinkReader for MemStorage {
         Ok(PagedAppendingCollection {
             version: (did_rkeys.len() as u64, 0),
             items,
-            next: None,
+            next,
         })
     }
 
