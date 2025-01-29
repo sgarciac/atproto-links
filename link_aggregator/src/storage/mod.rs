@@ -15,6 +15,7 @@ pub use rocks_store::RocksStorage;
 pub struct PagedAppendingCollection<T> {
     version: (u64, u64), // (collection length, deleted item count)
     items: Vec<T>,
+    next: Option<u64>,
 }
 
 pub trait LinkStorage: Send + Sync {
@@ -505,6 +506,17 @@ mod tests {
         assert_eq!(storage.get_count("a.com", "app.t.c", ".def.uri")?, 0);
     });
 
+    test_each_storage!(get_links_zero, |storage| {
+        assert_eq!(
+            storage.get_links("a.com", "app.t.c", ".abc.uri", 100, None)?,
+            PagedAppendingCollection {
+                version: (0, 0),
+                items: vec![],
+                next: None,
+            }
+        );
+    });
+
     test_each_storage!(get_links_basic, |storage| {
         storage.push(
             &ActionableEvent::CreateLinks {
@@ -529,11 +541,75 @@ mod tests {
                     collection: "app.t.c".into(),
                     rkey: "asdf".into(),
                 }],
+                next: None,
             }
         );
     });
 
-    // todo: create get_links_paged test
+    test_each_storage!(get_links_paged, |storage| {
+        for i in 1..=5 {
+            storage.push(
+                &ActionableEvent::CreateLinks {
+                    record_id: RecordId {
+                        did: format!("did:plc:asdf-{i}").into(),
+                        collection: "app.t.c".into(),
+                        rkey: "asdf".into(),
+                    },
+                    links: vec![CollectedLink {
+                        target: Link::Uri("a.com".into()),
+                        path: ".abc.uri".into(),
+                    }],
+                },
+                0,
+            )?;
+        }
+        let links = storage.get_links("a.com", "app.t.c", ".abc.uri", 2, None)?;
+        assert_eq!(links, PagedAppendingCollection {
+            version: (5, 0),
+            items: vec![
+                RecordId {
+                    did: "did:plc:asdf-5".into(),
+                    collection: "app.t.c".into(),
+                    rkey: "asdf".into(),
+                },
+                RecordId {
+                    did: "did:plc:asdf-4".into(),
+                    collection: "app.t.c".into(),
+                    rkey: "asdf".into(),
+                },
+            ],
+            next: Some(3),
+        });
+        let links = storage.get_links("a.com", "app.t.c", ".abc.uri", 2, links.next)?;
+        assert_eq!(links, PagedAppendingCollection {
+            version: (5, 0),
+            items: vec![
+                RecordId {
+                    did: "did:plc:asdf-3".into(),
+                    collection: "app.t.c".into(),
+                    rkey: "asdf".into(),
+                },
+                RecordId {
+                    did: "did:plc:asdf-2".into(),
+                    collection: "app.t.c".into(),
+                    rkey: "asdf".into(),
+                },
+            ],
+            next: Some(1),
+        });
+        let links = storage.get_links("a.com", "app.t.c", ".abc.uri", 2, links.next)?;
+        assert_eq!(links, PagedAppendingCollection {
+            version: (5, 0),
+            items: vec![
+                RecordId {
+                    did: "did:plc:asdf-1".into(),
+                    collection: "app.t.c".into(),
+                    rkey: "asdf".into(),
+                },
+            ],
+            next: None,
+        });
+    });
 
     test_each_storage!(get_all_counts, |storage| {
         storage.push(
