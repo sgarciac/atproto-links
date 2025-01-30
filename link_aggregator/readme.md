@@ -110,7 +110,7 @@ some todos
 - [x] handle shutdown cleanly -- be nice to rocksdb
 - [x] add user-agent to jetstream request
 - [ ] wow the shutdown stuff i wrote is really bad and doesn't work a lot
-- [ ] serve html for browser requests
+- [~] serve html for browser requests
 - [ ] add a health check endpoint
 - [ ] add seq numbers to metrics
 - [ ] persist the jetstream server url, error if started with a different one (maybe with --switch-streams or something)
@@ -120,6 +120,7 @@ data fixes
 - [x] add rkey to linkers 🤦‍♀️
 - [x] don't remove deleted links from the reverse records -- null them out. this will keep things stable for paging.
 - [x] don't show deactivated accounts in link responses
+- [ ] canonicalize handles to dids!
 - [ ] links:
   - [~] pull `$type`/`type` from object children of arrays (distinguish replies, quotes, etc)
     - just $type to start

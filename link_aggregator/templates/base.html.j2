@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf8">
+    <title>{% block title %}{% endblock %} — Link Aggregator</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      body {
+        font-family: sans-serif;
+      }
+      code {
+        background: #cdf;
+        display: inline-block;
+        font-size: 1em;
+        padding: 0 0.3em;
+        border-radius: 0.2em;
+      }
+      h1, h2, h3, h4 {
+        margin-top: 1.618em;
+      }
+    </style>
+  </head>
+  <body>
+    {% block content %}{% endblock %}
+  </body>
+</html>

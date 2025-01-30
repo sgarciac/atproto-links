@@ -1,4 +1,11 @@
-use axum::{extract::Query, http, routing::get, Json, Router};
+use askama::Template;
+use axum::{
+    extract::Query,
+    http,
+    response::{IntoResponse, Json},
+    routing::get,
+    Router,
+};
 use bincode::Options;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
@@ -9,6 +16,10 @@ use tokio_util::sync::CancellationToken;
 
 use crate::storage::LinkReader;
 use link_aggregator::RecordId;
+
+mod acceptable;
+
+use acceptable::{acceptable, ExtractAccept};
 
 const DEFAULT_CURSOR_LIMIT: u64 = 16;
 const DEFAULT_CURSOR_LIMIT_MAX: u64 = 100;
@@ -52,8 +63,12 @@ where
     Ok(())
 }
 
-async fn hello() -> &'static str {
-    "helloooo\n"
+#[derive(Template, Serialize, Deserialize)]
+#[template(path = "hello.html.j2")]
+struct HelloReponse {}
+async fn hello(accept: ExtractAccept) -> impl IntoResponse {
+    let o = HelloReponse {};
+    acceptable(accept, o)
 }
 
 #[derive(Deserialize)]

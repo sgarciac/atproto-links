@@ -1,0 +1,81 @@
+{% extends "base.html.j2" %}
+
+{% block title %}Hello!{% endblock %}
+
+{% block content %}
+  <h1>This is an <a href="https://github.com/at-ucosm/links/tree/main/link_aggregator">atproto link aggregator</a> server from <a href="https://github.com/at-ucosm">µcosm</a>!</h1>
+
+  <p>Every interaction in Bluesky and atproto at large tends to appear as a <em>link</em> from a new repository record to <em>somewhere</em>: liking a post creates a record with a link to the post, blocking a spammer creates a record with reference to their DID.</p>
+
+  <p>This service attempts to aggregate all of these links, globally, from all content coming throught the firehose. It provides generic API endpoints to answer questions like <strong>how many likes does a post have</strong> and <strong>who follows a user</strong>.</p>
+
+  <p>It is very much a <strong>work in progress</strong>. The database has not been backfilled, so any interactions occurring before its last reset will be missing.</p>
+
+  <p><small>µcosm ("microcosm") is a project by <a href="https://bsky.app/profile/bad-example.com">@bad-example.com</a>, making building apps on atproto easier.</small></p>
+
+  <h2>Endpoints</h2>
+
+  <h3><code>GET /links</code></h3>
+
+  <p>A list of records linking to a target.</p>
+
+  <h4>Query parameters:</h4>
+
+  <ul>
+    <li><code>target</code>: required, must url-encode. Example: <code>did:plc:vc7f4oafdgxsihk4cry2xpze</code></li>
+    <li><code>collection</code>: required. Example: <code>app.bsky.feed.follow</code></li>
+    <li><code>path</code>: required, must url-encode. Example: <code>.subject</code></li>
+  </ul>
+
+  <p><strong>Live example:</strong> <code><a href="/links?target=at://did:plc:vc7f4oafdgxsihk4cry2xpze/app.bsky.feed.post/3lgwdn7vd722r&collection=app.bsky.feed.like&path=.subject.uri">/links?target=at://did:plc:vc7f4oafdgxsihk4cry2xpze/app.bsky.feed.post/3lgwdn7vd722r&collection=app.bsky.feed.like&path=.subject.uri</a></code></p>
+
+
+  <h3><code>GET /links/count</code></h3>
+
+  <p>The total number of links pointing at a given target.</p>
+
+  <h4>Query parameters:</h4>
+
+  <ul>
+    <li><code>target</code>: required, must url-encode. Example: <code>did:plc:vc7f4oafdgxsihk4cry2xpze</code></li>
+    <li><code>collection</code>: required. Example: <code>app.bsky.feed.follow</code></li>
+    <li><code>path</code>: required, must url-encode. Example: <code>.subject</code></li>
+    <li><code>cursor</code>: optional, see Definitions.</li>
+  </ul>
+
+  <p><strong>Live example:</strong> <code><a href="/links/count?target=at://did:plc:vc7f4oafdgxsihk4cry2xpze/app.bsky.feed.post/3lgwdn7vd722r&collection=app.bsky.feed.like&path=.subject.uri">/links/count?target=at://did:plc:vc7f4oafdgxsihk4cry2xpze/app.bsky.feed.post/3lgwdn7vd722r&collection=app.bsky.feed.like&path=.subject.uri</a></code></p>
+
+
+  <h3><code>GET /links/all/count</code></h3>
+
+  <p>The total number of links pointing at a given target from any collection and path.</p>
+
+  <h4>Query parameters:</h4>
+
+  <ul>
+    <li><code>target</code>: required, must url-encode. Example: <code>did:plc:vc7f4oafdgxsihk4cry2xpze</code></li>
+  </ul>
+
+  <p><strong>Live example:</strong> <code><a href="/links/all/count?target=did:plc:vc7f4oafdgxsihk4cry2xpze">/links/all/count?target=did:plc:vc7f4oafdgxsihk4cry2xpze</a></code></p>
+
+
+  <h2>Definitions</h2>
+
+  <h3>Target</h3>
+
+  <p>A DID like <code>did:plc:hdhoaan3xa3jiuq4fg4mefid</code>, or an AT-URI like <code>at://did:plc:z72i7hdynmk6r22z27h6tvur/app.bsky.feed.post/3lgu4lg6j2k2v</code>, or a URI like <code>https://example.com</code>.</p>
+
+  <h3>Collection</h3>
+
+  <p>A record NSID like <code>app.bsky.feed.like</code>.</p>
+
+  <h3>Path</h3>
+
+  <p>A (currently-very-very-hacky) json-path-ish representation of the source of a link in a record. Records may contain multiple links with different meanings, so this specifies which specific link is of interest. Like <code>.subject.uri</code>.</p>
+
+  <h3>Cursor</h3>
+
+  <p>Paged responses include a <code>cursor</code> property. When it's <code>null</code>, no more data is available. If it's not null, you can repeat the request with <code>&cursor=&lt;cursor&gt;</code> in the URL query to get the next set of responses.</p>
+
+
+{% endblock %}
