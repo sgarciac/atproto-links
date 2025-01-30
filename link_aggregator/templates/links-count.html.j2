@@ -1,0 +1,32 @@
+{% extends "base.html.j2" %}
+
+{% block title %}Link count{% endblock %}
+
+{% block content %}
+
+  <h2>
+    Total links to <code>{{ query.target }}</code>
+    {% if let Some(browseable_uri) = query.target|to_browseable %}
+      <small style="font-weight: normal; font-size: 1rem"><a href="{{ browseable_uri }}">browse record</a></small>
+    {% endif %}
+  </h2>
+
+
+  <p><strong><code>{{ total }}</code></strong> total links from <code>{{ query.collection }}</code> at <code>{{ query.path }}</code></p>
+
+  <form method="get" action="/links/count">
+<pre class="code"><strong>GET</strong> /links/count
+  ?target=     <input type="text" name="target" value="{{ query.target }}" placeholder="target" />
+  &collection= <input type="text" name="collection" value="{{ query.collection }}" placeholder="collection" />
+  &path=       <input type="text" name="path" value="{{ query.path }}" placeholder="path" />
+  <button type="submit">get links count</button></pre>
+  </form>
+
+  <p>See these links at <code>/links</code>: <a href="/links?target={{ query.target|urlencode }}&collection={{ query.collection|urlencode }}&path={{ query.path|urlencode() }}">/links?target={{ query.target|urlencode }}&collection={{ query.collection|urlencode }}&path={{ query.path|urlencode }}</a></p>
+
+  <details>
+    <summary>Raw JSON response</summary>
+    <pre class="code">{{ self|tojson }}</pre>
+  </details>
+
+{% endblock %}

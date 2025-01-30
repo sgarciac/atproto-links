@@ -3,8 +3,6 @@
 {% block title %}Hello!{% endblock %}
 
 {% block content %}
-  <h1>This is an <a href="https://github.com/at-ucosm/links/tree/main/link_aggregator">atproto link aggregator</a> server from <a href="https://github.com/at-ucosm">µcosm</a>!</h1>
-
   <p>Every interaction in Bluesky and atproto at large tends to appear as a <em>link</em> from a new repository record to <em>somewhere</em>: liking a post creates a record with a link to the post, blocking a spammer creates a record with reference to their DID.</p>
 
   <p>This service attempts to aggregate all of these links, globally, from all content coming throught the firehose. It provides generic API endpoints to answer questions like <strong>how many likes does a post have</strong> and <strong>who follows a user</strong>.</p>

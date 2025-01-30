@@ -1,11 +1,5 @@
 use askama::Template;
-use axum::{
-    extract::Query,
-    http,
-    response::{IntoResponse, Json},
-    routing::get,
-    Router,
-};
+use axum::{extract::Query, http, response::IntoResponse, routing::get, Router};
 use bincode::Options;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
@@ -18,6 +12,7 @@ use crate::storage::LinkReader;
 use link_aggregator::RecordId;
 
 mod acceptable;
+mod filters;
 
 use acceptable::{acceptable, ExtractAccept};
 
@@ -35,21 +30,23 @@ where
             "/links/count",
             get({
                 let store = store.clone();
-                move |query| async { block_in_place(|| count_links(query, store)) }
+                move |accept, query| async { block_in_place(|| count_links(accept, query, store)) }
             }),
         )
         .route(
             "/links",
             get({
                 let store = store.clone();
-                move |query| async { block_in_place(|| get_links(query, store)) }
+                move |accept, query| async { block_in_place(|| get_links(accept, query, store)) }
             }),
         )
         .route(
             "/links/all/count",
             get({
                 let store = store.clone();
-                move |query| async { block_in_place(|| count_all_links(query, store)) }
+                move |accept, query| async {
+                    block_in_place(|| count_all_links(accept, query, store))
+                }
             }),
         )
         .layer(axum_metrics::MetricLayer::default());
@@ -65,29 +62,46 @@ where
 
 #[derive(Template, Serialize, Deserialize)]
 #[template(path = "hello.html.j2")]
-struct HelloReponse {}
+struct HelloReponse {
+    help: &'static str,
+}
 async fn hello(accept: ExtractAccept) -> impl IntoResponse {
-    let o = HelloReponse {};
-    acceptable(accept, o)
+    acceptable(accept, HelloReponse {
+        help: "open this URL in a web browser (or request with Accept: text/html) for information about this API."
+    })
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct GetLinksCountQuery {
     target: String,
     collection: String,
     path: String,
 }
+#[derive(Template, Serialize)]
+#[template(path = "links-count.html.j2")]
+struct GetLinksCountResponse {
+    total: u64,
+    #[serde(skip_serializing)]
+    query: GetLinksCountQuery,
+}
 fn count_links(
+    accept: ExtractAccept,
     query: Query<GetLinksCountQuery>,
     store: impl LinkReader,
-) -> Result<String, http::StatusCode> {
-    store
+) -> Result<impl IntoResponse, http::StatusCode> {
+    let total = store
         .get_count(&query.target, &query.collection, &query.path)
-        .map(|c| c.to_string())
-        .map_err(|_| http::StatusCode::INTERNAL_SERVER_ERROR)
+        .map_err(|_| http::StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(acceptable(
+        accept,
+        GetLinksCountResponse {
+            total,
+            query: (*query).clone(),
+        },
+    ))
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct GetLinkItemsQuery {
     target: String,
     collection: String,
@@ -96,7 +110,8 @@ struct GetLinkItemsQuery {
     limit: Option<u64>,
     // TODO: allow reverse (er, forward) order as well
 }
-#[derive(Serialize)]
+#[derive(Template, Serialize)]
+#[template(path = "links.html.j2")]
 struct GetLinkItemsResponse {
     // what does staleness mean?
     // - new links have appeared. would be nice to offer a `since` cursor to fetch these. and/or,
@@ -104,11 +119,14 @@ struct GetLinkItemsResponse {
     total: u64,
     linking_records: Vec<RecordId>,
     cursor: Option<OpaqueApiCursor>,
+    #[serde(skip_serializing)]
+    query: GetLinkItemsQuery,
 }
 fn get_links(
+    accept: ExtractAccept,
     query: Query<GetLinkItemsQuery>,
     store: impl LinkReader,
-) -> Result<Json<GetLinkItemsResponse>, http::StatusCode> {
+) -> Result<impl IntoResponse, http::StatusCode> {
     let until = query
         .cursor
         .clone()
@@ -133,26 +151,43 @@ fn get_links(
         .into()
     });
 
-    Ok(Json(GetLinkItemsResponse {
-        total: paged.version.0,
-        linking_records: paged.items,
-        cursor,
-    }))
+    Ok(acceptable(
+        accept,
+        GetLinkItemsResponse {
+            total: paged.version.0,
+            linking_records: paged.items,
+            cursor,
+            query: (*query).clone(),
+        },
+    ))
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct GetAllLinksQuery {
     target: String,
 }
-type GetAllLinksResponse = HashMap<String, HashMap<String, u64>>;
+#[derive(Template, Serialize)]
+#[template(path = "links-all-count.html.j2")]
+struct GetAllLinksResponse {
+    links: HashMap<String, HashMap<String, u64>>,
+    #[serde(skip_serializing)]
+    query: GetAllLinksQuery,
+}
 fn count_all_links(
+    accept: ExtractAccept,
     query: Query<GetAllLinksQuery>,
     store: impl LinkReader,
-) -> Result<Json<GetAllLinksResponse>, http::StatusCode> {
-    store
+) -> Result<impl IntoResponse, http::StatusCode> {
+    let links = store
         .get_all_counts(&query.target)
-        .map(Json)
-        .map_err(|_| http::StatusCode::INTERNAL_SERVER_ERROR)
+        .map_err(|_| http::StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(acceptable(
+        accept,
+        GetAllLinksResponse {
+            links,
+            query: (*query).clone(),
+        },
+    ))
 }
 
 #[serde_as]

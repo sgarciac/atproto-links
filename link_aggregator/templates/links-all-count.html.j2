@@ -1,0 +1,34 @@
+{% extends "base.html.j2" %}
+
+{% block title %}All link counts{% endblock %}
+
+{% block content %}
+
+  <h2>
+    All links to <code>{{ query.target }}</code>
+    {% if let Some(browseable_uri) = query.target|to_browseable %}
+      <small style="font-weight: normal; font-size: 1rem"><a href="{{ browseable_uri }}">browse record</a></small>
+    {% endif %}
+  </h2>
+
+  <form method="get" action="/links/all/count">
+    <pre class="code"><strong>GET</strong> /links?target=<input type="text" name="target" value="{{ query.target }}" placeholder="target" /> <button type="submit">get link counts</button></pre>
+  </form>
+
+  <h3>Links by collection and path:</h3>
+
+<pre style="display: block; margin: 1em 2em" class="code">
+{%- for (collection, collection_links) in links -%}
+  <strong>{{ collection }}</strong>
+  {%- for (path, count) in collection_links %}
+  {{ path }}: <a href="/links?target={{ query.target|urlencode }}&collection={{ collection|urlencode }}&path={{ path|urlencode }}">{{ count }} links</a></li>
+  {%- endfor %}
+
+{% endfor -%}
+</pre>
+  <details>
+    <summary>Raw JSON response</summary>
+    <pre class="code">{{ self|tojson }}</pre>
+  </details>
+
+{% endblock %}

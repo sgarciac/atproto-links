@@ -753,6 +753,9 @@ impl LinkReader for RocksStorage {
         let mut items = Vec::with_capacity(did_id_rkeys.len());
         // TODO: use get-many (or multi-get or whatever it's called)
         for (did_id, rkey) in did_id_rkeys {
+            if did_id.is_empty() {
+                continue;
+            }
             if let Some(did) = self.did_id_table.get_val_from_id(&self.db, did_id.0)? {
                 let Some(DidIdValue(_, active)) = self.did_id_table.get_id_val(&self.db, &did)?
                 else {
@@ -867,6 +870,9 @@ struct DidId(u64);
 impl DidId {
     fn empty() -> Self {
         DidId(0)
+    }
+    fn is_empty(&self) -> bool {
+        self.0 == 0
     }
 }
 

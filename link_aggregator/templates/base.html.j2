@@ -8,19 +8,43 @@
       body {
         font-family: sans-serif;
       }
-      code {
+      h1 {
+        font-size: 1em;
+      }
+      h2, h3 {
+        margin-top: 2.4em;
+      }
+      code, .code {
         background: #def;
         display: inline-block;
         font-size: 1em;
         padding: 0 0.3em;
         border-radius: 0.2em;
       }
-      h2, h3 {
-        margin-top: 2.4em;
+      pre {
+        box-sizing: border-box;
+        margin-bottom: 0;
+      }
+      pre.code {
+        padding: 0.5em 0.3em;
+        max-width: 100%;
+      }
+      details {
+        margin: 2em 0 3em;
+      }
+      footer {
+        margin-top: 5em;
+        font-size: 0.8em;
       }
     </style>
   </head>
   <body>
+    <h1><a href="/">This</a> is an <a href="https://github.com/at-ucosm/links/tree/main/link_aggregator">atproto link aggregator</a> server from <a href="https://github.com/at-ucosm">µcosm</a>!</h1>
     {% block content %}{% endblock %}
+
+    <footer>
+      <p>To get this API to return JSON, set request header <code>Accept: application/json</code>.</p>
+      <p><a href="/">API docs main</a></p>
+    </footer>
   </body>
 </html>

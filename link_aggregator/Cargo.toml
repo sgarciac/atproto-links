@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.95"
-askama = "0.12.1"
+askama = { version = "0.12.1", features = ["serde-json"] }
 axum = "0.8.1"
 axum-extra = { version = "0.10.0", features = ["typed-header"] }
 axum-metrics = "0.2"

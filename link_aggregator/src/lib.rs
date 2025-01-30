@@ -19,7 +19,7 @@ pub enum ActionableEvent {
 }
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Serialize, Deserialize)]
-pub struct Did(String);
+pub struct Did(pub String);
 
 impl<T: Into<String>> From<T> for Did {
     fn from(s: T) -> Self {
