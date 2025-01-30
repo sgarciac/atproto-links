@@ -74,11 +74,11 @@ some todos
 - [x] move ownership of canonical seq to an owned non-atomic
 - [x] custom path for db storage
 - [x] api server to look up backlink count
-- [ ] other useful endpoints for the api server
+- [~] other useful endpoints for the api server
   - [x] show all nisd/path links to target
-  - [ ] get backlinking dids
-  - [ ] paging for all backlinking dids
-  - [ ] get count + most recent dids
+  - [x] get backlinking dids
+  - [x] paging for all backlinking dids
+  - [x] get count + most recent dids
   - [ ] get count with any dids from provided set
 - [~] write this readme
 - [?] fix it sometimes getting stuck
@@ -100,7 +100,8 @@ some todos
 - [ ] deadletter queue of some kind for failed db writes
   - [ ] also for valid json that was rejected?
 - [x] get it running on raspi
-- [~] get an estimate of disk usage per day after a few days of running
+- [x] get an estimate of disk usage per day after a few days of running
+  - very close to 1GB with data model before adding rkeys to linkers + fixing paths
 - [ ] make the did_init check only happen on test config (or remove it)
 - [ ] actual error types (thiserror?) for lib-ish code
 - [ ] clean up the main readme
@@ -116,7 +117,9 @@ some todos
 - [ ] put delete-account tasks into a separate (persisted?) task queue for the writer so it can work on them incrementally.
 
 data fixes
-- [ ] add rkey to linkers 🤦‍♀️
+- [x] add rkey to linkers 🤦‍♀️
+- [x] don't remove deleted links from the reverse records -- null them out. this will keep things stable for paging.
+- [x] don't show deactivated accounts in link responses
 - [ ] links:
   - [ ] pull `$type`/`type` from object children of arrays (distinguish replies, quotes, etc)
   - [ ] actually define the format (deal with in-band dots etc)

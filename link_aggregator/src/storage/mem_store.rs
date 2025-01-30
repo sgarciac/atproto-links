@@ -1,6 +1,6 @@
-use super::{LinkReader, LinkStorage};
+use super::{LinkReader, LinkStorage, PagedAppendingCollection};
 use anyhow::Result;
-use link_aggregator::{Did, RecordId};
+use link_aggregator::{ActionableEvent, Did, RecordId};
 use links::CollectedLink;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -9,10 +9,12 @@ use std::sync::{Arc, Mutex};
 #[derive(Debug, Clone)]
 pub struct MemStorage(Arc<Mutex<MemStorageData>>);
 
+type Linkers = Vec<Option<(Did, RKey)>>; // optional because we replace with None for deleted links to keep cursors stable
+
 #[derive(Debug, Default)]
 struct MemStorageData {
-    dids: HashMap<Did, bool>,                            // bool: active or nah
-    targets: HashMap<Target, HashMap<Source, Vec<Did>>>, // target -> (collection, path) -> did[]
+    dids: HashMap<Did, bool>,                           // bool: active or nah
+    targets: HashMap<Target, HashMap<Source, Linkers>>, // target -> (collection, path) -> (did, rkey)?[]
     links: HashMap<Did, HashMap<RepoId, Vec<(RecordPath, Target)>>>, // did -> collection:rkey -> (path, target)[]
 }
 
@@ -20,9 +22,7 @@ impl MemStorage {
     pub fn new() -> Self {
         Self(Arc::new(Mutex::new(MemStorageData::default())))
     }
-}
 
-impl LinkStorage for MemStorage {
     fn add_links(&mut self, record_id: &RecordId, links: &[CollectedLink]) {
         let mut data = self.0.lock().unwrap();
         for link in links {
@@ -32,7 +32,7 @@ impl LinkStorage for MemStorage {
                 .or_default()
                 .entry(Source::new(&record_id.collection, &link.path))
                 .or_default()
-                .push(record_id.did());
+                .push(Some((record_id.did(), RKey(record_id.rkey()))));
             data.links
                 .entry(record_id.did())
                 .or_default()
@@ -52,25 +52,25 @@ impl LinkStorage for MemStorage {
         {
             let link_targets = link_targets.clone(); // satisfy borrowck
             for (record_path, target) in link_targets {
-                let dids = data
-                    .targets
+                data.targets
                     .get_mut(&target)
                     .expect("must have the target if we have a link saved")
                     .get_mut(&Source::new(&record_id.collection, &record_path.0))
-                    .expect("must have the target at this path if we have a link to it saved");
-                // search from the end: more likely to be visible and deletes are usually soon after creates
-                // only delete one instance: a user can create multiple links to something, we're only deleting one
-                // (we don't know which one in the list we should be deleting, and it hopefully mostly doesn't matter)
-                let pos = dids
-                    .iter()
-                    .rposition(|d| *d == record_id.did)
-                    .expect("must be in dids list if we have a link to it");
-                dids.remove(pos);
+                    .expect("must have the target at this path if we have a link to it saved")
+                    .iter_mut()
+                    .rfind(|d| **d == Some((record_id.did(), RKey(record_id.rkey()))))
+                    .expect("must be in dids list if we have a link to it")
+                    .take();
             }
         }
         data.links
             .get_mut(&record_id.did)
             .map(|cr| cr.remove(&repo_id));
+    }
+
+    fn update_links(&mut self, record_id: &RecordId, new_links: &[CollectedLink]) {
+        self.remove_links(record_id);
+        self.add_links(record_id, new_links);
     }
 
     fn set_account(&mut self, did: &Did, active: bool) {
@@ -92,12 +92,32 @@ impl LinkStorage for MemStorage {
                         .expect("must have the target if we have a link saved")
                         .get_mut(&Source::new(&repo_id.collection, &record_path.0))
                         .expect("must have the target at this path if we have a link to it saved")
-                        .retain(|d| d != did);
+                        .iter_mut()
+                        .find(|d| **d == Some((did.clone(), repo_id.rkey.clone())))
+                        .expect("lkasjdlfkj")
+                        .take();
                 }
             }
         }
         data.links.remove(did); // nb: this is removing by a whole prefix in kv context
         data.dids.remove(did);
+    }
+}
+
+impl LinkStorage for MemStorage {
+    fn push(&mut self, event: &ActionableEvent, _cursor: u64) -> Result<()> {
+        match event {
+            ActionableEvent::CreateLinks { record_id, links } => self.add_links(record_id, links),
+            ActionableEvent::UpdateLinks {
+                record_id,
+                new_links,
+            } => self.update_links(record_id, new_links),
+            ActionableEvent::DeleteRecord(record_id) => self.remove_links(record_id),
+            ActionableEvent::ActivateAccount(did) => self.set_account(did, true),
+            ActionableEvent::DeactivateAccount(did) => self.set_account(did, false),
+            ActionableEvent::DeleteAccount(did) => self.delete_account(did),
+        }
+        Ok(())
     }
 
     fn to_readable(&mut self) -> impl LinkReader {
@@ -114,8 +134,74 @@ impl LinkReader for MemStorage {
         let Some(dids) = paths.get(&Source::new(collection, path)) else {
             return Ok(0);
         };
-        let count = dids.len().try_into()?;
-        Ok(count)
+        Ok(dids.iter().flatten().count().try_into()?)
+    }
+
+    fn get_links(
+        &self,
+        target: &str,
+        collection: &str,
+        path: &str,
+        limit: u64,
+        until: Option<u64>,
+    ) -> Result<PagedAppendingCollection<RecordId>> {
+        let data = self.0.lock().unwrap();
+        let Some(paths) = data.targets.get(&Target::new(target)) else {
+            return Ok(PagedAppendingCollection {
+                version: (0, 0),
+                items: Vec::new(),
+                next: None,
+            });
+        };
+        let Some(did_rkeys) = paths.get(&Source::new(collection, path)) else {
+            return Ok(PagedAppendingCollection {
+                version: (0, 0),
+                items: Vec::new(),
+                next: None,
+            });
+        };
+
+        let total = did_rkeys.len();
+        let end = until
+            .map(|u| std::cmp::min(u as usize, total))
+            .unwrap_or(total);
+        let begin = end.saturating_sub(limit as usize);
+        let next = if begin == 0 { None } else { Some(begin as u64) };
+
+        let alive = did_rkeys.iter().flatten().count();
+        let gone = total - alive;
+
+        let items: Vec<_> = did_rkeys[begin..end]
+            .iter()
+            .rev()
+            .flatten()
+            .filter(|(did, _)| *data.dids.get(did).expect("did must be in dids"))
+            .map(|(did, rkey)| RecordId {
+                did: did.clone(),
+                rkey: rkey.0.clone(),
+                collection: collection.to_string(),
+            })
+            .collect();
+
+        Ok(PagedAppendingCollection {
+            version: (total as u64, gone as u64),
+            items,
+            next,
+        })
+    }
+
+    fn get_all_counts(&self, target: &str) -> Result<HashMap<String, HashMap<String, u64>>> {
+        let data = self.0.lock().unwrap();
+        let mut out: HashMap<String, HashMap<String, u64>> = HashMap::new();
+        if let Some(asdf) = data.targets.get(&Target::new(target)) {
+            for (Source { collection, path }, linkers) in asdf {
+                let count = linkers.iter().flatten().count().try_into()?;
+                out.entry(collection.to_string())
+                    .or_default()
+                    .insert(path.to_string(), count);
+            }
+        }
+        Ok(out)
     }
 
     fn summarize(&self, qsize: u32) {
@@ -156,16 +242,19 @@ impl Source {
 }
 
 #[derive(Debug, PartialEq, Hash, Eq, Clone)]
+struct RKey(String);
+
+#[derive(Debug, PartialEq, Hash, Eq, Clone)]
 struct RepoId {
     collection: String,
-    rkey: String,
+    rkey: RKey,
 }
 
 impl RepoId {
     fn from_record_id(record_id: &RecordId) -> Self {
         Self {
             collection: record_id.collection.clone(),
-            rkey: record_id.rkey.clone(),
+            rkey: RKey(record_id.rkey.clone()),
         }
     }
 }

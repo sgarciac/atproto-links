@@ -1,4 +1,4 @@
-use super::{ActionableEvent, LinkReader, LinkStorage};
+use super::{ActionableEvent, LinkReader, LinkStorage, PagedAppendingCollection};
 use anyhow::{bail, Result};
 use bincode::Options as BincodeOptions;
 use link_aggregator::{Did, RecordId};
@@ -42,17 +42,19 @@ fn get_db_opts() -> Options {
 #[derive(Debug, Clone)]
 pub struct RocksStorage {
     db: Arc<DBWithThreadMode<MultiThreaded>>, // TODO: mov seqs here (concat merge op will be fun)
-    did_id_table: IdTable<Did, DidIdValue>,
-    target_id_table: IdTable<TargetKey, TargetId>,
+    did_id_table: IdTable<Did, DidIdValue, true>,
+    target_id_table: IdTable<TargetKey, TargetId, false>,
     is_writer: bool,
 }
 
 trait IdTableValue: ValueFromRocks + Clone {
     fn new(v: u64) -> Self;
+    fn id(&self) -> u64;
 }
 #[derive(Debug, Clone)]
 struct IdTableBase<Orig, IdVal: IdTableValue>
 where
+    Orig: KeyFromRocks,
     for<'a> &'a Orig: AsRocksKey,
 {
     _key_marker: PhantomData<Orig>,
@@ -63,12 +65,16 @@ where
 }
 impl<Orig, IdVal: IdTableValue> IdTableBase<Orig, IdVal>
 where
+    Orig: KeyFromRocks,
     for<'a> &'a Orig: AsRocksKey,
 {
     fn cf_descriptor(&self) -> ColumnFamilyDescriptor {
         ColumnFamilyDescriptor::new(&self.name, rocks_opts_base())
     }
-    fn init(mut self, db: &DBWithThreadMode<MultiThreaded>) -> Result<IdTable<Orig, IdVal>> {
+    fn init<const WITH_REVERSE: bool>(
+        mut self,
+        db: &DBWithThreadMode<MultiThreaded>,
+    ) -> Result<IdTable<Orig, IdVal, WITH_REVERSE>> {
         if db.cf_handle(&self.name).is_none() {
             bail!("failed to get cf handle from db -- was the db open with our .cf_descriptor()?");
         }
@@ -101,6 +107,7 @@ where
 }
 impl<O, I: IdTableValue> Drop for IdTableBase<O, I>
 where
+    O: KeyFromRocks,
     for<'a> &'a O: AsRocksKey,
 {
     fn drop(&mut self) {
@@ -113,15 +120,17 @@ where
     }
 }
 #[derive(Debug, Clone)]
-struct IdTable<Orig, IdVal: IdTableValue>
+struct IdTable<Orig, IdVal: IdTableValue, const WITH_REVERSE: bool>
 where
+    Orig: KeyFromRocks,
     for<'a> &'a Orig: AsRocksKey,
 {
     base: IdTableBase<Orig, IdVal>,
     priv_id_seq: u64,
 }
-impl<Orig: Clone, IdVal: IdTableValue> IdTable<Orig, IdVal>
+impl<Orig: Clone, IdVal: IdTableValue, const WITH_REVERSE: bool> IdTable<Orig, IdVal, WITH_REVERSE>
 where
+    Orig: KeyFromRocks,
     for<'v> &'v IdVal: AsRocksValue,
     for<'k> &'k Orig: AsRocksKey,
 {
@@ -147,13 +156,16 @@ where
             Ok(None)
         }
     }
-    fn get_or_create_id_val(
+    fn __get_or_create_id_val<CF>(
         &mut self,
+        cf: &CF,
         db: &DBWithThreadMode<MultiThreaded>,
         batch: &mut WriteBatch,
         orig: &Orig,
-    ) -> Result<IdVal> {
-        let cf = db.cf_handle(&self.base.name).unwrap();
+    ) -> Result<IdVal>
+    where
+        CF: AsColumnFamilyRef,
+    {
         Ok(self.get_id_val(db, orig)?.unwrap_or_else(|| {
             let prev_priv_seq = self.priv_id_seq;
             self.priv_id_seq += 1;
@@ -164,9 +176,58 @@ where
             );
             let id_value = IdVal::new(self.priv_id_seq);
             batch.put(self.base.seq_key(), self.priv_id_seq.to_le_bytes());
-            batch.put_cf(&cf, _rk(orig), _rv(&id_value));
+            batch.put_cf(cf, _rk(orig), _rv(&id_value));
             id_value
         }))
+    }
+}
+impl<Orig: Clone, IdVal: IdTableValue> IdTable<Orig, IdVal, true>
+where
+    Orig: KeyFromRocks,
+    for<'v> &'v IdVal: AsRocksValue,
+    for<'k> &'k Orig: AsRocksKey,
+{
+    fn get_or_create_id_val(
+        &mut self,
+        db: &DBWithThreadMode<MultiThreaded>,
+        batch: &mut WriteBatch,
+        orig: &Orig,
+    ) -> Result<IdVal> {
+        let cf = db.cf_handle(&self.base.name).unwrap();
+        let id_val = self.__get_or_create_id_val(&cf, db, batch, orig)?;
+        // TODO: assert that the original is never a u64 that could collide
+        batch.put_cf(&cf, id_val.id().to_be_bytes(), _rk(orig)); // reversed rk/rv on purpose here :/
+        Ok(id_val)
+    }
+
+    fn get_val_from_id(
+        &self,
+        db: &DBWithThreadMode<MultiThreaded>,
+        id: u64,
+    ) -> Result<Option<Orig>> {
+        let cf = db.cf_handle(&self.base.name).unwrap();
+        if let Some(orig_bytes) = db.get_cf(&cf, id.to_be_bytes())? {
+            // HACK ish
+            Ok(Some(_kr(&orig_bytes)?))
+        } else {
+            Ok(None)
+        }
+    }
+}
+impl<Orig: Clone, IdVal: IdTableValue> IdTable<Orig, IdVal, false>
+where
+    Orig: KeyFromRocks,
+    for<'v> &'v IdVal: AsRocksValue,
+    for<'k> &'k Orig: AsRocksKey,
+{
+    fn get_or_create_id_val(
+        &mut self,
+        db: &DBWithThreadMode<MultiThreaded>,
+        batch: &mut WriteBatch,
+        orig: &Orig,
+    ) -> Result<IdVal> {
+        let cf = db.cf_handle(&self.base.name).unwrap();
+        self.__get_or_create_id_val(&cf, db, batch, orig)
     }
 }
 
@@ -174,17 +235,23 @@ impl IdTableValue for DidIdValue {
     fn new(v: u64) -> Self {
         DidIdValue(DidId(v), true)
     }
+    fn id(&self) -> u64 {
+        self.0 .0
+    }
 }
 impl IdTableValue for TargetId {
     fn new(v: u64) -> Self {
         TargetId(v)
     }
+    fn id(&self) -> u64 {
+        self.0
+    }
 }
 
 impl RocksStorage {
     pub fn new(path: impl AsRef<Path>) -> Result<Self> {
-        let did_id_table = IdTable::setup(DID_IDS_CF);
-        let target_id_table = IdTable::setup(TARGET_IDS_CF);
+        let did_id_table = IdTable::<_, _, true>::setup(DID_IDS_CF);
+        let target_id_table = IdTable::<_, _, false>::setup(TARGET_IDS_CF);
 
         let db = DBWithThreadMode::open_cf_descriptors(
             &get_db_opts(),
@@ -230,8 +297,8 @@ impl RocksStorage {
 
         let current_seq = current_did_id_seq.load(Ordering::SeqCst);
 
-        for did_id in &tls.0 {
-            let DidId(ref n) = did_id;
+        for did_id_rkey in &tls.0 {
+            let DidId(ref n) = did_id_rkey.0;
             if current_seq > 0 && *n > current_seq {
                 eprintln!("problem with merge_op_extend_did_ids. existing: {tls:?}");
                 eprintln!(
@@ -243,7 +310,7 @@ impl RocksStorage {
 
         for op in operands {
             let new_linkers: TargetLinkers = _vr(op).unwrap();
-            for DidId(ref n) in &new_linkers.0 {
+            for (DidId(ref n), _) in &new_linkers.0 {
                 if current_seq > 0 && *n > current_seq {
                     let orig: Option<TargetLinkers> =
                         existing.map(|existing_bytes| _vr(existing_bytes).unwrap());
@@ -254,7 +321,7 @@ impl RocksStorage {
                     panic!("did_id a did to a number higher than the current sequence");
                 }
             }
-            tls.0.extend(&new_linkers.0);
+            tls.0.extend(new_linkers.0);
         }
         Some(_rv(&tls))
     }
@@ -309,12 +376,13 @@ impl RocksStorage {
         batch: &mut WriteBatch,
         target_id: &TargetId,
         linker_did_id: &DidId,
+        linker_rkey: &RKey,
     ) {
         let cf = self.db.cf_handle(TARGET_LINKERS_CF).unwrap();
         batch.merge_cf(
             &cf,
             _rk(target_id),
-            _rv(&TargetLinkers(vec![*linker_did_id])),
+            _rv(&TargetLinkers(vec![(*linker_did_id, linker_rkey.clone())])),
         );
     }
     fn update_target_linkers<F>(
@@ -434,7 +502,7 @@ impl RocksStorage {
                 .target_id_table
                 .get_or_create_id_val(&self.db, batch, &target_key)
                 .unwrap();
-            self.merge_target_linker(batch, &target_id, &did_id);
+            self.merge_target_linker(batch, &target_id, &did_id, &RKey(record_id.rkey()));
 
             record_link_targets.add(RecordLinkTarget(RPath(path.clone()), target_id))
         }
@@ -478,7 +546,7 @@ impl RocksStorage {
                     eprintln!("working on #{i}: {rpath:?} / {target_id:?}");
                     panic!("it was empty");
                 }
-                if !linkers.remove_last_linker(&linking_did_id) {
+                if !linkers.remove_linker(&linking_did_id, &RKey(record_id.rkey.clone())) {
                     eprintln!("about to blow up because a linked target apparently does not have us in its dids.");
                     eprintln!("removing links for: {record_id:?}");
                     eprintln!("found links: {record_link_targets:?}");
@@ -520,6 +588,7 @@ impl RocksStorage {
             return; // ignore updates for dids we don't know about
         };
         self.delete_did_id_value(batch, did);
+        // TODO: also delete the reverse!!
 
         // use a separate batch for all their links, since it can be a lot and make us crash at around 1GiB batch size.
         // this should still hopefully be crash-safe: as long as we don't actually delete the DidId entry until after all links are cleared.
@@ -535,7 +604,7 @@ impl RocksStorage {
 
                 for (j, RecordLinkTarget(path, target_link_id)) in links.0.iter().enumerate() {
                     self.update_target_linkers(&mut mini_batch, target_link_id, |mut linkers| {
-                        if !linkers.remove_last_linker(&did_id) {
+                        if !linkers.remove_linker(&did_id, &record_link_key.2) {
                             eprintln!(
                                 "DELETING ACCOUNT: blowing up: missing linker entry in linked target."
                             );
@@ -621,19 +690,6 @@ impl LinkStorage for RocksStorage {
         Ok(())
     }
 
-    fn add_links(&mut self, _record_id: &RecordId, _links: &[CollectedLink]) {
-        unimplemented!("customized push");
-    }
-    fn remove_links(&mut self, _record_id: &RecordId) {
-        unimplemented!("customized push");
-    }
-    fn set_account(&mut self, _did: &Did, _active: bool) {
-        unimplemented!("customized push");
-    }
-    fn delete_account(&mut self, _did: &Did) {
-        unimplemented!("customized push");
-    }
-
     fn to_readable(&mut self) -> impl LinkReader {
         let mut readable = self.clone();
         readable.is_writer = false;
@@ -647,6 +703,7 @@ impl LinkReader for RocksStorage {
         let target_seq = self.target_id_table.base.id_seq.load(Ordering::SeqCst);
         println!("queue: {qsize}. did seq: {did_seq}, target seq: {target_seq}.");
     }
+
     fn get_count(&self, target: &str, collection: &str, path: &str) -> Result<u64> {
         let target_key = TargetKey(
             Target(target.to_string()),
@@ -654,16 +711,79 @@ impl LinkReader for RocksStorage {
             RPath(path.to_string()),
         );
         if let Some(target_id) = self.target_id_table.get_id_val(&self.db, &target_key)? {
-            Ok(self.get_target_linkers(&target_id)?.count())
+            let (alive, _) = self.get_target_linkers(&target_id)?.count();
+            Ok(alive)
         } else {
             Ok(0)
         }
     }
+
+    fn get_links(
+        &self,
+        target: &str,
+        collection: &str,
+        path: &str,
+        limit: u64,
+        until: Option<u64>,
+    ) -> Result<PagedAppendingCollection<RecordId>> {
+        let target_key = TargetKey(
+            Target(target.to_string()),
+            Collection(collection.to_string()),
+            RPath(path.to_string()),
+        );
+
+        let Some(target_id) = self.target_id_table.get_id_val(&self.db, &target_key)? else {
+            return Ok(PagedAppendingCollection {
+                version: (0, 0),
+                items: Vec::new(),
+                next: None,
+            });
+        };
+
+        let linkers = self.get_target_linkers(&target_id)?;
+
+        let (alive, gone) = linkers.count();
+        let total = alive + gone;
+        let end = until.map(|u| std::cmp::min(u, total)).unwrap_or(total) as usize;
+        let begin = end.saturating_sub(limit as usize);
+        let next = if begin == 0 { None } else { Some(begin as u64) };
+
+        let did_id_rkeys = linkers.0[begin..end].iter().rev().collect::<Vec<_>>();
+
+        let mut items = Vec::with_capacity(did_id_rkeys.len());
+        // TODO: use get-many (or multi-get or whatever it's called)
+        for (did_id, rkey) in did_id_rkeys {
+            if let Some(did) = self.did_id_table.get_val_from_id(&self.db, did_id.0)? {
+                let Some(DidIdValue(_, active)) = self.did_id_table.get_id_val(&self.db, &did)?
+                else {
+                    eprintln!("failed to look up did_value from did_id {did_id:?}: {did:?}: data consistency bug?");
+                    continue;
+                };
+                if !active {
+                    continue;
+                }
+                items.push(RecordId {
+                    did,
+                    collection: collection.to_string(),
+                    rkey: rkey.0.clone(),
+                });
+            } else {
+                eprintln!("failed to look up did from did_id {did_id:?}");
+            }
+        }
+
+        Ok(PagedAppendingCollection {
+            version: (total, gone),
+            items,
+            next,
+        })
+    }
+
     fn get_all_counts(&self, target: &str) -> Result<HashMap<String, HashMap<String, u64>>> {
         let mut out: HashMap<String, HashMap<String, u64>> = HashMap::new();
         for (target_key, target_id) in self.iter_targets_for_target(&Target(target.into())) {
             let TargetKey(_, Collection(ref collection), RPath(ref path)) = target_key;
-            let count = self.get_target_linkers(&target_id)?.count();
+            let (count, _) = self.get_target_linkers(&target_id)?.count();
             out.entry(collection.into())
                 .or_default()
                 .insert(path.clone(), count);
@@ -685,6 +805,7 @@ impl ValueFromRocks for DidIdValue {}
 
 // temp
 impl KeyFromRocks for Did {}
+impl AsRocksKey for &DidId {}
 
 // target_ids table
 impl AsRocksKey for &TargetKey {}
@@ -730,12 +851,24 @@ struct Collection(String);
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct RPath(String);
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct RKey(String);
+
+impl RKey {
+    fn empty() -> Self {
+        RKey("".to_string())
+    }
+}
 
 // did ids
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 struct DidId(u64);
+
+impl DidId {
+    fn empty() -> Self {
+        DidId(0)
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct DidIdValue(DidId, bool); // active or not
@@ -759,19 +892,23 @@ struct Target(String); // the actual target/uri
 struct TargetKey(Target, Collection, RPath);
 
 #[derive(Debug, Default, Serialize, Deserialize)]
-struct TargetLinkers(Vec<DidId>);
+struct TargetLinkers(Vec<(DidId, RKey)>);
 
 impl TargetLinkers {
-    fn remove_last_linker(&mut self, did: &DidId) -> bool {
-        if let Some(last_position) = self.0.iter().rposition(|d| d == did) {
-            self.0.remove(last_position);
+    fn remove_linker(&mut self, did: &DidId, rkey: &RKey) -> bool {
+        if let Some(entry) = self.0.iter_mut().rfind(|d| **d == (*did, rkey.clone())) {
+            *entry = (DidId::empty(), RKey::empty());
             true
         } else {
             false
         }
     }
-    fn count(&self) -> u64 {
-        self.0.len() as u64
+    fn count(&self) -> (u64, u64) {
+        // (linkers, deleted links)
+        let total = self.0.len() as u64;
+        let alive = self.0.iter().filter(|(DidId(id), _)| *id != 0).count() as u64;
+        let gone = total - alive;
+        (alive, gone)
     }
 }
 
