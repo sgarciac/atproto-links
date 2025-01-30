@@ -698,7 +698,7 @@ mod tests {
         storage.push(
             &ActionableEvent::CreateLinks {
                 record_id: RecordId {
-                    did: format!("did:plc:asdf-5").into(),
+                    did: "did:plc:asdf-5".into(),
                     collection: "app.t.c".into(),
                     rkey: "asdf".into(),
                 },

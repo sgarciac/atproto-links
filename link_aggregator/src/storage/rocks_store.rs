@@ -546,7 +546,7 @@ impl RocksStorage {
                     eprintln!("working on #{i}: {rpath:?} / {target_id:?}");
                     panic!("it was empty");
                 }
-                if !linkers.remove_last_linker(&linking_did_id) {
+                if !linkers.remove_linker(&linking_did_id, &RKey(record_id.rkey.clone())) {
                     eprintln!("about to blow up because a linked target apparently does not have us in its dids.");
                     eprintln!("removing links for: {record_id:?}");
                     eprintln!("found links: {record_link_targets:?}");
@@ -604,7 +604,7 @@ impl RocksStorage {
 
                 for (j, RecordLinkTarget(path, target_link_id)) in links.0.iter().enumerate() {
                     self.update_target_linkers(&mut mini_batch, target_link_id, |mut linkers| {
-                        if !linkers.remove_last_linker(&did_id) {
+                        if !linkers.remove_linker(&did_id, &record_link_key.2) {
                             eprintln!(
                                 "DELETING ACCOUNT: blowing up: missing linker entry in linked target."
                             );
@@ -711,7 +711,8 @@ impl LinkReader for RocksStorage {
             RPath(path.to_string()),
         );
         if let Some(target_id) = self.target_id_table.get_id_val(&self.db, &target_key)? {
-            Ok(self.get_target_linkers(&target_id)?.count())
+            let (alive, _) = self.get_target_linkers(&target_id)?.count();
+            Ok(alive)
         } else {
             Ok(0)
         }
@@ -740,26 +741,26 @@ impl LinkReader for RocksStorage {
         };
 
         let linkers = self.get_target_linkers(&target_id)?;
-        let blah_dids = linkers.0;
 
-        let total = blah_dids.len();
-        let end = until
-            .map(|u| std::cmp::min(u as usize, total))
-            .unwrap_or(total);
+        let (alive, gone) = linkers.count();
+        let total = alive + gone;
+        let end = until.map(|u| std::cmp::min(u, total)).unwrap_or(total) as usize;
         let begin = end.saturating_sub(limit as usize);
         let next = if begin == 0 { None } else { Some(begin as u64) };
 
-        let did_id_rkeys = blah_dids[begin..end].iter().rev().collect::<Vec<_>>();
+        let did_id_rkeys = linkers.0[begin..end].iter().rev().collect::<Vec<_>>();
 
         let mut items = Vec::with_capacity(did_id_rkeys.len());
         // TODO: use get-many (or multi-get or whatever it's called)
         for (did_id, rkey) in did_id_rkeys {
             if let Some(did) = self.did_id_table.get_val_from_id(&self.db, did_id.0)? {
-                let Some(DidIdValue(_, active)) = self.did_id_table.get_id_val(&self.db, &did)? else {
-                    panic!("booo"); // TODO
+                let Some(DidIdValue(_, active)) = self.did_id_table.get_id_val(&self.db, &did)?
+                else {
+                    eprintln!("failed to look up did_value from did_id {did_id:?}: {did:?}: data consistency bug?");
+                    continue;
                 };
                 if !active {
-                    continue
+                    continue;
                 }
                 items.push(RecordId {
                     did,
@@ -771,10 +772,8 @@ impl LinkReader for RocksStorage {
             }
         }
 
-        // TODO: filter out deactivated acccounts
-
         Ok(PagedAppendingCollection {
-            version: (total as u64, 0),
+            version: (total, gone),
             items,
             next,
         })
@@ -784,7 +783,7 @@ impl LinkReader for RocksStorage {
         let mut out: HashMap<String, HashMap<String, u64>> = HashMap::new();
         for (target_key, target_id) in self.iter_targets_for_target(&Target(target.into())) {
             let TargetKey(_, Collection(ref collection), RPath(ref path)) = target_key;
-            let count = self.get_target_linkers(&target_id)?.count();
+            let (count, _) = self.get_target_linkers(&target_id)?.count();
             out.entry(collection.into())
                 .or_default()
                 .insert(path.clone(), count);
@@ -852,12 +851,24 @@ struct Collection(String);
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct RPath(String);
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct RKey(String);
+
+impl RKey {
+    fn empty() -> Self {
+        RKey("".to_string())
+    }
+}
 
 // did ids
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 struct DidId(u64);
+
+impl DidId {
+    fn empty() -> Self {
+        DidId(0)
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct DidIdValue(DidId, bool); // active or not
@@ -884,16 +895,20 @@ struct TargetKey(Target, Collection, RPath);
 struct TargetLinkers(Vec<(DidId, RKey)>);
 
 impl TargetLinkers {
-    fn remove_last_linker(&mut self, did: &DidId) -> bool {
-        if let Some(last_position) = self.0.iter().rposition(|d| d.0 == *did) {
-            self.0.remove(last_position);
+    fn remove_linker(&mut self, did: &DidId, rkey: &RKey) -> bool {
+        if let Some(entry) = self.0.iter_mut().rfind(|d| **d == (*did, rkey.clone())) {
+            *entry = (DidId::empty(), RKey::empty());
             true
         } else {
             false
         }
     }
-    fn count(&self) -> u64 {
-        self.0.len() as u64
+    fn count(&self) -> (u64, u64) {
+        // (linkers, deleted links)
+        let total = self.0.len() as u64;
+        let alive = self.0.iter().filter(|(DidId(id), _)| *id != 0).count() as u64;
+        let gone = total - alive;
+        (alive, gone)
     }
 }
 
