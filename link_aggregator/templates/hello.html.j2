@@ -11,7 +11,6 @@
 
   <p>It is very much a <strong>work in progress</strong>. The database has not been backfilled, so any interactions occurring before its last reset will be missing.</p>
 
-  <p><small>µcosm ("microcosm") is a project by <a href="https://bsky.app/profile/bad-example.com">@bad-example.com</a>, making building apps on atproto easier.</small></p>
 
   <h2>Endpoints</h2>
 
@@ -22,12 +21,12 @@
   <h4>Query parameters:</h4>
 
   <ul>
-    <li><code>target</code>: required, must url-encode. Example: <code>did:plc:vc7f4oafdgxsihk4cry2xpze</code></li>
-    <li><code>collection</code>: required. Example: <code>app.bsky.feed.follow</code></li>
-    <li><code>path</code>: required, must url-encode. Example: <code>.subject</code></li>
+    <li><code>target</code>: required, must url-encode. Example: <code>at://did:plc:vc7f4oafdgxsihk4cry2xpze/app.bsky.feed.post/3lgwdn7vd722r</code></li>
+    <li><code>collection</code>: required. Example: <code>app.bsky.feed.like</code></li>
+    <li><code>path</code>: required, must url-encode. Example: <code>.subject.uri</code></li>
   </ul>
 
-  <p><strong>Live example:</strong> <code><a href="/links?target=at://did:plc:vc7f4oafdgxsihk4cry2xpze/app.bsky.feed.post/3lgwdn7vd722r&collection=app.bsky.feed.like&path=.subject.uri">/links?target=at://did:plc:vc7f4oafdgxsihk4cry2xpze/app.bsky.feed.post/3lgwdn7vd722r&collection=app.bsky.feed.like&path=.subject.uri</a></code></p>
+  <p><strong>Live example:</strong> <code><a href="/links?target=at://did:plc:vc7f4oafdgxsihk4cry2xpze/app.bsky.feed.post/3lgwdn7vd722r&collection=app.bsky.feed.like&path=.subject.uri">/links?target=at://did:plc:cjfcz3t36f6nrprarkhkycxo/app.bsky.feed.post/3lgyagnrqnc2t&collection=app.bsky.feed.like&path=.subject.uri</a></code></p>
 
 
   <h3><code>GET /links/count</code></h3>
@@ -38,25 +37,25 @@
 
   <ul>
     <li><code>target</code>: required, must url-encode. Example: <code>did:plc:vc7f4oafdgxsihk4cry2xpze</code></li>
-    <li><code>collection</code>: required. Example: <code>app.bsky.feed.follow</code></li>
+    <li><code>collection</code>: required. Example: <code>app.bsky.graph.block</code></li>
     <li><code>path</code>: required, must url-encode. Example: <code>.subject</code></li>
     <li><code>cursor</code>: optional, see Definitions.</li>
   </ul>
 
-  <p><strong>Live example:</strong> <code><a href="/links/count?target=at://did:plc:vc7f4oafdgxsihk4cry2xpze/app.bsky.feed.post/3lgwdn7vd722r&collection=app.bsky.feed.like&path=.subject.uri">/links/count?target=at://did:plc:vc7f4oafdgxsihk4cry2xpze/app.bsky.feed.post/3lgwdn7vd722r&collection=app.bsky.feed.like&path=.subject.uri</a></code></p>
+  <p><strong>Live example:</strong> <code><a href="/links/count?target=did:plc:vc7f4oafdgxsihk4cry2xpze&collection=app.bsky.graph.block&path=.subject">/links/count?target=did:plc:vc7f4oafdgxsihk4cry2xpze&collection=app.bsky.graph.block&path=.subject</a></code></p>
 
 
   <h3><code>GET /links/all/count</code></h3>
 
-  <p>The total number of links pointing at a given target from any collection and path.</p>
+  <p>The total counts of all links pointing at a given target, by collection and path.</p>
 
   <h4>Query parameters:</h4>
 
   <ul>
-    <li><code>target</code>: required, must url-encode. Example: <code>did:plc:vc7f4oafdgxsihk4cry2xpze</code></li>
+    <li><code>target</code>: required, must url-encode. Example: <code>did:plc:oky5czdrnfjpqslsw2a5iclo</code></li>
   </ul>
 
-  <p><strong>Live example:</strong> <code><a href="/links/all/count?target=did:plc:vc7f4oafdgxsihk4cry2xpze">/links/all/count?target=did:plc:vc7f4oafdgxsihk4cry2xpze</a></code></p>
+  <p><strong>Live example:</strong> <code><a href="/links/all/count?target=did:plc:oky5czdrnfjpqslsw2a5iclo">/links/all/count?target=did:plc:oky5czdrnfjpqslsw2a5iclo</a></code></p>
 
 
   <h2>Definitions</h2>
