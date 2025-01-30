@@ -10,9 +10,18 @@ pub fn walk_record(path: &str, v: &JsonValue, found: &mut Vec<CollectedLink>) {
             }
         }
         JsonValue::Array(a) => {
-            let p = format!("{path}[]");
             for child in a {
-                walk_record(&p, child, found)
+                let child_p = match child {
+                    JsonValue::Object(o) => {
+                        if let Some(JsonValue::String(t)) = o.get("$type") {
+                            format!("{path}[{t}]")
+                        } else {
+                            format!("{path}[]")
+                        }
+                    }
+                    _ => format!("{path}[]"),
+                };
+                walk_record(&child_p, child, found)
             }
         }
         JsonValue::String(s) => {
@@ -145,7 +154,7 @@ mod tests {
                     Link::Uri("https://youtu.be/oKXm4szEP1Q?si=_0n_uPu4qNKokMnq".into()),
                 ),
                 l(
-                    ".facets[].features[].uri",
+                    ".facets[].features[app.bsky.richtext.facet#link].uri",
                     Link::Uri("https://youtu.be/oKXm4szEP1Q?si=_0n_uPu4qNKokMnq".into()),
                 ),
             ]

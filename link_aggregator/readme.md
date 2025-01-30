@@ -90,12 +90,12 @@ some todos
   - [x] jetstream: don't rotate servers, explicitly pass via cli
 - [x] metrics!
   - [x] event ts lag
-- [~] machine resource metrics
+- [x] machine resource metrics
   - [x] disk consumption
   - [x] cpu usage
   - [x] mem usage
   - [x] network?
-- [ ] make all storage apis return Result
+- [ ] make all rocks apis return Result instead of unwrapping
 - [ ] handle all the unwraps
 - [ ] deadletter queue of some kind for failed db writes
   - [ ] also for valid json that was rejected?
@@ -121,7 +121,10 @@ data fixes
 - [x] don't remove deleted links from the reverse records -- null them out. this will keep things stable for paging.
 - [x] don't show deactivated accounts in link responses
 - [ ] links:
-  - [ ] pull `$type`/`type` from object children of arrays (distinguish replies, quotes, etc)
-  - [ ] actually define the format (deal with in-band dots etc)
-  - [ ] _could_ throw cid neighbour into the target. probably should? but it's a lot of high volume uncompressible bytes
+  - [~] pull `$type`/`type` from object children of arrays (distinguish replies, quotes, etc)
+    - just $type to start
+  - [ ] rewrite the entire "path" stuff
+    - [ ] actually define the format (deal with in-band dots etc)
+    - [x] ~_could_ throw cid neighbour into the target. probably should? but it's a lot of high volume uncompressible bytes~
       - and it could be looked up from the linker's doc
+      - ^^ for now, look up from source doc to get cid. might revisit this later.
