@@ -118,6 +118,14 @@ some todos
 - [ ] jetstream: connect retry: only reset counter after some *time* has passed.
 - [x] either count or estimate the total number of links added (distinct from link targets)
 
+cache
+- [ ] set api response headers
+  - [ ] put "stale-while-revalidate" in Cache-Control w/ num seconds
+  - [ ] put "stale-if-error" in Cache-Control w/ num seconds
+  - [ ] set Expires or Cache-Control expires
+  - [ ] add Accept to vary response
+- [ ] cache vary: might need to take bsky account privacy setting into account (unless this ends up being in query)
+
 data fixes
 - [x] add rkey to linkers 🤦‍♀️
 - [x] don't remove deleted links from the reverse records -- null them out. this will keep things stable for paging.

@@ -167,6 +167,60 @@ scrape_configs:
 
     todo: get raspi vcgencmd outputs into metrics
 
+- nginx on gateway
+
+    ```nginx
+    # in http
+
+    ##
+    # cozy cache
+    ##
+    proxy_cache_path /var/cache/nginx keys_zone=cozy_zone:10m;
+
+    ##
+    # cozy limit
+    ##
+    limit_req_zone $binary_remote_addr zone=cozy_ip_limit:10m rate=50r/s;
+    limit_req_zone $server_name zone=cozy_global_limit:10m rate=1000r/s;
+
+    # in sites-available/linsks.bsky.bad-example.com
+
+    upstream cozy_link_aggregator {
+      server link-aggregator:6789;
+      keepalive 16;
+    }
+
+    server {
+      listen 8080;
+      listen [::]:8080;
+
+      server_name links.bsky.bad-example.com;
+
+      proxy_cache cozy_zone;
+      proxy_cache_background_update on;
+      proxy_cache_key "$scheme$proxy_host$uri$is_args$args$http_accept";
+      proxy_cache_lock on; # make simlutaneous requests for the same uri wait for it to appear in cache instead of hitting origin
+      proxy_cache_lock_age 1s;
+      proxy_cache_lock_timeout 2s;
+      proxy_cache_valid 10s; # default -- should be explicitly set in the response headers
+      proxy_cache_valid any 15s; # non-200s default
+      proxy_read_timeout 5s;
+      proxy_send_timeout 15s;
+      proxy_socket_keepalive on;
+
+      limit_req zone=cozy_ip_limit nodelay burst=100;
+      limit_req zone=cozy_global_limit;
+      limit_req_status 429;
+
+      location / {
+        proxy_pass http://cozy_link_aggregator;
+        include proxy_params;
+        proxy_http_version 1.1;
+        proxy_set_header Connection ""; # for keepalive
+      }
+    }
+    ```
+
 ---
 
 some todos
@@ -179,9 +233,13 @@ some todos
   - [x] configure systemd to keep it alive
 - [x] configure caddy cache
 - [x] configure caddy rate-limit
-- [ ] configure caddy to use a health check (once it's added)
-- [ ] configure caddy to only expose cache metrics to tailnet :/
+- [ ] configure ~caddy~ nginx to use a health check (once it's added)
+- [ ] ~configure caddy to only expose cache metrics to tailnet :/~
 - [x] make some grafana dashboards
 - [ ] raspi: mount /dev/sda on boot
 - [ ] raspi: run link_aggregator via systemd so it starts on startup (and restarts?)
 
+- [x] use nginx instead of caddy
+- [x] nginx: enable cache
+- [x] nginx: rate-limit
+- [ ] nginx: get metrics
