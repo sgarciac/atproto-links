@@ -801,18 +801,11 @@ impl LinkReader for RocksStorage {
             .map(|s| s.parse::<u64>())
             .transpose()?
             .unwrap_or(0);
-        eprintln!("lr {linking_records:?}");
         Ok(StorageStats {
             dids,
             targetables,
             linking_records,
         })
-    }
-
-    fn summarize(&self, qsize: u32) {
-        let did_seq = self.did_id_table.base.id_seq.load(Ordering::SeqCst);
-        let target_seq = self.target_id_table.base.id_seq.load(Ordering::SeqCst);
-        println!("queue: {qsize}. did seq: {did_seq}, target seq: {target_seq}.");
     }
 }
 

@@ -21,16 +21,16 @@ pub struct PagedAppendingCollection<T> {
 pub struct StorageStats {
     /// estimate of how many accounts we've seen create links. the _subjects_ of any links are not represented here.
     /// for example: new user A follows users B and C. this count will only increment by one, for A.
-    dids: u64,
+    pub dids: u64,
 
     /// estimate targets * distinct (collection, path)s to reference them.
     /// distinct targets alone are currently challenging to estimate.
-    targetables: u64,
+    pub targetables: u64,
 
     /// estimate of the count of atproto records seen that contain links.
     /// records with multiple links are single-counted.
     /// for LSM stores, deleted links don't decrement this, and updated records with any links will likely increment it.
-    linking_records: u64,
+    pub linking_records: u64,
 }
 
 pub trait LinkStorage: Send + Sync {
@@ -61,11 +61,6 @@ pub trait LinkReader: Clone + Send + Sync + 'static {
 
     /// assume all stats are estimates, since exact counts are very challenging for LSMs
     fn get_stats(&self) -> Result<StorageStats>;
-
-    // todo: remove it
-    fn summarize(&self, qsize: u32) {
-        println!("queue: {qsize}");
-    }
 }
 
 #[cfg(test)]

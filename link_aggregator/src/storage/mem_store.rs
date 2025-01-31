@@ -219,18 +219,6 @@ impl LinkReader for MemStorage {
             linking_records,
         })
     }
-
-    fn summarize(&self, qsize: u32) {
-        let data = self.0.lock().unwrap();
-        let dids = data.dids.len();
-        let targets = data.targets.len();
-        let target_paths: usize = data.targets.values().map(|paths| paths.len()).sum();
-        let links = data.links.len();
-
-        let sample_target = data.targets.keys().nth(data.targets.len() / 2);
-        let sample_path = sample_target.and_then(|t| data.targets.get(t).unwrap().keys().next());
-        println!("queue: {qsize}. {dids} dids, {targets} targets from {target_paths} paths, {links} links. sample: {sample_target:?} {sample_path:?}");
-    }
 }
 
 #[derive(Debug, PartialEq, Hash, Eq, Clone)]

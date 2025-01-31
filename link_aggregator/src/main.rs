@@ -19,7 +19,7 @@ use consumer::consume;
 use server::serve;
 #[cfg(feature = "rocks")]
 use storage::RocksStorage;
-use storage::{LinkReader, LinkStorage, MemStorage};
+use storage::{LinkReader, LinkStorage, MemStorage, StorageStats};
 
 const MONITOR_INTERVAL: time::Duration = time::Duration::from_secs(2);
 
@@ -173,7 +173,12 @@ fn run(
             }
 
             'monitor: loop {
-                readable.summarize(qsize.load(Ordering::Relaxed));
+                let queue_size = qsize.load(Ordering::Relaxed);
+                match readable.get_stats() {
+                    Ok(StorageStats { dids, targetables, linking_records }) => println!("queue: {queue_size},\tdids: {dids}, targetables: {targetables}, linking_records: {linking_records}"),
+                    Err(e) => eprintln!("queue: {queue_size}, failed to get stats: {e:?}"),
+                }
+
                 process_collector.collect();
                 if let Some(ref p) = data_dir {
                     if let Ok(avail) = fs4::available_space(p) {
