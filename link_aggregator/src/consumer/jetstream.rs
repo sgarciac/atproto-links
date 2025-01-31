@@ -98,7 +98,7 @@ pub fn consume_jetstream(
         let mut socket = match tungstenite::client_tls(req, tcp_stream) {
             Ok((socket, _)) => {
                 println!("jetstream connected.");
-                connect_retries = 0;
+                // connect_retries = 0; // only reset once we have received a message vvv
                 socket
             }
             Err(e) => {
@@ -271,6 +271,9 @@ pub fn consume_jetstream(
             latest_cursor = Some(ts);
             gauge!("jetstream_cursor_age", "url" => stream.clone())
                 .set(ts_age(ts).as_micros() as f64);
+
+            // great news if we got this far -- might be safe to assume the connection is up.
+            connect_retries = 0;
         }
     }
     Ok(())

@@ -110,11 +110,12 @@ some todos
 - [x] handle shutdown cleanly -- be nice to rocksdb
 - [x] add user-agent to jetstream request
 - [ ] wow the shutdown stuff i wrote is really bad and doesn't work a lot
-- [~] serve html for browser requests
+- [x] serve html for browser requests
 - [ ] add a health check endpoint
 - [ ] add seq numbers to metrics
 - [ ] persist the jetstream server url, error if started with a different one (maybe with --switch-streams or something)
 - [ ] put delete-account tasks into a separate (persisted?) task queue for the writer so it can work on them incrementally.
+- [ ] jetstream: connect retry: only reset counter after some *time* has passed.
 
 data fixes
 - [x] add rkey to linkers 🤦‍♀️
