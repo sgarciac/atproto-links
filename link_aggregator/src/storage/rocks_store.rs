@@ -105,20 +105,6 @@ where
         k
     }
 }
-impl<O, I: IdTableValue> Drop for IdTableBase<O, I>
-where
-    O: KeyFromRocks,
-    for<'a> &'a O: AsRocksKey,
-{
-    fn drop(&mut self) {
-        if !std::thread::panicking() && !self.did_init {
-            panic!(
-                "the id table '{}' was dropped without being initialized: call .init() on it.",
-                self.name
-            );
-        }
-    }
-}
 #[derive(Debug, Clone)]
 struct IdTable<Orig, IdVal: IdTableValue, const WITH_REVERSE: bool>
 where
@@ -265,11 +251,10 @@ impl RocksStorage {
                 target_id_table.cf_descriptor(),
                 // the reverse links:
                 ColumnFamilyDescriptor::new(TARGET_LINKERS_CF, {
-                    let did_id_seq = did_id_table.id_seq.clone();
                     let mut opts = rocks_opts_base();
                     opts.set_merge_operator_associative(
                         "merge_op_extend_did_ids",
-                        move |k, ex, ops| Self::merge_op_extend_did_ids(k, ex, ops, &did_id_seq),
+                        Self::merge_op_extend_did_ids,
                     );
                     opts
                 }),
@@ -292,41 +277,31 @@ impl RocksStorage {
         _new_key: &[u8],
         existing: Option<&[u8]>,
         operands: &MergeOperands,
-        current_did_id_seq: &AtomicU64,
     ) -> Option<Vec<u8>> {
-        let mut tls: TargetLinkers = existing
-            .map(|existing_bytes| _vr(existing_bytes).unwrap())
-            .unwrap_or_default();
-
-        let current_seq = current_did_id_seq.load(Ordering::SeqCst);
-
-        for did_id_rkey in &tls.0 {
-            let DidId(ref n) = did_id_rkey.0;
-            if current_seq > 0 && *n > current_seq {
-                eprintln!("problem with merge_op_extend_did_ids. existing: {tls:?}");
-                eprintln!(
-                    "an entry has did_id={n}, which is higher than the current sequence: {current_seq}"
-                );
-                panic!("got a did to merge with higher-than-current did_id sequence");
-            }
-        }
-
-        for op in operands {
-            let new_linkers: TargetLinkers = _vr(op).unwrap();
-            for (DidId(ref n), _) in &new_linkers.0 {
-                if current_seq > 0 && *n > current_seq {
-                    let orig: Option<TargetLinkers> =
-                        existing.map(|existing_bytes| _vr(existing_bytes).unwrap());
-                    eprintln!(
-                        "problem with merge_op_extend_did_ids. existing: {orig:?}\nnew linkers: {new_linkers:?}"
-                    );
-                    eprintln!("the current sequence is {current_seq}");
-                    panic!("did_id a did to a number higher than the current sequence");
+        let mut linkers: Vec<_> = if let Some(existing_bytes) = existing {
+            match _vr(existing_bytes) {
+                Ok(TargetLinkers(mut existing_linkers)) => {
+                    existing_linkers.reserve(operands.len());
+                    existing_linkers
+                }
+                Err(e) => {
+                    eprintln!("bug? could not deserialize existing target linkers: {e:?}");
+                    return None;
                 }
             }
-            tls.0.extend(new_linkers.0);
+        } else {
+            Vec::with_capacity(operands.len())
+        };
+        for new_linkers in operands {
+            match _vr(new_linkers) {
+                Ok(TargetLinkers(new_linkers)) => linkers.extend(new_linkers),
+                Err(e) => {
+                    eprintln!("bug? could not deserialize new target linkrers: {e:?}");
+                    return None;
+                }
+            }
         }
-        Some(_rv(&tls))
+        Some(_rv(&TargetLinkers(linkers)))
     }
 
     fn prefix_iter_cf<K, V, CF, P>(
@@ -515,22 +490,13 @@ impl RocksStorage {
 
         // we do read -> modify -> write here: could merge-op in the deletes instead?
         // otherwise it's another single-thread-constraining thing.
-        for (i, RecordLinkTarget(rpath, target_id)) in record_link_targets.0.iter().enumerate() {
-            self.update_target_linkers(batch, target_id, |mut linkers| {
+        for RecordLinkTarget(_, target_id) in record_link_targets.0 {
+            self.update_target_linkers(batch, &target_id, |mut linkers| {
                 if linkers.0.is_empty() {
-                    eprintln!("about to blow up because a linked target is apparently missing.");
-                    eprintln!("removing links for: {record_id:?}");
-                    eprintln!("found links: {record_link_targets:?}");
-                    eprintln!("working on #{i}: {rpath:?} / {target_id:?}");
-                    panic!("it was empty");
+                    eprintln!("bug? linked target was missing when removing links");
                 }
                 if !linkers.remove_linker(&linking_did_id, &RKey(record_id.rkey.clone())) {
-                    eprintln!("about to blow up because a linked target apparently does not have us in its dids.");
-                    eprintln!("removing links for: {record_id:?}");
-                    eprintln!("found links: {record_link_targets:?}");
-                    eprintln!("working on #{i}: {rpath:?} / {target_id:?}");
-                    eprintln!("trying to find us ({linking_did_id:?}) in {linkers:?}");
-                    panic!("reverse index didn't have us");
+                    eprintln!("bug? linked target was missing a link when removing links");
                 }
                 Some(linkers)
             })?;
@@ -563,7 +529,7 @@ impl RocksStorage {
     }
 
     fn delete_account(&mut self, did: &Did, batch: &mut WriteBatch) -> Result<()> {
-        let Some(DidIdValue(did_id, active)) = self.did_id_table.get_id_val(&self.db, did)? else {
+        let Some(DidIdValue(did_id, _)) = self.did_id_table.get_id_val(&self.db, did)? else {
             return Ok(()); // ignore updates for dids we don't know about
         };
         self.delete_did_id_value(batch, did);
@@ -578,34 +544,13 @@ impl RocksStorage {
         for chunk in stuff.chunks(1024) {
             let mut mini_batch = WriteBatch::default();
 
-            for (i, (record_link_key, links)) in chunk.iter().enumerate() {
+            for (record_link_key, links) in chunk {
                 self.delete_record_link(&mut mini_batch, record_link_key); // _could_ use delete range here instead of individual deletes, but since we have to scan anyway it's not obvious if it's better
 
-                for (j, RecordLinkTarget(path, target_link_id)) in links.0.iter().enumerate() {
+                for RecordLinkTarget(_, target_link_id) in links.0.iter() {
                     self.update_target_linkers(&mut mini_batch, target_link_id, |mut linkers| {
                         if !linkers.remove_linker(&did_id, &record_link_key.2) {
-                            eprintln!(
-                                "DELETING ACCOUNT: blowing up: missing linker entry in linked target."
-                            );
-                            eprintln!("account: {did:?}");
-                            eprintln!("did_id: {did_id:?}, was active? {active:?}");
-                            eprintln!("with links: {links:?}");
-                            eprintln!("and linkers: {linkers:?}");
-                            eprintln!(
-                                "working on #{i}.#{j}: {:?} / {path:?} / {target_link_id:?}",
-                                record_link_key.collection()
-                            );
-                            eprintln!("from record link key {record_link_key:?}");
-                            eprintln!("but could not find this link :/");
-                            eprintln!("checking for did_id dups...");
-                            eprintln!("ok so what the heck. did_id again, for did {did:?}:");
-                            let did_id_again = self
-                                .did_id_table
-                                .get_id_val(&self.db, did)
-                                .unwrap()
-                                .unwrap(); // TODO
-                            eprintln!("did_id_value (again): {did_id_again:?}");
-                            panic!("ohnoooo");
+                            eprintln!("bug? could not find linker when removing links while deleting an account");
                         }
                         Some(linkers)
                     })?;
@@ -909,13 +854,6 @@ impl TargetLinkers {
 // forward links to targets so we can delete links
 #[derive(Debug, Serialize, Deserialize)]
 struct RecordLinkKey(DidId, Collection, RKey);
-
-impl RecordLinkKey {
-    fn collection(&self) -> Collection {
-        let Self(_, collection, _) = self;
-        collection.clone()
-    }
-}
 
 // does this even work????
 #[derive(Debug, Serialize, Deserialize)]
