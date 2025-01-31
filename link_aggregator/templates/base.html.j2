@@ -8,7 +8,7 @@
       body {
         font-family: sans-serif;
       }
-      h1 {
+      body:not(.home) h1 {
         font-size: 1em;
       }
       h2, h3 {
@@ -38,7 +38,7 @@
       }
     </style>
   </head>
-  <body>
+  <body class="{% block body_classes %}{% endblock %}">
     <h1><a href="/">This</a> is an <a href="https://github.com/at-ucosm/links/tree/main/link_aggregator">atproto link aggregator</a> server from <a href="https://github.com/at-ucosm">µcosm</a>!</h1>
     {% block content %}{% endblock %}
 

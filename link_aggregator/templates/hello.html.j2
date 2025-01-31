@@ -1,6 +1,8 @@
 {% extends "base.html.j2" %}
+{% import "try-it-macros.html.j2" as try_it %}
 
 {% block title %}Hello!{% endblock %}
+{% block body_classes %}home{% endblock %}
 
 {% block content %}
   <p>Every interaction in Bluesky and atproto at large tends to appear as a <em>link</em> from a new repository record to <em>somewhere</em>: liking a post creates a record with a link to the post, blocking a spammer creates a record with reference to their DID.</p>
@@ -24,7 +26,8 @@
     <li><code>path</code>: required, must url-encode. Example: <code>.subject.uri</code></li>
   </ul>
 
-  <p><strong>Live example:</strong> <code><a href="/links?target=at://did:plc:vc7f4oafdgxsihk4cry2xpze/app.bsky.feed.post/3lgwdn7vd722r&collection=app.bsky.feed.like&path=.subject.uri">/links?target=at://did:plc:cjfcz3t36f6nrprarkhkycxo/app.bsky.feed.post/3lgyagnrqnc2t&collection=app.bsky.feed.like&path=.subject.uri</a></code></p>
+  <p style="margin-bottom: 0"><strong>Try it:</strong></p>
+  {% call try_it::links("at://did:plc:vc7f4oafdgxsihk4cry2xpze/app.bsky.feed.post/3lgwdn7vd722r", "app.bsky.feed.like", ".subject.uri") %}
 
 
   <h3><code>GET /links/count</code></h3>
@@ -40,7 +43,8 @@
     <li><code>cursor</code>: optional, see Definitions.</li>
   </ul>
 
-  <p><strong>Live example:</strong> <code><a href="/links/count?target=did:plc:vc7f4oafdgxsihk4cry2xpze&collection=app.bsky.graph.block&path=.subject">/links/count?target=did:plc:vc7f4oafdgxsihk4cry2xpze&collection=app.bsky.graph.block&path=.subject</a></code></p>
+  <p style="margin-bottom: 0"><strong>Try it:</strong></p>
+  {% call try_it::links_count("did:plc:vc7f4oafdgxsihk4cry2xpze", "app.bsky.graph.block", ".subject") %}
 
 
   <h3><code>GET /links/all/count</code></h3>
@@ -53,7 +57,8 @@
     <li><code>target</code>: required, must url-encode. Example: <code>did:plc:oky5czdrnfjpqslsw2a5iclo</code></li>
   </ul>
 
-  <p><strong>Live example:</strong> <code><a href="/links/all/count?target=did:plc:oky5czdrnfjpqslsw2a5iclo">/links/all/count?target=did:plc:oky5czdrnfjpqslsw2a5iclo</a></code></p>
+  <p style="margin-bottom: 0"><strong>Try it:</strong></p>
+  {% call try_it::links_all_count("did:plc:oky5czdrnfjpqslsw2a5iclo") %}
 
 
   <h2>Definitions</h2>

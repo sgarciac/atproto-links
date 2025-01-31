@@ -1,4 +1,5 @@
 {% extends "base.html.j2" %}
+{% import "try-it-macros.html.j2" as try_it %}
 
 {% block title %}Link count{% endblock %}
 
@@ -11,16 +12,9 @@
     {% endif %}
   </h2>
 
-
   <p><strong><code>{{ total }}</code></strong> total links from <code>{{ query.collection }}</code> at <code>{{ query.path }}</code></p>
 
-  <form method="get" action="/links/count">
-<pre class="code"><strong>GET</strong> /links/count
-  ?target=     <input type="text" name="target" value="{{ query.target }}" placeholder="target" />
-  &collection= <input type="text" name="collection" value="{{ query.collection }}" placeholder="collection" />
-  &path=       <input type="text" name="path" value="{{ query.path }}" placeholder="path" />
-  <button type="submit">get links count</button></pre>
-  </form>
+  {% call try_it::links_count(query.target, query.collection, query.path) %}
 
   <p>See these links at <code>/links</code>: <a href="/links?target={{ query.target|urlencode }}&collection={{ query.collection|urlencode }}&path={{ query.path|urlencode() }}">/links?target={{ query.target|urlencode }}&collection={{ query.collection|urlencode }}&path={{ query.path|urlencode }}</a></p>
 

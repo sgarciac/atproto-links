@@ -1,4 +1,5 @@
 {% extends "base.html.j2" %}
+{% import "try-it-macros.html.j2" as try_it %}
 
 {% block title %}All link counts{% endblock %}
 
@@ -11,9 +12,7 @@
     {% endif %}
   </h2>
 
-  <form method="get" action="/links/all/count">
-    <pre class="code"><strong>GET</strong> /links?target=<input type="text" name="target" value="{{ query.target }}" placeholder="target" /> <button type="submit">get link counts</button></pre>
-  </form>
+  {% call try_it::links_all_count(query.target) %}
 
   <h3>Links by collection and path:</h3>
 

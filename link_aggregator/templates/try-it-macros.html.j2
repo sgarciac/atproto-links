@@ -1,0 +1,25 @@
+{% macro links(target, collection, path) %}
+  <form method="get" action="/links">
+    <pre class="code"><strong>GET</strong> /links
+  ?target=     <input type="text" name="target" value="{{ target }}" placeholder="target" />
+  &collection= <input type="text" name="collection" value="{{ collection }}" placeholder="collection" />
+  &path=       <input type="text" name="path" value="{{ path }}" placeholder="path" /> <button type="submit">get links</button></pre>
+  </form>
+{% endmacro %}
+
+
+{% macro links_count(target, collection, path) %}
+  <form method="get" action="/links/count">
+<pre class="code"><strong>GET</strong> /links/count
+  ?target=     <input type="text" name="target" value="{{ target }}" placeholder="target" />
+  &collection= <input type="text" name="collection" value="{{ collection }}" placeholder="collection" />
+  &path=       <input type="text" name="path" value="{{ path }}" placeholder="path" /> <button type="submit">get links count</button></pre>
+  </form>
+{% endmacro %}
+
+
+{% macro links_all_count(target) %}
+  <form method="get" action="/links/all/count">
+    <pre class="code"><strong>GET</strong> /links?target=<input type="text" name="target" value="{{ target }}" placeholder="target" /> <button type="submit">get all target link counts</button></pre>
+  </form>
+{% endmacro %}
