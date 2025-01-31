@@ -17,6 +17,22 @@ pub struct PagedAppendingCollection<T> {
     pub next: Option<u64>,
 }
 
+#[derive(Debug, PartialEq)]
+pub struct StorageStats {
+    /// estimate of how many accounts we've seen create links. the _subjects_ of any links are not represented here.
+    /// for example: new user A follows users B and C. this count will only increment by one, for A.
+    dids: u64,
+
+    /// estimate targets * distinct (collection, path)s to reference them.
+    /// distinct targets alone are currently challenging to estimate.
+    targetables: u64,
+
+    /// estimate of the count of atproto records seen that contain links.
+    /// records with multiple links are single-counted.
+    /// for LSM stores, deleted links don't decrement this, and updated records with any links will likely increment it.
+    linking_records: u64,
+}
+
 pub trait LinkStorage: Send + Sync {
     /// jetstream cursor from last saved actions, if available
     fn get_cursor(&mut self) -> Result<Option<u64>> {
@@ -43,6 +59,9 @@ pub trait LinkReader: Clone + Send + Sync + 'static {
 
     fn get_all_counts(&self, _target: &str) -> Result<HashMap<String, HashMap<String, u64>>>;
 
+    /// assume all stats are estimates, since exact counts are very challenging for LSMs
+    fn get_stats(&self) -> Result<StorageStats>;
+
     // todo: remove it
     fn summarize(&self, qsize: u32) {
         println!("queue: {qsize}");
@@ -53,6 +72,7 @@ pub trait LinkReader: Clone + Send + Sync + 'static {
 mod tests {
     use super::*;
     use links::{CollectedLink, Link};
+    use std::ops::RangeBounds;
 
     macro_rules! test_each_storage {
         ($test_name:ident, |$storage_label:ident| $test_code:block) => {
@@ -79,6 +99,25 @@ mod tests {
         };
     }
 
+    fn assert_stats(
+        stats: StorageStats,
+        dids: impl RangeBounds<u64>,
+        targetables: impl RangeBounds<u64>,
+        linking_records: impl RangeBounds<u64>,
+    ) {
+        fn check(name: &str, stat: u64, rb: impl RangeBounds<u64>) {
+            assert!(
+                rb.contains(&stat),
+                "{name:?}: {stat:?} not in range {:?}–{:?}",
+                rb.start_bound(),
+                rb.end_bound()
+            );
+        }
+        check("dids", stats.dids, dids);
+        check("targetables", stats.targetables, targetables);
+        check("linking_records", stats.linking_records, linking_records);
+    }
+
     test_each_storage!(test_empty, |storage| {
         assert_eq!(storage.get_count("", "", "")?, 0);
         assert_eq!(storage.get_count("a", "b", "c")?, 0);
@@ -90,6 +129,16 @@ mod tests {
             )?,
             0
         );
+        assert_eq!(
+            storage.get_links("a.com", "app.t.c", ".abc.uri", 100, None)?,
+            PagedAppendingCollection {
+                version: (0, 0),
+                items: vec![],
+                next: None,
+            }
+        );
+        assert_eq!(storage.get_all_counts("bad-example.com")?, HashMap::new());
+        assert_stats(storage.get_stats()?, 0..=0, 0..=0, 0..=0);
     });
 
     test_each_storage!(test_add_link, |storage| {
@@ -110,6 +159,7 @@ mod tests {
         assert_eq!(storage.get_count("e.com", "app.t.c", ".abc.uri")?, 1);
         assert_eq!(storage.get_count("bad.com", "app.t.c", ".abc.uri")?, 0);
         assert_eq!(storage.get_count("e.com", "app.t.c", ".bad.uri")?, 0);
+        assert_stats(storage.get_stats()?, 1..=1, 1..=1, 1..=1);
     });
 
     test_each_storage!(test_links, |storage| {
@@ -222,6 +272,7 @@ mod tests {
             0,
         )?;
         assert_eq!(storage.get_count("e.com", "app.t.c", ".abc.uri")?, 2);
+        assert_stats(storage.get_stats()?, 2..=2, 1..=1, 2..=2);
     });
 
     test_each_storage!(test_two_user_links_delete_one, |storage| {
@@ -268,8 +319,8 @@ mod tests {
             }),
             0,
         )?;
-
         assert_eq!(storage.get_count("e.com", "app.t.c", ".abc.uri")?, 1);
+        assert_stats(storage.get_stats()?, 1..=1, 1..=1, 1..=1);
     });
 
     test_each_storage!(test_accounts, |storage| {
@@ -326,6 +377,7 @@ mod tests {
         storage.push(&ActionableEvent::DeleteAccount("did:plc:asdf".into()), 0)?;
         assert_eq!(storage.get_count("a.com", "app.t.c", ".abc.uri")?, 1);
         assert_eq!(storage.get_count("b.com", "app.t.c", ".abc.uri")?, 0);
+        assert_stats(storage.get_stats()?, 1..=2, 2..=2, 1..=1);
     });
 
     test_each_storage!(multi_link, |storage| {
@@ -368,6 +420,7 @@ mod tests {
         assert_eq!(storage.get_count("e.com", "app.t.c", ".abc.uri")?, 0);
         assert_eq!(storage.get_count("f.com", "app.t.c", ".xyz[].uri")?, 0);
         assert_eq!(storage.get_count("g.com", "app.t.c", ".xyz[].uri")?, 0);
+        assert_stats(storage.get_stats()?, 1..=1, 3..=3, 0..=0);
     });
 
     test_each_storage!(update_link, |storage| {
@@ -430,6 +483,7 @@ mod tests {
         assert_eq!(storage.get_count("f.com", "app.t.c", ".xyz[].uri")?, 1);
         assert_eq!(storage.get_count("g.com", "app.t.c", ".xyz[].uri")?, 0);
         assert_eq!(storage.get_count("i.com", "app.t.c", ".xyz[].uri")?, 1);
+        assert_stats(storage.get_stats()?, 1..=1, 5..=5, 1..=1);
     });
 
     test_each_storage!(update_no_links_to_links, |storage| {
@@ -449,6 +503,7 @@ mod tests {
             0,
         )?;
         assert_eq!(storage.get_count("a.com", "app.t.c", ".abc.uri")?, 1);
+        assert_stats(storage.get_stats()?, 1..=1, 1..=1, 1..=1);
     });
 
     test_each_storage!(delete_multi_link_same_target, |storage| {
@@ -485,17 +540,7 @@ mod tests {
         )?;
         assert_eq!(storage.get_count("a.com", "app.t.c", ".abc.uri")?, 0);
         assert_eq!(storage.get_count("a.com", "app.t.c", ".def.uri")?, 0);
-    });
-
-    test_each_storage!(get_links_zero, |storage| {
-        assert_eq!(
-            storage.get_links("a.com", "app.t.c", ".abc.uri", 100, None)?,
-            PagedAppendingCollection {
-                version: (0, 0),
-                items: vec![],
-                next: None,
-            }
-        );
+        assert_stats(storage.get_stats()?, 1..=1, 2..=2, 0..=0);
     });
 
     test_each_storage!(get_links_basic, |storage| {
@@ -525,6 +570,7 @@ mod tests {
                 next: None,
             }
         );
+        assert_stats(storage.get_stats()?, 1..=1, 1..=1, 1..=1);
     });
 
     test_each_storage!(get_links_paged, |storage| {
@@ -597,6 +643,7 @@ mod tests {
                 next: None,
             }
         );
+        assert_stats(storage.get_stats()?, 5..=5, 1..=1, 5..=5);
     });
 
     test_each_storage!(get_links_exact_multiple, |storage| {
@@ -656,6 +703,7 @@ mod tests {
                 next: None,
             }
         );
+        assert_stats(storage.get_stats()?, 4..=4, 1..=1, 4..=4);
     });
 
     test_each_storage!(page_links_while_new_links_arrive, |storage| {
@@ -729,6 +777,7 @@ mod tests {
                 next: None,
             }
         );
+        assert_stats(storage.get_stats()?, 5..=5, 1..=1, 5..=5);
     });
 
     test_each_storage!(page_links_while_some_are_deleted, |storage| {
@@ -789,6 +838,7 @@ mod tests {
                 next: None,
             }
         );
+        assert_stats(storage.get_stats()?, 4..=4, 1..=1, 3..=3);
     });
 
     test_each_storage!(page_links_accounts_inactive, |storage| {
@@ -845,6 +895,7 @@ mod tests {
                 next: None,
             }
         );
+        assert_stats(storage.get_stats()?, 4..=4, 1..=1, 4..=4);
     });
 
     test_each_storage!(get_all_counts, |storage| {
@@ -876,9 +927,6 @@ mod tests {
             counts.insert("app.t.c".into(), t_c_counts);
             counts
         });
-    });
-
-    test_each_storage!(get_all_counts_no_links, |storage| {
-        assert_eq!(storage.get_all_counts("bad-example.com")?, HashMap::new());
+        assert_stats(storage.get_stats()?, 1..=1, 2..=2, 1..=1);
     });
 }

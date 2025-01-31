@@ -1,4 +1,4 @@
-use super::{LinkReader, LinkStorage, PagedAppendingCollection};
+use super::{LinkReader, LinkStorage, PagedAppendingCollection, StorageStats};
 use anyhow::Result;
 use link_aggregator::{ActionableEvent, Did, RecordId};
 use links::CollectedLink;
@@ -202,6 +202,22 @@ impl LinkReader for MemStorage {
             }
         }
         Ok(out)
+    }
+
+    fn get_stats(&self) -> Result<StorageStats> {
+        let data = self.0.lock().unwrap();
+        let dids = data.dids.len() as u64;
+        let targetables = data
+            .targets
+            .values()
+            .map(|sources| sources.len())
+            .sum::<usize>() as u64;
+        let linking_records = data.links.values().map(|recs| recs.len()).sum::<usize>() as u64;
+        Ok(StorageStats {
+            dids,
+            targetables,
+            linking_records,
+        })
     }
 
     fn summarize(&self, qsize: u32) {

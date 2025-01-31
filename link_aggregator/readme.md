@@ -116,6 +116,7 @@ some todos
 - [ ] persist the jetstream server url, error if started with a different one (maybe with --switch-streams or something)
 - [ ] put delete-account tasks into a separate (persisted?) task queue for the writer so it can work on them incrementally.
 - [ ] jetstream: connect retry: only reset counter after some *time* has passed.
+- [x] either count or estimate the total number of links added (distinct from link targets)
 
 data fixes
 - [x] add rkey to linkers 🤦‍♀️

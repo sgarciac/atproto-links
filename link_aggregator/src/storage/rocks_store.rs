@@ -1,4 +1,4 @@
-use super::{ActionableEvent, LinkReader, LinkStorage, PagedAppendingCollection};
+use super::{ActionableEvent, LinkReader, LinkStorage, PagedAppendingCollection, StorageStats};
 use anyhow::{bail, Result};
 use bincode::Options as BincodeOptions;
 use link_aggregator::{Did, RecordId};
@@ -179,6 +179,9 @@ where
             batch.put_cf(cf, _rk(orig), _rv(&id_value));
             id_value
         }))
+    }
+    fn estimate_count(&self) -> u64 {
+        self.base.id_seq.load(Ordering::SeqCst) - 1 // -1 because seq zero is reserved
     }
 }
 impl<Orig: Clone, IdVal: IdTableValue> IdTable<Orig, IdVal, true>
@@ -698,12 +701,6 @@ impl LinkStorage for RocksStorage {
 }
 
 impl LinkReader for RocksStorage {
-    fn summarize(&self, qsize: u32) {
-        let did_seq = self.did_id_table.base.id_seq.load(Ordering::SeqCst);
-        let target_seq = self.target_id_table.base.id_seq.load(Ordering::SeqCst);
-        println!("queue: {qsize}. did seq: {did_seq}, target seq: {target_seq}.");
-    }
-
     fn get_count(&self, target: &str, collection: &str, path: &str) -> Result<u64> {
         let target_key = TargetKey(
             Target(target.to_string()),
@@ -792,6 +789,30 @@ impl LinkReader for RocksStorage {
                 .insert(path.clone(), count);
         }
         Ok(out)
+    }
+
+    fn get_stats(&self) -> Result<StorageStats> {
+        let dids = self.did_id_table.estimate_count();
+        let targetables = self.target_id_table.estimate_count();
+        let lr_cf = self.db.cf_handle(LINK_TARGETS_CF).unwrap();
+        let linking_records = self
+            .db
+            .property_value_cf(&lr_cf, rocksdb::properties::ESTIMATE_NUM_KEYS)?
+            .map(|s| s.parse::<u64>())
+            .transpose()?
+            .unwrap_or(0);
+        eprintln!("lr {linking_records:?}");
+        Ok(StorageStats {
+            dids,
+            targetables,
+            linking_records,
+        })
+    }
+
+    fn summarize(&self, qsize: u32) {
+        let did_seq = self.did_id_table.base.id_seq.load(Ordering::SeqCst);
+        let target_seq = self.target_id_table.base.id_seq.load(Ordering::SeqCst);
+        println!("queue: {qsize}. did seq: {did_seq}, target seq: {target_seq}.");
     }
 }
 
