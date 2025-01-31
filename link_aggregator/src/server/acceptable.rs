@@ -1,4 +1,5 @@
 use askama::Template;
+use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Json, Response};
 use axum_extra::TypedHeader;
 use headers_accept::Accept;
@@ -15,7 +16,13 @@ pub type ExtractAccept = Option<TypedHeader<Accept>>;
 pub fn acceptable<T: Serialize + Template>(accept: ExtractAccept, thing: T) -> Response {
     if let Some(accepting) = accept {
         if accepting.negotiate(AVAILABLE) == Some(&TEXT_HTML) {
-            return Html(thing.render().unwrap()).into_response(); // TODO
+            match thing.render() {
+                Ok(content) => return Html(content).into_response(),
+                Err(e) => {
+                    eprintln!("template rendering failed: {e:?}");
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                }
+            }
         }
     }
     Json(thing).into_response()
