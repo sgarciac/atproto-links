@@ -452,41 +452,19 @@ impl RocksStorage {
         self.prefix_iter_cf(&cf, TargetIdTargetPrefix(target.clone()))
     }
 
-    fn check_for_did_dups(&self, problem_did_id: &DidId) {
-        let cf = self.db.cf_handle(DID_IDS_CF).unwrap();
-        let mut seen_ids: HashMap<DidId, Vec<Did>> = HashMap::new();
-        for (k, v) in self
-            .db
-            .iterator_cf(&cf, rocksdb::IteratorMode::Start)
-            .map_while(Result::ok)
-        {
-            let did: Did = _kr(&k).unwrap();
-            let DidIdValue(did_id, _) = _vr(&v).unwrap();
-            if let Some(dids) = seen_ids.get_mut(&did_id) {
-                let is_problem = did_id == *problem_did_id;
-                eprintln!(
-                    "dup! problem? {is_problem}. at did_id {did_id:?}: {dids:?} and now {did:?}"
-                );
-                dids.push(did);
-            } else {
-                if did_id == *problem_did_id {
-                    eprintln!("found our friend {did:?} {did_id:?}");
-                }
-                assert!(seen_ids.insert(did_id, vec![did]).is_none());
-            }
-        }
-        eprintln!("done checking.");
-    }
-
     //
     // higher-level event action handlers
     //
 
-    fn add_links(&mut self, record_id: &RecordId, links: &[CollectedLink], batch: &mut WriteBatch) {
-        let DidIdValue(did_id, _) = self
-            .did_id_table
-            .get_or_create_id_val(&self.db, batch, &record_id.did)
-            .unwrap();
+    fn add_links(
+        &mut self,
+        record_id: &RecordId,
+        links: &[CollectedLink],
+        batch: &mut WriteBatch,
+    ) -> Result<()> {
+        let DidIdValue(did_id, _) =
+            self.did_id_table
+                .get_or_create_id_val(&self.db, batch, &record_id.did)?;
 
         let record_link_key = RecordLinkKey(
             did_id,
@@ -501,25 +479,23 @@ impl RocksStorage {
                 Collection(record_id.collection()),
                 RPath(path.clone()),
             );
-            let target_id = self
-                .target_id_table
-                .get_or_create_id_val(&self.db, batch, &target_key)
-                .unwrap();
+            let target_id =
+                self.target_id_table
+                    .get_or_create_id_val(&self.db, batch, &target_key)?;
             self.merge_target_linker(batch, &target_id, &did_id, &RKey(record_id.rkey()));
 
             record_link_targets.add(RecordLinkTarget(RPath(path.clone()), target_id))
         }
 
         self.put_link_targets(batch, &record_link_key, &record_link_targets);
+        Ok(())
     }
 
-    fn remove_links(&mut self, record_id: &RecordId, batch: &mut WriteBatch) {
-        let Some(DidIdValue(linking_did_id, did_active)) = self
-            .did_id_table
-            .get_id_val(&self.db, &record_id.did)
-            .unwrap()
+    fn remove_links(&mut self, record_id: &RecordId, batch: &mut WriteBatch) -> Result<()> {
+        let Some(DidIdValue(linking_did_id, did_active)) =
+            self.did_id_table.get_id_val(&self.db, &record_id.did)?
         else {
-            return; // we don't know her: nothing to do
+            return Ok(()); // we don't know her: nothing to do
         };
         if !did_active {
             eprintln!(
@@ -533,9 +509,8 @@ impl RocksStorage {
             Collection(record_id.collection()),
             RKey(record_id.rkey()),
         );
-        let Some(record_link_targets) = self.get_record_link_targets(&record_link_key).unwrap()
-        else {
-            return; // we don't have these links
+        let Some(record_link_targets) = self.get_record_link_targets(&record_link_key)? else {
+            return Ok(()); // we don't have these links
         };
 
         // we do read -> modify -> write here: could merge-op in the deletes instead?
@@ -558,10 +533,11 @@ impl RocksStorage {
                     panic!("reverse index didn't have us");
                 }
                 Some(linkers)
-            }).unwrap();
+            })?;
         }
 
         self.delete_record_link(batch, &record_link_key);
+        Ok(())
     }
 
     fn update_links(
@@ -569,26 +545,26 @@ impl RocksStorage {
         record_id: &RecordId,
         new_links: &[CollectedLink],
         batch: &mut WriteBatch,
-    ) {
-        self.remove_links(record_id, batch);
-        self.add_links(record_id, new_links, batch);
+    ) -> Result<()> {
+        self.remove_links(record_id, batch)?;
+        self.add_links(record_id, new_links, batch)?;
+        Ok(())
     }
 
-    fn set_account(&mut self, did: &Did, active: bool, batch: &mut WriteBatch) {
+    fn set_account(&mut self, did: &Did, active: bool, batch: &mut WriteBatch) -> Result<()> {
         // this needs to be read-modify-write since the did_id needs to stay the same,
         // which has a benefit of allowing to avoid adding entries for dids we don't
         // need. reading on dids needs to be cheap anyway for the current design, and
         // did active/inactive updates are low-freq in the firehose so, eh, it's fine.
         self.update_did_id_value(batch, did, |current_value| {
             Some(DidIdValue(current_value.did_id(), active))
-        })
-        .unwrap();
+        })?;
+        Ok(())
     }
 
-    fn delete_account(&mut self, did: &Did, batch: &mut WriteBatch) {
-        let Some(DidIdValue(did_id, active)) = self.did_id_table.get_id_val(&self.db, did).unwrap()
-        else {
-            return; // ignore updates for dids we don't know about
+    fn delete_account(&mut self, did: &Did, batch: &mut WriteBatch) -> Result<()> {
+        let Some(DidIdValue(did_id, active)) = self.did_id_table.get_id_val(&self.db, did)? else {
+            return Ok(()); // ignore updates for dids we don't know about
         };
         self.delete_did_id_value(batch, did);
         // TODO: also delete the reverse!!
@@ -622,24 +598,22 @@ impl RocksStorage {
                             eprintln!("from record link key {record_link_key:?}");
                             eprintln!("but could not find this link :/");
                             eprintln!("checking for did_id dups...");
-                            self.check_for_did_dups(&did_id);
                             eprintln!("ok so what the heck. did_id again, for did {did:?}:");
                             let did_id_again = self
                                 .did_id_table
                                 .get_id_val(&self.db, did)
                                 .unwrap()
-                                .unwrap();
+                                .unwrap(); // TODO
                             eprintln!("did_id_value (again): {did_id_again:?}");
                             panic!("ohnoooo");
                         }
                         Some(linkers)
-                    })
-                    .unwrap();
+                    })?;
                 }
             }
-
-            self.db.write(mini_batch).unwrap(); // todo
+            self.db.write(mini_batch)?; // todo
         }
+        Ok(())
     }
 }
 
@@ -677,16 +651,16 @@ impl LinkStorage for RocksStorage {
         let mut batch = WriteBatch::default();
         match event {
             ActionableEvent::CreateLinks { record_id, links } => {
-                self.add_links(record_id, links, &mut batch)
+                self.add_links(record_id, links, &mut batch)?
             }
             ActionableEvent::UpdateLinks {
                 record_id,
                 new_links,
-            } => self.update_links(record_id, new_links, &mut batch),
-            ActionableEvent::DeleteRecord(record_id) => self.remove_links(record_id, &mut batch),
-            ActionableEvent::ActivateAccount(did) => self.set_account(did, true, &mut batch),
-            ActionableEvent::DeactivateAccount(did) => self.set_account(did, false, &mut batch),
-            ActionableEvent::DeleteAccount(did) => self.delete_account(did, &mut batch),
+            } => self.update_links(record_id, new_links, &mut batch)?,
+            ActionableEvent::DeleteRecord(record_id) => self.remove_links(record_id, &mut batch)?,
+            ActionableEvent::ActivateAccount(did) => self.set_account(did, true, &mut batch)?,
+            ActionableEvent::DeactivateAccount(did) => self.set_account(did, false, &mut batch)?,
+            ActionableEvent::DeleteAccount(did) => self.delete_account(did, &mut batch)?,
         }
         batch.put(JETSTREAM_CURSOR_KEY.as_bytes(), _rv(cursor));
         self.db.write(batch)?;
