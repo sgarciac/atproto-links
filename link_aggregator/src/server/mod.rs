@@ -49,6 +49,7 @@ where
                 }
             }),
         )
+        .layer(tower_http::cors::CorsLayer::new().allow_origin(tower_http::cors::Any))
         .layer(axum_metrics::MetricLayer::default());
 
     let listener = TcpListener::bind(addr).await?;

@@ -118,6 +118,7 @@ some todos
 - [ ] jetstream: connect retry: only reset counter after some *time* has passed.
 - [x] either count or estimate the total number of links added (distinct from link targets)
 - [x] jetstream: don't crash on connection refused (retry * backoff)
+- [x] allow cors requests (ie. atproto-browser. (but it's really meant for backends))
 
 cache
 - [ ] set api response headers
