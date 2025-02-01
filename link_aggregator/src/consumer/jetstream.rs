@@ -85,11 +85,41 @@ pub fn consume_jetstream(
         let host = req.uri().host().expect("jetstream request uri has a host");
         let port = req.uri().port().map(|p| p.as_u16()).unwrap_or(443);
         let dest = format!("{host}:{port}");
-        let addr = dest
-            .to_socket_addrs()?
-            .next()
-            .expect("can resolve the jetstream address"); // TODO ugh
-        let tcp_stream = std::net::TcpStream::connect_timeout(&addr, time::Duration::from_secs(8))?; // TODO: handle
+        let addr = match dest.to_socket_addrs().map(|mut d| d.next()) {
+            Ok(Some(a)) => a,
+            Ok(None) => {
+                eprintln!(
+                    "jetstream: could not resolve an address for {dest:?}. retrying after a bit?"
+                );
+                thread::sleep(time::Duration::from_secs(15));
+                continue;
+            }
+            Err(e) => {
+                eprintln!("jetstream failed to resolve address {dest:?}: {e:?} waiting and then retrying...");
+                thread::sleep(time::Duration::from_secs(3));
+                continue;
+            }
+        };
+        let tcp_stream = match std::net::TcpStream::connect_timeout(
+            &addr,
+            time::Duration::from_secs(8),
+        ) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!(
+                    "jetstream failed to make tcp connection: {e:?}. (todo: clean up retry logic)"
+                );
+                connect_retries += 1;
+                if connect_retries >= 7 {
+                    eprintln!("jetstream: no more connect retries, breaking out.");
+                    break;
+                }
+                let backoff = time::Duration::from_secs(connect_retries.try_into().unwrap());
+                eprintln!("jetstream tcp failed to connect: {e:?}. backing off {backoff:?} before retrying...");
+                thread::sleep(backoff);
+                continue;
+            }
+        };
         tcp_stream.set_read_timeout(Some(time::Duration::from_secs(4)))?;
         tcp_stream.set_write_timeout(Some(time::Duration::from_secs(4)))?;
 

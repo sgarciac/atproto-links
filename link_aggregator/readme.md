@@ -117,6 +117,7 @@ some todos
 - [ ] put delete-account tasks into a separate (persisted?) task queue for the writer so it can work on them incrementally.
 - [ ] jetstream: connect retry: only reset counter after some *time* has passed.
 - [x] either count or estimate the total number of links added (distinct from link targets)
+- [x] jetstream: don't crash on connection refused (retry * backoff)
 
 cache
 - [ ] set api response headers
