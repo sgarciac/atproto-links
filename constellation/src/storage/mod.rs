@@ -12,7 +12,7 @@ pub use rocks_store::RocksStorage;
 
 #[derive(Debug, PartialEq)]
 pub struct PagedAppendingCollection<T> {
-    pub version: (u64, u64), // (collection length, deleted item count)
+    pub version: (u64, u64), // (collection length, deleted item count) // TODO: change to (total, active)? since dedups isn't "deleted"
     pub items: Vec<T>,
     pub next: Option<u64>,
 }
@@ -66,7 +66,7 @@ pub trait LinkReader: Clone + Send + Sync + 'static {
         path: &str,
         limit: u64,
         until: Option<u64>,
-    ) -> Result<PagedAppendingCollection<Did>>;
+    ) -> Result<PagedAppendingCollection<Did>>; // TODO: reflect dedups in cursor
 
     fn get_all_counts(&self, _target: &str) -> Result<HashMap<String, HashMap<String, u64>>>;
 

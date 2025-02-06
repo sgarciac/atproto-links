@@ -8,7 +8,7 @@ use rocksdb::{
     MultiThreaded, Options, PrefixRange, ReadOptions, WriteBatch,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::marker::PhantomData;
 use std::path::Path;
@@ -349,6 +349,19 @@ impl RocksStorage {
         };
         _vr(&linkers_bytes)
     }
+    /// zero out every duplicate did. bit of a hack, looks the same as deleted, but eh
+    fn get_distinct_target_linkers(&self, target_id: &TargetId) -> Result<TargetLinkers> {
+        let mut seen = HashSet::new();
+        let mut linkers = self.get_target_linkers(target_id)?;
+        for (did_id, _) in linkers.0.iter_mut() {
+            if seen.contains(did_id) {
+                did_id.0 = 0;
+            } else {
+                seen.insert(*did_id);
+            }
+        }
+        Ok(linkers)
+    }
     fn merge_target_linker(
         &self,
         batch: &mut WriteBatch,
@@ -634,6 +647,24 @@ impl LinkReader for RocksStorage {
         }
     }
 
+    fn get_distinct_did_count(&self, target: &str, collection: &str, path: &str) -> Result<u64> {
+        let target_key = TargetKey(
+            Target(target.to_string()),
+            Collection(collection.to_string()),
+            RPath(path.to_string()),
+        );
+        if let Some(target_id) = self.target_id_table.get_id_val(&self.db, &target_key)? {
+            let TargetLinkers(alives) = self.get_target_linkers(&target_id)?;
+            Ok(alives // TODO: maybe make this a method on TargetLinkers?
+                .iter()
+                .filter_map(|(DidId(id), _)| if *id == 0 { None } else { Some(id) })
+                .collect::<HashSet<_>>()
+                .len() as u64)
+        } else {
+            Ok(0)
+        }
+    }
+
     fn get_links(
         &self,
         target: &str,
@@ -686,6 +717,66 @@ impl LinkReader for RocksStorage {
                     collection: collection.to_string(),
                     rkey: rkey.0.clone(),
                 });
+            } else {
+                eprintln!("failed to look up did from did_id {did_id:?}");
+            }
+        }
+
+        Ok(PagedAppendingCollection {
+            version: (total, gone),
+            items,
+            next,
+        })
+    }
+
+    fn get_distinct_dids(
+        &self,
+        target: &str,
+        collection: &str,
+        path: &str,
+        limit: u64,
+        until: Option<u64>,
+    ) -> Result<PagedAppendingCollection<Did>> {
+        let target_key = TargetKey(
+            Target(target.to_string()),
+            Collection(collection.to_string()),
+            RPath(path.to_string()),
+        );
+
+        let Some(target_id) = self.target_id_table.get_id_val(&self.db, &target_key)? else {
+            return Ok(PagedAppendingCollection {
+                version: (0, 0),
+                items: Vec::new(),
+                next: None,
+            });
+        };
+
+        let linkers = self.get_distinct_target_linkers(&target_id)?;
+
+        let (alive, gone) = linkers.count();
+        let total = alive + gone;
+        let end = until.map(|u| std::cmp::min(u, total)).unwrap_or(total) as usize;
+        let begin = end.saturating_sub(limit as usize);
+        let next = if begin == 0 { None } else { Some(begin as u64) };
+
+        let did_id_rkeys = linkers.0[begin..end].iter().rev().collect::<Vec<_>>();
+
+        let mut items = Vec::with_capacity(did_id_rkeys.len());
+        // TODO: use get-many (or multi-get or whatever it's called)
+        for (did_id, _) in did_id_rkeys {
+            if did_id.is_empty() {
+                continue;
+            }
+            if let Some(did) = self.did_id_table.get_val_from_id(&self.db, did_id.0)? {
+                let Some(DidIdValue(_, active)) = self.did_id_table.get_id_val(&self.db, &did)?
+                else {
+                    eprintln!("failed to look up did_value from did_id {did_id:?}: {did:?}: data consistency bug?");
+                    continue;
+                };
+                if !active {
+                    continue;
+                }
+                items.push(did);
             } else {
                 eprintln!("failed to look up did from did_id {did_id:?}");
             }
