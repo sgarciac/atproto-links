@@ -1,5 +1,5 @@
 use anyhow::Result;
-use constellation::{ActionableEvent, RecordId};
+use constellation::{ActionableEvent, Did, RecordId};
 use std::collections::HashMap;
 
 pub mod mem_store;
@@ -48,6 +48,8 @@ pub trait LinkStorage: Send + Sync {
 pub trait LinkReader: Clone + Send + Sync + 'static {
     fn get_count(&self, target: &str, collection: &str, path: &str) -> Result<u64>;
 
+    fn get_distinct_did_count(&self, target: &str, collection: &str, path: &str) -> Result<u64>;
+
     fn get_links(
         &self,
         target: &str,
@@ -56,6 +58,15 @@ pub trait LinkReader: Clone + Send + Sync + 'static {
         limit: u64,
         until: Option<u64>,
     ) -> Result<PagedAppendingCollection<RecordId>>;
+
+    fn get_distinct_dids(
+        &self,
+        target: &str,
+        collection: &str,
+        path: &str,
+        limit: u64,
+        until: Option<u64>,
+    ) -> Result<PagedAppendingCollection<Did>>;
 
     fn get_all_counts(&self, _target: &str) -> Result<HashMap<String, HashMap<String, u64>>>;
 
@@ -124,6 +135,7 @@ mod tests {
             )?,
             0
         );
+        assert_eq!(storage.get_distinct_did_count("", "", "")?, 0);
         assert_eq!(
             storage.get_links("a.com", "app.t.c", ".abc.uri", 100, None)?,
             PagedAppendingCollection {
@@ -132,7 +144,16 @@ mod tests {
                 next: None,
             }
         );
+        assert_eq!(
+            storage.get_distinct_dids("a.com", "app.t.c", ".abc.uri", 100, None)?,
+            PagedAppendingCollection {
+                version: (0, 0),
+                items: vec![],
+                next: None,
+            }
+        );
         assert_eq!(storage.get_all_counts("bad-example.com")?, HashMap::new());
+
         assert_stats(storage.get_stats()?, 0..=0, 0..=0, 0..=0);
     });
 
@@ -152,8 +173,16 @@ mod tests {
             0,
         )?;
         assert_eq!(storage.get_count("e.com", "app.t.c", ".abc.uri")?, 1);
+        assert_eq!(
+            storage.get_distinct_did_count("e.com", "app.t.c", ".abc.uri")?,
+            1
+        );
         assert_eq!(storage.get_count("bad.com", "app.t.c", ".abc.uri")?, 0);
         assert_eq!(storage.get_count("e.com", "app.t.c", ".bad.uri")?, 0);
+        assert_eq!(
+            storage.get_distinct_did_count("e.com", "app.t.c", ".bad.uri")?,
+            0
+        );
         assert_stats(storage.get_stats()?, 1..=1, 1..=1, 1..=1);
     });
 
@@ -222,6 +251,10 @@ mod tests {
             0,
         )?;
         assert_eq!(storage.get_count("e.com", "app.t.c", ".abc.uri")?, 1);
+        assert_eq!(
+            storage.get_distinct_did_count("e.com", "app.t.c", ".abc.uri")?,
+            1
+        );
 
         // add another link from this user
         storage.push(
@@ -239,6 +272,10 @@ mod tests {
             0,
         )?;
         assert_eq!(storage.get_count("e.com", "app.t.c", ".abc.uri")?, 2);
+        assert_eq!(
+            storage.get_distinct_did_count("e.com", "app.t.c", ".abc.uri")?,
+            1
+        );
 
         // add a link from someone else
         storage.push(
@@ -256,6 +293,10 @@ mod tests {
             0,
         )?;
         assert_eq!(storage.get_count("e.com", "app.t.c", ".abc.uri")?, 3);
+        assert_eq!(
+            storage.get_distinct_did_count("e.com", "app.t.c", ".abc.uri")?,
+            2
+        );
 
         // aaaand delete the first one again
         storage.push(
@@ -267,6 +308,10 @@ mod tests {
             0,
         )?;
         assert_eq!(storage.get_count("e.com", "app.t.c", ".abc.uri")?, 2);
+        assert_eq!(
+            storage.get_distinct_did_count("e.com", "app.t.c", ".abc.uri")?,
+            2
+        );
         assert_stats(storage.get_stats()?, 2..=2, 1..=1, 2..=2);
     });
 
@@ -287,6 +332,10 @@ mod tests {
             0,
         )?;
         assert_eq!(storage.get_count("e.com", "app.t.c", ".abc.uri")?, 1);
+        assert_eq!(
+            storage.get_distinct_did_count("e.com", "app.t.c", ".abc.uri")?,
+            1
+        );
 
         // create the second link (same user, different rkey)
         storage.push(
@@ -304,6 +353,10 @@ mod tests {
             0,
         )?;
         assert_eq!(storage.get_count("e.com", "app.t.c", ".abc.uri")?, 2);
+        assert_eq!(
+            storage.get_distinct_did_count("e.com", "app.t.c", ".abc.uri")?,
+            1
+        );
 
         // aaaand delete the first link
         storage.push(
@@ -315,6 +368,10 @@ mod tests {
             0,
         )?;
         assert_eq!(storage.get_count("e.com", "app.t.c", ".abc.uri")?, 1);
+        assert_eq!(
+            storage.get_distinct_did_count("e.com", "app.t.c", ".abc.uri")?,
+            1
+        );
         assert_stats(storage.get_stats()?, 1..=1, 1..=1, 1..=1);
     });
 
@@ -401,8 +458,20 @@ mod tests {
             0,
         )?;
         assert_eq!(storage.get_count("e.com", "app.t.c", ".abc.uri")?, 1);
+        assert_eq!(
+            storage.get_distinct_did_count("e.com", "app.t.c", ".abc.uri")?,
+            1
+        );
         assert_eq!(storage.get_count("f.com", "app.t.c", ".xyz[].uri")?, 1);
+        assert_eq!(
+            storage.get_distinct_did_count("f.com", "app.t.c", ".xyz[].uri")?,
+            1
+        );
         assert_eq!(storage.get_count("g.com", "app.t.c", ".xyz[].uri")?, 1);
+        assert_eq!(
+            storage.get_distinct_did_count("g.com", "app.t.c", ".xyz[].uri")?,
+            1
+        );
 
         storage.push(
             &ActionableEvent::DeleteRecord(RecordId {
@@ -413,6 +482,10 @@ mod tests {
             0,
         )?;
         assert_eq!(storage.get_count("e.com", "app.t.c", ".abc.uri")?, 0);
+        assert_eq!(
+            storage.get_distinct_did_count("e.com", "app.t.c", ".abc.uri")?,
+            0
+        );
         assert_eq!(storage.get_count("f.com", "app.t.c", ".xyz[].uri")?, 0);
         assert_eq!(storage.get_count("g.com", "app.t.c", ".xyz[].uri")?, 0);
         assert_stats(storage.get_stats()?, 1..=1, 3..=3, 0..=0);
@@ -565,6 +638,14 @@ mod tests {
                 next: None,
             }
         );
+        assert_eq!(
+            storage.get_distinct_dids("a.com", "app.t.c", ".abc.uri", 100, None)?,
+            PagedAppendingCollection {
+                version: (1, 0),
+                items: vec!["did:plc:asdf".into()],
+                next: None,
+            }
+        );
         assert_stats(storage.get_stats()?, 1..=1, 1..=1, 1..=1);
     });
 
@@ -586,6 +667,7 @@ mod tests {
             )?;
         }
         let links = storage.get_links("a.com", "app.t.c", ".abc.uri", 2, None)?;
+        let dids = storage.get_distinct_dids("a.com", "app.t.c", ".abc.uri", 2, None)?;
         assert_eq!(
             links,
             PagedAppendingCollection {
@@ -605,7 +687,16 @@ mod tests {
                 next: Some(3),
             }
         );
+        assert_eq!(
+            dids,
+            PagedAppendingCollection {
+                version: (5, 0),
+                items: vec!["did:plc:asdf-5".into(), "did:plc:asdf-4".into()],
+                next: Some(3),
+            }
+        );
         let links = storage.get_links("a.com", "app.t.c", ".abc.uri", 2, links.next)?;
+        let dids = storage.get_distinct_dids("a.com", "app.t.c", ".abc.uri", 2, dids.next)?;
         assert_eq!(
             links,
             PagedAppendingCollection {
@@ -625,7 +716,16 @@ mod tests {
                 next: Some(1),
             }
         );
+        assert_eq!(
+            dids,
+            PagedAppendingCollection {
+                version: (5, 0),
+                items: vec!["did:plc:asdf-3".into(), "did:plc:asdf-2".into()],
+                next: Some(1),
+            }
+        );
         let links = storage.get_links("a.com", "app.t.c", ".abc.uri", 2, links.next)?;
+        let dids = storage.get_distinct_dids("a.com", "app.t.c", ".abc.uri", 2, dids.next)?;
         assert_eq!(
             links,
             PagedAppendingCollection {
@@ -635,6 +735,14 @@ mod tests {
                     collection: "app.t.c".into(),
                     rkey: "asdf".into(),
                 },],
+                next: None,
+            }
+        );
+        assert_eq!(
+            dids,
+            PagedAppendingCollection {
+                version: (5, 0),
+                items: vec!["did:plc:asdf-1".into()],
                 next: None,
             }
         );

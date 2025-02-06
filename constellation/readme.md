@@ -136,6 +136,10 @@ some todos
 - [x] either count or estimate the total number of links added (distinct from link targets)
 - [x] jetstream: don't crash on connection refused (retry * backoff)
 - [x] allow cors requests (ie. atproto-browser. (but it's really meant for backends))
+- [~] api: get distinct linking dids (https://bsky.app/profile/bnewbold.net/post/3lhhzejv7zc2h)
+  - [~] endpoint for count
+  - [~] endpoint for listing them
+  - [ ] add to exploratory /all endpoint
 
 cache
 - [ ] set api response headers

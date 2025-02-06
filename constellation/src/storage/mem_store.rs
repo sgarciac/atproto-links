@@ -2,7 +2,7 @@ use super::{LinkReader, LinkStorage, PagedAppendingCollection, StorageStats};
 use anyhow::Result;
 use constellation::{ActionableEvent, Did, RecordId};
 use links::CollectedLink;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 // hopefully-correct simple hashmap version, intended only for tests to verify disk impl
@@ -131,10 +131,26 @@ impl LinkReader for MemStorage {
         let Some(paths) = data.targets.get(&Target::new(target)) else {
             return Ok(0);
         };
-        let Some(dids) = paths.get(&Source::new(collection, path)) else {
+        let Some(linkers) = paths.get(&Source::new(collection, path)) else {
             return Ok(0);
         };
-        Ok(dids.iter().flatten().count().try_into()?)
+        Ok(linkers.iter().flatten().count() as u64)
+    }
+
+    fn get_distinct_did_count(&self, target: &str, collection: &str, path: &str) -> Result<u64> {
+        let data = self.0.lock().unwrap();
+        let Some(paths) = data.targets.get(&Target::new(target)) else {
+            return Ok(0);
+        };
+        let Some(linkers) = paths.get(&Source::new(collection, path)) else {
+            return Ok(0);
+        };
+        Ok(linkers
+            .iter()
+            .flatten()
+            .map(|(did, _)| did)
+            .collect::<HashSet<_>>()
+            .len() as u64)
     }
 
     fn get_links(
@@ -190,12 +206,78 @@ impl LinkReader for MemStorage {
         })
     }
 
+    fn get_distinct_dids(
+        &self,
+        target: &str,
+        collection: &str,
+        path: &str,
+        limit: u64,
+        until: Option<u64>,
+    ) -> Result<PagedAppendingCollection<Did>> {
+        let data = self.0.lock().unwrap();
+        let Some(paths) = data.targets.get(&Target::new(target)) else {
+            return Ok(PagedAppendingCollection {
+                version: (0, 0),
+                items: Vec::new(),
+                next: None,
+            });
+        };
+        let Some(did_rkeys) = paths.get(&Source::new(collection, path)) else {
+            return Ok(PagedAppendingCollection {
+                version: (0, 0),
+                items: Vec::new(),
+                next: None,
+            });
+        };
+
+        let dids: Vec<Option<Did>> = {
+            let mut seen = HashSet::new();
+            did_rkeys
+                .iter()
+                .map(|o| {
+                    o.clone().and_then(|(did, _)| {
+                        if seen.contains(&did) {
+                            None
+                        } else {
+                            seen.insert(did.clone());
+                            Some(did)
+                        }
+                    })
+                })
+                .collect()
+        };
+
+        let total = dids.len();
+        let end = until
+            .map(|u| std::cmp::min(u as usize, total))
+            .unwrap_or(total);
+        let begin = end.saturating_sub(limit as usize);
+        let next = if begin == 0 { None } else { Some(begin as u64) };
+
+        let alive = dids.iter().flatten().count();
+        let gone = total - alive;
+
+        let items: Vec<Did> = dids[begin..end]
+            .iter()
+            .rev()
+            .flatten()
+            .filter(|did| *data.dids.get(did).expect("did must be in dids"))
+            .cloned()
+            .collect();
+
+        Ok(PagedAppendingCollection {
+            version: (total as u64, gone as u64),
+            items,
+            next,
+        })
+    }
+
     fn get_all_counts(&self, target: &str) -> Result<HashMap<String, HashMap<String, u64>>> {
         let data = self.0.lock().unwrap();
         let mut out: HashMap<String, HashMap<String, u64>> = HashMap::new();
         if let Some(asdf) = data.targets.get(&Target::new(target)) {
             for (Source { collection, path }, linkers) in asdf {
-                let count = linkers.iter().flatten().count().try_into()?;
+                let count = linkers.iter().flatten().count() as u64;
                 out.entry(collection.to_string())
                     .or_default()
                     .insert(path.to_string(), count);
