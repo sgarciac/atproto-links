@@ -1,11 +1,11 @@
 {% extends "base.html.j2" %}
 {% import "try-it-macros.html.j2" as try_it %}
 
-{% block title %}[deprecated] All link counts{% endblock %}
+{% block title %}Explore links{% endblock %}
 
 {% block content %}
 
-  {% call try_it::links_all_count(query.target) %}
+  {% call try_it::explore_links(query.target) %}
 
   <h2>
     All links to <code>{{ query.target }}</code>
@@ -14,17 +14,13 @@
     {% endif %}
   </h2>
 
-  <ul>
-    <li>This endpoint is deprecated. use <code>/links/all</code> instead: <a href="/links/all?target={{ query.target|urlencode }}">/links/all?target={{ query.target }}</a></li>
-  </ul>
-
   <h3>Links by collection and path:</h3>
 
 <pre style="display: block; margin: 1em 2em" class="code">
 {%- for (collection, collection_links) in links -%}
   <strong>{{ collection }}</strong>
-  {%- for (path, count) in collection_links %}
-  {{ path }}: <a href="/links?target={{ query.target|urlencode }}&collection={{ collection|urlencode }}&path={{ path|urlencode }}">{{ count }} links</a></li>
+  {%- for (path, counts) in collection_links %}
+  {{ path }}: <a href="/links?target={{ query.target|urlencode }}&collection={{ collection|urlencode }}&path={{ path|urlencode }}">{{ counts.records }} links</a> from <a href="/links/distinct-dids?target={{ query.target|urlencode }}&collection={{ collection|urlencode }}&path={{ path|urlencode }}">{{ counts.distinct_dids }} distinct DIDs</a></li>
   {%- endfor %}
 
 {% else -%}

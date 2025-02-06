@@ -1,5 +1,5 @@
 use anyhow::Result;
-use constellation::{ActionableEvent, Did, RecordId};
+use constellation::{ActionableEvent, CountsByCount, Did, RecordId};
 use std::collections::HashMap;
 
 pub mod mem_store;
@@ -68,7 +68,13 @@ pub trait LinkReader: Clone + Send + Sync + 'static {
         until: Option<u64>,
     ) -> Result<PagedAppendingCollection<Did>>; // TODO: reflect dedups in cursor
 
-    fn get_all_counts(&self, _target: &str) -> Result<HashMap<String, HashMap<String, u64>>>;
+    fn get_all_record_counts(&self, _target: &str)
+        -> Result<HashMap<String, HashMap<String, u64>>>;
+
+    fn get_all_counts(
+        &self,
+        _target: &str,
+    ) -> Result<HashMap<String, HashMap<String, CountsByCount>>>;
 
     /// assume all stats are estimates, since exact counts are very challenging for LSMs
     fn get_stats(&self) -> Result<StorageStats>;
@@ -153,6 +159,10 @@ mod tests {
             }
         );
         assert_eq!(storage.get_all_counts("bad-example.com")?, HashMap::new());
+        assert_eq!(
+            storage.get_all_record_counts("bad-example.com")?,
+            HashMap::new()
+        );
 
         assert_stats(storage.get_stats()?, 0..=0, 0..=0, 0..=0);
     });
@@ -1022,11 +1032,31 @@ mod tests {
             },
             0,
         )?;
-        assert_eq!(storage.get_all_counts("a.com")?, {
+        assert_eq!(storage.get_all_record_counts("a.com")?, {
             let mut counts = HashMap::new();
             let mut t_c_counts = HashMap::new();
             t_c_counts.insert(".abc.uri".into(), 1);
             t_c_counts.insert(".def.uri".into(), 1);
+            counts.insert("app.t.c".into(), t_c_counts);
+            counts
+        });
+        assert_eq!(storage.get_all_counts("a.com")?, {
+            let mut counts = HashMap::new();
+            let mut t_c_counts = HashMap::new();
+            t_c_counts.insert(
+                ".abc.uri".into(),
+                CountsByCount {
+                    records: 1,
+                    distinct_dids: 1,
+                },
+            );
+            t_c_counts.insert(
+                ".def.uri".into(),
+                CountsByCount {
+                    records: 1,
+                    distinct_dids: 1,
+                },
+            );
             counts.insert("app.t.c".into(), t_c_counts);
             counts
         });

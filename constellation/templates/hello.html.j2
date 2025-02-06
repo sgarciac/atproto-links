@@ -80,9 +80,25 @@
   {% call try_it::dids_count("did:plc:vc7f4oafdgxsihk4cry2xpze", "app.bsky.graph.block", ".subject") %}
 
 
-  <h3 class="route"><code>GET /links/all/count</code></h3>
+  <h3 class="route"><code>GET /links/all</code></h3>
+
+  <p>Show all sources with links to a target, including linking record counts and distinct linking DIDs</p>
+
+  <h4>Query parameters:</h4>
+
+  <ul>
+    <li><code>target</code>: required, must url-encode. Example: <code>did:plc:oky5czdrnfjpqslsw2a5iclo</code></li>
+  </ul>
+
+  <p style="margin-bottom: 0"><strong>Try it:</strong></p>
+  {% call try_it::explore_links("did:plc:oky5czdrnfjpqslsw2a5iclo") %}
+
+
+  <h3 class="route deprecated"><code>[deprecated] GET /links/all/count</code></h3>
 
   <p>The total counts of all links pointing at a given target, by collection and path.</p>
+
+  <p>DEPRECATED: Use <code>GET /links/all</code> instead.</p>
 
   <h4>Query parameters:</h4>
 

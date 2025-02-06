@@ -17,14 +17,14 @@
   <p><strong>{{ total }} links</strong> from <code>{{ query.collection }}</code> at <code>{{ query.path }}</code></p>
 
   <ul>
-    <li>See distinct DIDs <code>/links/distinct-dids</code>: <a href="/links/distinct-dids?target={{ query.target|urlencode }}&collection={{ query.collection|urlencode }}&path={{ query.path|urlencode }}">/links/distinct-dids?target={{ query.target }}&collection={{ query.collection }}&path={{ query.path }}</a></li>
-    <li>See all links to this target <code>/links/all/count</code>: <a href="/links/all/count?target={{ query.target|urlencode }}">/links/all/count?target={{ query.target }}</a></li>
+    <li>See distinct linking DIDs at <code>/links/distinct-dids</code>: <a href="/links/distinct-dids?target={{ query.target|urlencode }}&collection={{ query.collection|urlencode }}&path={{ query.path|urlencode }}">/links/distinct-dids?target={{ query.target }}&collection={{ query.collection }}&path={{ query.path }}</a></li>
+    <li>See all links to this target at <code>/links/all</code>: <a href="/links/all?target={{ query.target|urlencode }}">/links/all?target={{ query.target }}</a></li>
   </ul>
 
   <h3>Links, most recent first:</h3>
 
   {% for record in linking_records %}
-    <pre style="display: block; margin: 1em 2em" class="code"><strong>DID</strong>:        {{ record.did().0 }} (<a href="/links/all/count?target={{ record.did().0|urlencode }}">DID links</a>)
+    <pre style="display: block; margin: 1em 2em" class="code"><strong>DID</strong>:        {{ record.did().0 }} (<a href="/links/all?target={{ record.did().0|urlencode }}">DID links</a>)
 <strong>Collection</strong>: {{ record.collection }}
 <strong>RKey</strong>:       {{ record.rkey }}
 -> <a href="https://atproto-browser-plus-links.vercel.app/at/{{ record.did().0|urlencode }}/{{ record.collection }}/{{ record.rkey }}">browse record</a></pre>

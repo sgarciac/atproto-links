@@ -1,6 +1,6 @@
 use super::{LinkReader, LinkStorage, PagedAppendingCollection, StorageStats};
 use anyhow::Result;
-use constellation::{ActionableEvent, Did, RecordId};
+use constellation::{ActionableEvent, CountsByCount, Did, RecordId};
 use links::CollectedLink;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -272,7 +272,7 @@ impl LinkReader for MemStorage {
         })
     }
 
-    fn get_all_counts(&self, target: &str) -> Result<HashMap<String, HashMap<String, u64>>> {
+    fn get_all_record_counts(&self, target: &str) -> Result<HashMap<String, HashMap<String, u64>>> {
         let data = self.0.lock().unwrap();
         let mut out: HashMap<String, HashMap<String, u64>> = HashMap::new();
         if let Some(asdf) = data.targets.get(&Target::new(target)) {
@@ -281,6 +281,33 @@ impl LinkReader for MemStorage {
                 out.entry(collection.to_string())
                     .or_default()
                     .insert(path.to_string(), count);
+            }
+        }
+        Ok(out)
+    }
+
+    fn get_all_counts(
+        &self,
+        target: &str,
+    ) -> Result<HashMap<String, HashMap<String, CountsByCount>>> {
+        let data = self.0.lock().unwrap();
+        let mut out: HashMap<String, HashMap<String, CountsByCount>> = HashMap::new();
+        if let Some(asdf) = data.targets.get(&Target::new(target)) {
+            for (Source { collection, path }, linkers) in asdf {
+                let records = linkers.iter().flatten().count() as u64;
+                let distinct_dids = linkers
+                    .iter()
+                    .flatten()
+                    .map(|(did, _)| did)
+                    .collect::<HashSet<_>>()
+                    .len() as u64;
+                out.entry(collection.to_string()).or_default().insert(
+                    path.to_string(),
+                    CountsByCount {
+                        records,
+                        distinct_dids,
+                    },
+                );
             }
         }
         Ok(out)

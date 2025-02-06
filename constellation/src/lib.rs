@@ -45,3 +45,10 @@ impl RecordId {
         self.rkey.clone()
     }
 }
+
+/// maybe the worst type in this repo, and there are some bad types
+#[derive(Debug, Serialize, PartialEq)]
+pub struct CountsByCount {
+    pub records: u64,
+    pub distinct_dids: u64,
+}

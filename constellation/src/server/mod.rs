@@ -9,7 +9,7 @@ use tokio::task::block_in_place;
 use tokio_util::sync::CancellationToken;
 
 use crate::storage::LinkReader;
-use constellation::{Did, RecordId};
+use constellation::{CountsByCount, Did, RecordId};
 
 mod acceptable;
 mod filters;
@@ -59,11 +59,21 @@ where
             }),
         )
         .route(
+            // deprecated
             "/links/all/count",
             get({
                 let store = store.clone();
                 move |accept, query| async {
                     block_in_place(|| count_all_links(accept, query, store))
+                }
+            }),
+        )
+        .route(
+            "/links/all",
+            get({
+                let store = store.clone();
+                move |accept, query| async {
+                    block_in_place(|| explore_links(accept, query, store))
                 }
             }),
         )
@@ -289,11 +299,39 @@ fn count_all_links(
     store: impl LinkReader,
 ) -> Result<impl IntoResponse, http::StatusCode> {
     let links = store
-        .get_all_counts(&query.target)
+        .get_all_record_counts(&query.target)
         .map_err(|_| http::StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(acceptable(
         accept,
         GetAllLinksResponse {
+            links,
+            query: (*query).clone(),
+        },
+    ))
+}
+
+#[derive(Clone, Deserialize)]
+struct ExploreLinksQuery {
+    target: String,
+}
+#[derive(Template, Serialize)]
+#[template(path = "explore-links.html.j2")]
+struct ExploreLinksResponse {
+    links: HashMap<String, HashMap<String, CountsByCount>>,
+    #[serde(skip_serializing)]
+    query: ExploreLinksQuery,
+}
+fn explore_links(
+    accept: ExtractAccept,
+    query: Query<ExploreLinksQuery>,
+    store: impl LinkReader,
+) -> Result<impl IntoResponse, http::StatusCode> {
+    let links = store
+        .get_all_counts(&query.target)
+        .map_err(|_| http::StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(acceptable(
+        accept,
+        ExploreLinksResponse {
             links,
             query: (*query).clone(),
         },

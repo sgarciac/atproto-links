@@ -43,3 +43,10 @@
     <pre class="code"><strong>GET</strong> /links/all/count?target=<input type="text" name="target" value="{{ target }}" placeholder="target" /> <button type="submit">get all target link counts</button></pre>
   </form>
 {% endmacro %}
+
+
+{% macro explore_links(target) %}
+  <form method="get" action="/links/all">
+    <pre class="code"><strong>GET</strong> /links/all?target=<input type="text" name="target" value="{{ target }}" placeholder="target" /> <button type="submit">get all target link counts</button></pre>
+  </form>
+{% endmacro %}

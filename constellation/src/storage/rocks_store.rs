@@ -1,7 +1,7 @@
 use super::{ActionableEvent, LinkReader, LinkStorage, PagedAppendingCollection, StorageStats};
 use anyhow::{bail, Result};
 use bincode::Options as BincodeOptions;
-use constellation::{Did, RecordId};
+use constellation::{CountsByCount, Did, RecordId};
 use links::CollectedLink;
 use rocksdb::{
     AsColumnFamilyRef, ColumnFamilyDescriptor, DBWithThreadMode, IteratorMode, MergeOperands,
@@ -654,12 +654,7 @@ impl LinkReader for RocksStorage {
             RPath(path.to_string()),
         );
         if let Some(target_id) = self.target_id_table.get_id_val(&self.db, &target_key)? {
-            let TargetLinkers(alives) = self.get_target_linkers(&target_id)?;
-            Ok(alives // TODO: maybe make this a method on TargetLinkers?
-                .iter()
-                .filter_map(|(DidId(id), _)| if *id == 0 { None } else { Some(id) })
-                .collect::<HashSet<_>>()
-                .len() as u64)
+            Ok(self.get_target_linkers(&target_id)?.count_distinct_dids())
         } else {
             Ok(0)
         }
@@ -789,7 +784,7 @@ impl LinkReader for RocksStorage {
         })
     }
 
-    fn get_all_counts(&self, target: &str) -> Result<HashMap<String, HashMap<String, u64>>> {
+    fn get_all_record_counts(&self, target: &str) -> Result<HashMap<String, HashMap<String, u64>>> {
         let mut out: HashMap<String, HashMap<String, u64>> = HashMap::new();
         for (target_key, target_id) in self.iter_targets_for_target(&Target(target.into())) {
             let TargetKey(_, Collection(ref collection), RPath(ref path)) = target_key;
@@ -797,6 +792,27 @@ impl LinkReader for RocksStorage {
             out.entry(collection.into())
                 .or_default()
                 .insert(path.clone(), count);
+        }
+        Ok(out)
+    }
+
+    fn get_all_counts(
+        &self,
+        target: &str,
+    ) -> Result<HashMap<String, HashMap<String, CountsByCount>>> {
+        let mut out: HashMap<String, HashMap<String, CountsByCount>> = HashMap::new();
+        for (target_key, target_id) in self.iter_targets_for_target(&Target(target.into())) {
+            let TargetKey(_, Collection(ref collection), RPath(ref path)) = target_key;
+            let target_linkers = self.get_target_linkers(&target_id)?;
+            let (records, _) = target_linkers.count();
+            let distinct_dids = target_linkers.count_distinct_dids();
+            out.entry(collection.into()).or_default().insert(
+                path.clone(),
+                CountsByCount {
+                    records,
+                    distinct_dids,
+                },
+            );
         }
         Ok(out)
     }
@@ -939,6 +955,13 @@ impl TargetLinkers {
         let alive = self.0.iter().filter(|(DidId(id), _)| *id != 0).count() as u64;
         let gone = total - alive;
         (alive, gone)
+    }
+    fn count_distinct_dids(&self) -> u64 {
+        self.0
+            .iter()
+            .filter_map(|(DidId(id), _)| if *id == 0 { None } else { Some(id) })
+            .collect::<HashSet<_>>()
+            .len() as u64
     }
 }
 
