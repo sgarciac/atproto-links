@@ -1,4 +1,4 @@
-# link_aggregator
+# constellation 🌌
 
 ## endpoints
 

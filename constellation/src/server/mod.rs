@@ -9,7 +9,7 @@ use tokio::task::block_in_place;
 use tokio_util::sync::CancellationToken;
 
 use crate::storage::LinkReader;
-use link_aggregator::RecordId;
+use constellation::RecordId;
 
 mod acceptable;
 mod filters;

@@ -3,9 +3,9 @@ mod jsonl_file;
 
 use crate::storage::LinkStorage;
 use anyhow::Result;
+use constellation::{ActionableEvent, RecordId};
 use jetstream::consume_jetstream;
 use jsonl_file::consume_jsonl_file;
-use link_aggregator::{ActionableEvent, RecordId};
 use links::collect_links;
 use metrics::{counter, describe_counter, describe_histogram, histogram, Unit};
 use std::path::PathBuf;

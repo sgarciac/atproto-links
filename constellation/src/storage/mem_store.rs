@@ -1,6 +1,6 @@
 use super::{LinkReader, LinkStorage, PagedAppendingCollection, StorageStats};
 use anyhow::Result;
-use link_aggregator::{ActionableEvent, Did, RecordId};
+use constellation::{ActionableEvent, Did, RecordId};
 use links::CollectedLink;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

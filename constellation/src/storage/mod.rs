@@ -1,5 +1,5 @@
 use anyhow::Result;
-use link_aggregator::{ActionableEvent, RecordId};
+use constellation::{ActionableEvent, RecordId};
 use std::collections::HashMap;
 
 pub mod mem_store;
