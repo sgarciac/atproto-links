@@ -8,6 +8,16 @@
 {% endmacro %}
 
 
+{% macro dids(target, collection, path) %}
+  <form method="get" action="/links/distinct-dids">
+    <pre class="code"><strong>GET</strong> /links/distinct-dids
+  ?target=     <input type="text" name="target" value="{{ target }}" placeholder="target" />
+  &collection= <input type="text" name="collection" value="{{ collection }}" placeholder="collection" />
+  &path=       <input type="text" name="path" value="{{ path }}" placeholder="path" /> <button type="submit">get links</button></pre>
+  </form>
+{% endmacro %}
+
+
 {% macro links_count(target, collection, path) %}
   <form method="get" action="/links/count">
 <pre class="code"><strong>GET</strong> /links/count
@@ -18,8 +28,18 @@
 {% endmacro %}
 
 
+{% macro dids_count(target, collection, path) %}
+  <form method="get" action="/links/count/distinct-dids">
+<pre class="code"><strong>GET</strong> /links/count/distinct-dids
+  ?target=     <input type="text" name="target" value="{{ target }}" placeholder="target" />
+  &collection= <input type="text" name="collection" value="{{ collection }}" placeholder="collection" />
+  &path=       <input type="text" name="path" value="{{ path }}" placeholder="path" /> <button type="submit">get links count</button></pre>
+  </form>
+{% endmacro %}
+
+
 {% macro links_all_count(target) %}
   <form method="get" action="/links/all/count">
-    <pre class="code"><strong>GET</strong> /links?target=<input type="text" name="target" value="{{ target }}" placeholder="target" /> <button type="submit">get all target link counts</button></pre>
+    <pre class="code"><strong>GET</strong> /links/all/count?target=<input type="text" name="target" value="{{ target }}" placeholder="target" /> <button type="submit">get all target link counts</button></pre>
   </form>
 {% endmacro %}

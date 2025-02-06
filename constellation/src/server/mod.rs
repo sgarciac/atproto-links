@@ -9,7 +9,7 @@ use tokio::task::block_in_place;
 use tokio_util::sync::CancellationToken;
 
 use crate::storage::LinkReader;
-use constellation::RecordId;
+use constellation::{Did, RecordId};
 
 mod acceptable;
 mod filters;
@@ -34,10 +34,28 @@ where
             }),
         )
         .route(
+            "/links/count/distinct-dids",
+            get({
+                let store = store.clone();
+                move |accept, query| async {
+                    block_in_place(|| count_distinct_dids(accept, query, store))
+                }
+            }),
+        )
+        .route(
             "/links",
             get({
                 let store = store.clone();
                 move |accept, query| async { block_in_place(|| get_links(accept, query, store)) }
+            }),
+        )
+        .route(
+            "/links/distinct-dids",
+            get({
+                let store = store.clone();
+                move |accept, query| async {
+                    block_in_place(|| get_distinct_dids(accept, query, store))
+                }
             }),
         )
         .route(
@@ -103,6 +121,36 @@ fn count_links(
 }
 
 #[derive(Clone, Deserialize)]
+struct GetDidsCountQuery {
+    target: String,
+    collection: String,
+    path: String,
+}
+#[derive(Template, Serialize)]
+#[template(path = "dids-count.html.j2")]
+struct GetDidsCountResponse {
+    total: u64,
+    #[serde(skip_serializing)]
+    query: GetDidsCountQuery,
+}
+fn count_distinct_dids(
+    accept: ExtractAccept,
+    query: Query<GetDidsCountQuery>,
+    store: impl LinkReader,
+) -> Result<impl IntoResponse, http::StatusCode> {
+    let total = store
+        .get_distinct_did_count(&query.target, &query.collection, &query.path)
+        .map_err(|_| http::StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(acceptable(
+        accept,
+        GetDidsCountResponse {
+            total,
+            query: (*query).clone(),
+        },
+    ))
+}
+
+#[derive(Clone, Deserialize)]
 struct GetLinkItemsQuery {
     target: String,
     collection: String,
@@ -157,6 +205,67 @@ fn get_links(
         GetLinkItemsResponse {
             total: paged.version.0,
             linking_records: paged.items,
+            cursor,
+            query: (*query).clone(),
+        },
+    ))
+}
+
+#[derive(Clone, Deserialize)]
+struct GetDidItemsQuery {
+    target: String,
+    collection: String,
+    path: String,
+    cursor: Option<OpaqueApiCursor>,
+    limit: Option<u64>,
+    // TODO: allow reverse (er, forward) order as well
+}
+#[derive(Template, Serialize)]
+#[template(path = "dids.html.j2")]
+struct GetDidItemsResponse {
+    // what does staleness mean?
+    // - new links have appeared. would be nice to offer a `since` cursor to fetch these. and/or,
+    // - links have been deleted. hmm.
+    total: u64,
+    linking_dids: Vec<Did>,
+    cursor: Option<OpaqueApiCursor>,
+    #[serde(skip_serializing)]
+    query: GetDidItemsQuery,
+}
+fn get_distinct_dids(
+    accept: ExtractAccept,
+    query: Query<GetDidItemsQuery>,
+    store: impl LinkReader,
+) -> Result<impl IntoResponse, http::StatusCode> {
+    let until = query
+        .cursor
+        .clone()
+        .map(|oc| ApiCursor::try_from(oc).map_err(|_| http::StatusCode::BAD_REQUEST))
+        .transpose()?
+        .map(|c| c.next);
+
+    let limit = query.limit.unwrap_or(DEFAULT_CURSOR_LIMIT);
+    if limit > DEFAULT_CURSOR_LIMIT_MAX {
+        return Err(http::StatusCode::BAD_REQUEST);
+    }
+
+    let paged = store
+        .get_distinct_dids(&query.target, &query.collection, &query.path, limit, until)
+        .map_err(|_| http::StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let cursor = paged.next.map(|next| {
+        ApiCursor {
+            version: paged.version,
+            next,
+        }
+        .into()
+    });
+
+    Ok(acceptable(
+        accept,
+        GetDidItemsResponse {
+            total: paged.version.0,
+            linking_dids: paged.items,
             cursor,
             query: (*query).clone(),
         },

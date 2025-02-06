@@ -5,14 +5,14 @@
 
 {% block content %}
 
+  {% call try_it::links_all_count(query.target) %}
+
   <h2>
     All links to <code>{{ query.target }}</code>
     {% if let Some(browseable_uri) = query.target|to_browseable %}
       <small style="font-weight: normal; font-size: 1rem"><a href="{{ browseable_uri }}">browse record</a></small>
     {% endif %}
   </h2>
-
-  {% call try_it::links_all_count(query.target) %}
 
   <h3>Links by collection and path:</h3>
 
@@ -23,6 +23,8 @@
   {{ path }}: <a href="/links?target={{ query.target|urlencode }}&collection={{ collection|urlencode }}&path={{ path|urlencode }}">{{ count }} links</a></li>
   {%- endfor %}
 
+{% else -%}
+  <em>No links indexed for this target</em>
 {% endfor -%}
 </pre>
   <details>

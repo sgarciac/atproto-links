@@ -1,33 +1,32 @@
 {% extends "base.html.j2" %}
 {% import "try-it-macros.html.j2" as try_it %}
 
-{% block title %}Links{% endblock %}
+{% block title %}DIDs{% endblock %}
 
 {% block content %}
 
-  {% call try_it::links(query.target, query.collection, query.path) %}
+  {% call try_it::dids(query.target, query.collection, query.path) %}
 
   <h2>
-    Links to <code>{{ query.target }}</code>
+    DIDs with links to <code>{{ query.target }}</code>
     {% if let Some(browseable_uri) = query.target|to_browseable %}
       <small style="font-weight: normal; font-size: 1rem"><a href="{{ browseable_uri }}">browse record</a></small>
     {% endif %}
   </h2>
 
-  <p><strong>{{ total }} links</strong> from <code>{{ query.collection }}</code> at <code>{{ query.path }}</code></p>
+  <p><strong>{{ total }} dids</strong> from <code>{{ query.collection }}</code> at <code>{{ query.path }}</code></p>
 
   <ul>
-    <li>See distinct DIDs <code>/links/distinct-dids</code>: <a href="/links/distinct-dids?target={{ query.target|urlencode }}&collection={{ query.collection|urlencode }}&path={{ query.path|urlencode }}">/links/distinct-dids?target={{ query.target }}&collection={{ query.collection }}&path={{ query.path }}</a></li>
+    <li>See linking records to this target <code>/links</code>: <a href="/links?target={{ query.target|urlencode }}&collection={{ query.collection|urlencode }}&path={{ query.path|urlencode }}">/links?target={{ query.target }}&collection={{ query.collection }}&path={{ query.path }}</a></li>
     <li>See all links to this target <code>/links/all/count</code>: <a href="/links/all/count?target={{ query.target|urlencode }}">/links/all/count?target={{ query.target }}</a></li>
   </ul>
 
-  <h3>Links, most recent first:</h3>
+  <h3>DIDs, most recent first:</h3>
 
-  {% for record in linking_records %}
-    <pre style="display: block; margin: 1em 2em" class="code"><strong>DID</strong>:        {{ record.did().0 }} (<a href="/links/all/count?target={{ record.did().0|urlencode }}">DID links</a>)
-<strong>Collection</strong>: {{ record.collection }}
-<strong>RKey</strong>:       {{ record.rkey }}
--> <a href="https://atproto-browser-plus-links.vercel.app/at/{{ record.did().0|urlencode }}/{{ record.collection }}/{{ record.rkey }}">browse record</a></pre>
+  {% for did in linking_dids %}
+    <pre style="display: block; margin: 1em 2em" class="code"><strong>DID</strong>: {{ did.0 }}
+  -> see <a href="/links/all/count?target={{ did.0|urlencode }}">links to this DID</a>
+  -> browse <a href="https://atproto-browser-plus-links.vercel.app/at/{{ did.0|urlencode }}">this DID record</a></pre>
   {% endfor %}
 
   {% if let Some(c) = cursor %}

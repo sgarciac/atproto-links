@@ -14,7 +14,7 @@
 
   <h2>Endpoints</h2>
 
-  <h3><code>GET /links</code></h3>
+  <h3 class="route"><code>GET /links</code></h3>
 
   <p>A list of records linking to a target.</p>
 
@@ -30,7 +30,23 @@
   {% call try_it::links("at://did:plc:vc7f4oafdgxsihk4cry2xpze/app.bsky.feed.post/3lgwdn7vd722r", "app.bsky.feed.like", ".subject.uri") %}
 
 
-  <h3><code>GET /links/count</code></h3>
+  <h3 class="route"><code>GET /links/distinct-dids</code></h3>
+
+  <p>A list of distinct DIDs (identities) with links to a target.</p>
+
+  <h4>Query parameters:</h4>
+
+  <ul>
+    <li><code>target</code>: required, must url-encode. Example: <code>at://did:plc:vc7f4oafdgxsihk4cry2xpze/app.bsky.feed.post/3lgwdn7vd722r</code></li>
+    <li><code>collection</code>: required. Example: <code>app.bsky.feed.like</code></li>
+    <li><code>path</code>: required, must url-encode. Example: <code>.subject.uri</code></li>
+  </ul>
+
+  <p style="margin-bottom: 0"><strong>Try it:</strong></p>
+  {% call try_it::dids("at://did:plc:vc7f4oafdgxsihk4cry2xpze/app.bsky.feed.post/3lgwdn7vd722r", "app.bsky.feed.like", ".subject.uri") %}
+
+
+  <h3 class="route"><code>GET /links/count</code></h3>
 
   <p>The total number of links pointing at a given target.</p>
 
@@ -47,7 +63,24 @@
   {% call try_it::links_count("did:plc:vc7f4oafdgxsihk4cry2xpze", "app.bsky.graph.block", ".subject") %}
 
 
-  <h3><code>GET /links/all/count</code></h3>
+  <h3 class="route"><code>GET /links/count/distinct-dids</code></h3>
+
+  <p>The total number of DIDs (identities) with links to at a given target.</p>
+
+  <h4>Query parameters:</h4>
+
+  <ul>
+    <li><code>target</code>: required, must url-encode. Example: <code>did:plc:vc7f4oafdgxsihk4cry2xpze</code></li>
+    <li><code>collection</code>: required. Example: <code>app.bsky.graph.block</code></li>
+    <li><code>path</code>: required, must url-encode. Example: <code>.subject</code></li>
+    <li><code>cursor</code>: optional, see Definitions.</li>
+  </ul>
+
+  <p style="margin-bottom: 0"><strong>Try it:</strong></p>
+  {% call try_it::dids_count("did:plc:vc7f4oafdgxsihk4cry2xpze", "app.bsky.graph.block", ".subject") %}
+
+
+  <h3 class="route"><code>GET /links/all/count</code></h3>
 
   <p>The total counts of all links pointing at a given target, by collection and path.</p>
 

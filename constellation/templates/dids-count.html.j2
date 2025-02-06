@@ -1,0 +1,29 @@
+{% extends "base.html.j2" %}
+{% import "try-it-macros.html.j2" as try_it %}
+
+{% block title %}Link count{% endblock %}
+
+{% block content %}
+
+  {% call try_it::dids_count(query.target, query.collection, query.path) %}
+
+  <h2>
+    Total DIDs linking to <code>{{ query.target }}</code>
+    {% if let Some(browseable_uri) = query.target|to_browseable %}
+      <small style="font-weight: normal; font-size: 1rem"><a href="{{ browseable_uri }}">browse record</a></small>
+    {% endif %}
+  </h2>
+
+  <p><strong><code>{{ total }}</code></strong> total linking DIDs from <code>{{ query.collection }}</code> at <code>{{ query.path }}</code></p>
+
+  <ul>
+    <li>See these dids at <code>/links/distinct-dids</code>: <a href="/links/distinct-dids?target={{ query.target|urlencode }}&collection={{ query.collection|urlencode }}&path={{ query.path|urlencode() }}">/links/distinct-dids?target={{ query.target|urlencode }}&collection={{ query.collection|urlencode }}&path={{ query.path|urlencode }}</a></li>
+    <li>See the linking records at <code>/links</code>: <a href="/links?target={{ query.target|urlencode }}&collection={{ query.collection|urlencode }}&path={{ query.path|urlencode() }}">/links/distinct-dids?target={{ query.target|urlencode }}&collection={{ query.collection|urlencode }}&path={{ query.path|urlencode }}</a></li>
+  </ul>
+
+  <details>
+    <summary>Raw JSON response</summary>
+    <pre class="code">{{ self|tojson }}</pre>
+  </details>
+
+{% endblock %}

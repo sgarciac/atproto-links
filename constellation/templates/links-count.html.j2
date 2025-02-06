@@ -5,6 +5,8 @@
 
 {% block content %}
 
+  {% call try_it::links_count(query.target, query.collection, query.path) %}
+
   <h2>
     Total links to <code>{{ query.target }}</code>
     {% if let Some(browseable_uri) = query.target|to_browseable %}
@@ -14,9 +16,10 @@
 
   <p><strong><code>{{ total }}</code></strong> total links from <code>{{ query.collection }}</code> at <code>{{ query.path }}</code></p>
 
-  {% call try_it::links_count(query.target, query.collection, query.path) %}
-
-  <p>See these links at <code>/links</code>: <a href="/links?target={{ query.target|urlencode }}&collection={{ query.collection|urlencode }}&path={{ query.path|urlencode() }}">/links?target={{ query.target|urlencode }}&collection={{ query.collection|urlencode }}&path={{ query.path|urlencode }}</a></p>
+  <ul>
+    <li>See these links at <code>/links</code>: <a href="/links?target={{ query.target|urlencode }}&collection={{ query.collection|urlencode }}&path={{ query.path|urlencode() }}">/links?target={{ query.target|urlencode }}&collection={{ query.collection|urlencode }}&path={{ query.path|urlencode }}</a></li>
+    <li>See a count of distinct DIDs at <code>/links/count/distinct-dids</code>: <a href="/links/count/distinct-dids?target={{ query.target|urlencode }}&collection={{ query.collection|urlencode }}&path={{ query.path|urlencode() }}">/links?target={{ query.target|urlencode }}&collection={{ query.collection|urlencode }}&path={{ query.path|urlencode }}</a></li>
+  </ul>
 
   <details>
     <summary>Raw JSON response</summary>
