@@ -20,7 +20,7 @@
 {%- for (collection, collection_links) in links -%}
   <strong>{{ collection }}</strong>
   {%- for (path, counts) in collection_links %}
-  {{ path }}: <a href="/links?target={{ query.target|urlencode }}&collection={{ collection|urlencode }}&path={{ path|urlencode }}">{{ counts.records }} links</a> from <a href="/links/distinct-dids?target={{ query.target|urlencode }}&collection={{ collection|urlencode }}&path={{ path|urlencode }}">{{ counts.distinct_dids }} distinct DIDs</a></li>
+  {{ path }}: <a href="/links?target={{ query.target|urlencode }}&collection={{ collection|urlencode }}&path={{ path|urlencode }}">{{ counts.records|human_number }} links</a> from <a href="/links/distinct-dids?target={{ query.target|urlencode }}&collection={{ collection|urlencode }}&path={{ path|urlencode }}">{{ counts.distinct_dids|human_number }} distinct DIDs</a></li>
   {%- endfor %}
 
 {% else -%}

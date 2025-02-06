@@ -4,11 +4,12 @@ use bincode::Options;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use std::collections::HashMap;
+use std::time::{UNIX_EPOCH, Duration};
 use tokio::net::{TcpListener, ToSocketAddrs};
 use tokio::task::block_in_place;
 use tokio_util::sync::CancellationToken;
 
-use crate::storage::LinkReader;
+use crate::storage::{LinkReader, StorageStats};
 use constellation::{CountsByCount, Did, RecordId};
 
 mod acceptable;
@@ -19,13 +20,22 @@ use acceptable::{acceptable, ExtractAccept};
 const DEFAULT_CURSOR_LIMIT: u64 = 16;
 const DEFAULT_CURSOR_LIMIT_MAX: u64 = 100;
 
+const INDEX_BEGAN_AT_TS: u64 = 1738083600; // TODO: not this
+
+
 pub async fn serve<S, A>(store: S, addr: A, stay_alive: CancellationToken) -> anyhow::Result<()>
 where
     S: LinkReader,
     A: ToSocketAddrs,
 {
     let app = Router::new()
-        .route("/", get(hello))
+        .route(
+            "/",
+            get({
+                let store = store.clone();
+                move |accept| async { block_in_place(|| hello(accept, store)) }
+            }),
+        )
         .route(
             "/links/count",
             get({
@@ -93,11 +103,22 @@ where
 #[template(path = "hello.html.j2")]
 struct HelloReponse {
     help: &'static str,
+    days_indexed: u64,
+    stats: StorageStats,
 }
-async fn hello(accept: ExtractAccept) -> impl IntoResponse {
-    acceptable(accept, HelloReponse {
-        help: "open this URL in a web browser (or request with Accept: text/html) for information about this API."
-    })
+fn hello(accept: ExtractAccept, store: impl LinkReader) -> Result<impl IntoResponse, http::StatusCode> {
+    let stats = store
+        .get_stats()
+        .map_err(|_| http::StatusCode::INTERNAL_SERVER_ERROR)?;
+    let days_indexed = (UNIX_EPOCH + Duration::from_secs(INDEX_BEGAN_AT_TS))
+        .elapsed()
+        .map_err(|_| http::StatusCode::INTERNAL_SERVER_ERROR)?
+        .as_secs() / 86400;
+    Ok(acceptable(accept, HelloReponse {
+        help: "open this URL in a web browser (or request with Accept: text/html) for information about this API.",
+        days_indexed,
+        stats,
+    }))
 }
 
 #[derive(Clone, Deserialize)]

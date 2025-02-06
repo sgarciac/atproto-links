@@ -1,4 +1,5 @@
 use links::{parse_any_link, Link};
+use num_format::{Locale, ToFormattedString};
 
 pub fn to_browseable(s: &str) -> askama::Result<Option<String>> {
     Ok({
@@ -16,4 +17,8 @@ pub fn to_browseable(s: &str) -> askama::Result<Option<String>> {
             None
         }
     })
+}
+
+pub fn human_number(n: &u64) -> askama::Result<String> {
+    Ok(n.to_formatted_string(&Locale::en))
 }

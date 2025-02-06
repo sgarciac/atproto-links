@@ -14,7 +14,7 @@
     {% endif %}
   </h2>
 
-  <p><strong><code>{{ total }}</code></strong> total links from <code>{{ query.collection }}</code> at <code>{{ query.path }}</code></p>
+  <p><strong><code>{{ total|human_number }}</code></strong> total links from <code>{{ query.collection }}</code> at <code>{{ query.path }}</code></p>
 
   <ul>
     <li>See these links at <code>/links</code>: <a href="/links?target={{ query.target|urlencode }}&collection={{ query.collection|urlencode }}&path={{ query.path|urlencode() }}">/links?target={{ query.target|urlencode }}&collection={{ query.collection|urlencode }}&path={{ query.path|urlencode }}</a></li>

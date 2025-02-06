@@ -5,14 +5,26 @@
 {% block body_classes %}home{% endblock %}
 
 {% block content %}
-  <p>Every interaction in Bluesky and atproto at large tends to appear as a <em>link</em> from a new repository record to <em>somewhere</em>: liking a post creates a record with a link to the post, blocking a spammer creates a record with reference to their DID.</p>
 
-  <p>This service attempts to aggregate all of these links, globally, from all content coming throught the firehose. It provides generic API endpoints to answer questions like <strong>how many likes does a post have</strong> and <strong>who follows a user</strong>.</p>
+  <p>Constellation is a self-hosted JSON API to an atproto-wide index of PDS record back-links, so you can query social interactions in real time. It can answer questions like:</p>
 
-  <p>It is very much a <strong>work in progress</strong>. The database has not been backfilled, so any interactions occurring before its last reset will be missing.</p>
+  <ul>
+    <li><a href="/links/count/distinct-dids?target={{ "at://did:plc:44ybard66vv44zksje25o7dz/app.bsky.feed.post/3lhhz7k2yqk2h"|urlencode }}&collection=app.bsky.feed.like&path=.subject.uri">How many people liked a liked a bluesky post?</a></li>
+    <li><a href="/links/distinct-dids?target=did:plc:oky5czdrnfjpqslsw2a5iclo&collection=app.bsky.graph.follow&path=.subject">Who are all the bluesky followers of an identity?</a></li>
+    <li><a href="/links?target=at://did:plc:nlromb2qyyl6rszaluwhfy6j/fyi.unravel.frontpage.post/3lhd2ivyc422n&collection=fyi.unravel.frontpage.comment&path=.post.uri">What are all the replies to a Frontpage submission?</a></li>
+    <li><a href="/links/all?target=did:plc:vc7f4oafdgxsihk4cry2xpze">What are <em>all</em> the sources of links to an identity?</a></li>
+    <li>and more</li>
+  </ul>
+
+  <p>
+    This server has indexed <span class="stat">{{ stats.linking_records|human_number }}</span> links between <span class="stat">{{ stats.targetables|human_number }}</span> targets and sources from <span class="stat">{{ stats.dids|human_number }}</span> identities over <span class="stat">{{ days_indexed|human_number }}</span> days.<br/>
+    <small>(indexing new records in real time, backfill still TODO)</small>
+  </p>
+
+  <p>The API is currently <strong>unstable</strong>. But feel free to use it! If you want to be nice, put your project name and bsky username (or email) in your user-agent header for api requests.</p>
 
 
-  <h2>Endpoints</h2>
+  <h2>API Endpoints</h2>
 
   <h3 class="route"><code>GET /links</code></h3>
 

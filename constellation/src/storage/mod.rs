@@ -1,6 +1,7 @@
 use anyhow::Result;
 use constellation::{ActionableEvent, CountsByCount, Did, RecordId};
 use std::collections::HashMap;
+use serde::{Deserialize, Serialize};
 
 pub mod mem_store;
 pub use mem_store::MemStorage;
@@ -17,7 +18,7 @@ pub struct PagedAppendingCollection<T> {
     pub next: Option<u64>,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Deserialize, Serialize, PartialEq)]
 pub struct StorageStats {
     /// estimate of how many accounts we've seen create links. the _subjects_ of any links are not represented here.
     /// for example: new user A follows users B and C. this count will only increment by one, for A.

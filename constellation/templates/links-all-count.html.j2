@@ -24,7 +24,7 @@
 {%- for (collection, collection_links) in links -%}
   <strong>{{ collection }}</strong>
   {%- for (path, count) in collection_links %}
-  {{ path }}: <a href="/links?target={{ query.target|urlencode }}&collection={{ collection|urlencode }}&path={{ path|urlencode }}">{{ count }} links</a></li>
+  {{ path }}: <a href="/links?target={{ query.target|urlencode }}&collection={{ collection|urlencode }}&path={{ path|urlencode }}">{{ count|human_number }} links</a></li>
   {%- endfor %}
 
 {% else -%}

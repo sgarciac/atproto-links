@@ -14,7 +14,7 @@
     {% endif %}
   </h2>
 
-  <p><strong>{{ total }} links</strong> from <code>{{ query.collection }}</code> at <code>{{ query.path }}</code></p>
+  <p><strong>{{ total|human_number }} links</strong> from <code>{{ query.collection }}</code> at <code>{{ query.path }}</code></p>
 
   <ul>
     <li>See distinct linking DIDs at <code>/links/distinct-dids</code>: <a href="/links/distinct-dids?target={{ query.target|urlencode }}&collection={{ query.collection|urlencode }}&path={{ query.path|urlencode }}">/links/distinct-dids?target={{ query.target }}&collection={{ query.collection }}&path={{ query.path }}</a></li>
