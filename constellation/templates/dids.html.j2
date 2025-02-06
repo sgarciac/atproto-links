@@ -2,6 +2,7 @@
 {% import "try-it-macros.html.j2" as try_it %}
 
 {% block title %}DIDs{% endblock %}
+{% block description %}All distinct DIDs with {{ query.collection }} records linking to {{ query.target }} at JSON path {{ query.path }}{% endblock %}
 
 {% block content %}
 

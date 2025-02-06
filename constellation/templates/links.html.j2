@@ -2,6 +2,7 @@
 {% import "try-it-macros.html.j2" as try_it %}
 
 {% block title %}Links{% endblock %}
+{% block description %}All {{ query.collection }} records with links to {{ query.target }} at JSON path {{ query.path }}{% endblock %}
 
 {% block content %}
 

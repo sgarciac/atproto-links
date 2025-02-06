@@ -1,7 +1,7 @@
 use anyhow::Result;
 use constellation::{ActionableEvent, CountsByCount, Did, RecordId};
-use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 pub mod mem_store;
 pub use mem_store::MemStorage;

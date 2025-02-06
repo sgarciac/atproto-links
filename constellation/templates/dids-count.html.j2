@@ -1,7 +1,8 @@
 {% extends "base.html.j2" %}
 {% import "try-it-macros.html.j2" as try_it %}
 
-{% block title %}Link count{% endblock %}
+{% block title %}Distinct DIDs{% endblock %}
+{% block description %}Count of distinct DIDs with {{ query.collection }} records linking to {{ query.target }} at JSON path {{ query.path }}{% endblock %}
 
 {% block content %}
 

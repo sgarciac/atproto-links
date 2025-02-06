@@ -11,6 +11,7 @@ A global atproto backlink index ✨
 
 - Self hostable: handles the full write throughput of the global atproto firehose on a raspberry pi 4b + single SSD
 - Storage efficient: less than 2GB/day disk consumption indexing all references in all lexicons and all non-atproto URLs
+- Handles record deletion, account de/re-activation, and account deletion, ensuring accurate link counts and respecting users data choices
 - Simple JSON API
 
 All social interactions in atproto tend to be represented by links (or references) between PDS records. This index can answer questions like "how many likes does a bsky post have", "who follows an account", "what are all the comments on a [frontpage](https://frontpage.fyi/) post", and more.

@@ -2,6 +2,7 @@
 {% import "try-it-macros.html.j2" as try_it %}
 
 {% block title %}Link count{% endblock %}
+{% block description %}Count of {{ query.collection }} records linking to {{ query.target }} at JSON path {{ query.path }}{% endblock %}
 
 {% block content %}
 
