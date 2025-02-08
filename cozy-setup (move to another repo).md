@@ -221,6 +221,16 @@ scrape_configs:
     }
     ```
 
+    also `systemctl edit nginx` and paste
+
+    ```
+    [Service]
+    Restart=always
+    ```
+
+    —https://serverfault.com/a/1003373
+
+
 ---
 
 some todos
