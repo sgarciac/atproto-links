@@ -1,6 +1,6 @@
 use super::{LinkReader, LinkStorage, PagedAppendingCollection, StorageStats};
+use crate::{ActionableEvent, CountsByCount, Did, RecordId};
 use anyhow::Result;
-use constellation::{ActionableEvent, CountsByCount, Did, RecordId};
 use links::CollectedLink;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -101,6 +101,12 @@ impl MemStorage {
         }
         data.links.remove(did); // nb: this is removing by a whole prefix in kv context
         data.dids.remove(did);
+    }
+}
+
+impl Default for MemStorage {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

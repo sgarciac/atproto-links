@@ -1,7 +1,3 @@
-mod consumer;
-mod server;
-mod storage;
-
 use anyhow::Result;
 use clap::{Parser, ValueEnum};
 use metrics_exporter_prometheus::PrometheusBuilder;
@@ -15,11 +11,11 @@ use std::time;
 use tokio::runtime;
 use tokio_util::sync::CancellationToken;
 
-use consumer::consume;
-use server::serve;
+use constellation::consumer::consume;
+use constellation::server::serve;
 #[cfg(feature = "rocks")]
-use storage::RocksStorage;
-use storage::{LinkReader, LinkStorage, MemStorage, StorageStats};
+use constellation::storage::RocksStorage;
+use constellation::storage::{LinkReader, LinkStorage, MemStorage, StorageStats};
 
 const MONITOR_INTERVAL: time::Duration = time::Duration::from_secs(2);
 
@@ -222,8 +218,8 @@ fn install_metrics_server() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use crate::consumer::get_actionable;
-    use crate::storage::{LinkReader, LinkStorage, MemStorage};
+    use constellation::consumer::get_actionable;
+    use constellation::storage::{LinkReader, LinkStorage, MemStorage};
 
     #[test]
     fn test_create_like_integrated() {

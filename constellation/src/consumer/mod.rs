@@ -2,8 +2,8 @@ mod jetstream;
 mod jsonl_file;
 
 use crate::storage::LinkStorage;
+use crate::{ActionableEvent, RecordId};
 use anyhow::Result;
-use constellation::{ActionableEvent, RecordId};
 use jetstream::consume_jetstream;
 use jsonl_file::consume_jsonl_file;
 use links::collect_links;

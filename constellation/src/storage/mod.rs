@@ -1,5 +1,5 @@
+use crate::{ActionableEvent, CountsByCount, Did, RecordId};
 use anyhow::Result;
-use constellation::{ActionableEvent, CountsByCount, Did, RecordId};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 

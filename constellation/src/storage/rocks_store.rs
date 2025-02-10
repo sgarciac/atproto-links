@@ -1,7 +1,7 @@
 use super::{ActionableEvent, LinkReader, LinkStorage, PagedAppendingCollection, StorageStats};
+use crate::{CountsByCount, Did, RecordId};
 use anyhow::{bail, Result};
 use bincode::Options as BincodeOptions;
-use constellation::{CountsByCount, Did, RecordId};
 use links::CollectedLink;
 use rocksdb::{
     AsColumnFamilyRef, ColumnFamilyDescriptor, DBWithThreadMode, IteratorMode, MergeOperands,
