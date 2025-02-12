@@ -102,6 +102,7 @@ where
 async fn robots() -> &'static str {
     "\
 User-agent: *
+Disallow: /links
 Disallow: /links/
     "
 }
