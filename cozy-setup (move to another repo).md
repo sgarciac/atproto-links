@@ -183,7 +183,7 @@ scrape_configs:
     limit_req_zone $binary_remote_addr zone=cozy_ip_limit:10m rate=50r/s;
     limit_req_zone $server_name zone=cozy_global_limit:10m rate=1000r/s;
 
-    # in sites-available/linsks.bsky.bad-example.com
+    # in sites-available/constellation.microcosm.blue
 
     upstream cozy_link_aggregator {
       server link-aggregator:6789;
@@ -194,7 +194,7 @@ scrape_configs:
       listen 8080;
       listen [::]:8080;
 
-      server_name links.bsky.bad-example.com;
+      server_name constellation.microcosm.blue;
 
       proxy_cache cozy_zone;
       proxy_cache_background_update on;

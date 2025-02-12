@@ -18,7 +18,7 @@ All social interactions in atproto tend to be represented by links (or reference
 
 - **status**: works! api is unstable and likely to change, and no known instances have a full network backfill yet.
 - source: [./constellation/](./constellation/)
-- public instance: [links.bsky.bad-example.com](https://links.bsky.bad-example.com/)
+- public instance: [constellation.microcosm.blue](https://constellation.microcosm.blue/)
 
 _note: the public instance currently runs on a little raspberry pi in my house, feel free to use it! it comes with only with best-effort uptime, no commitment to not breaking the api for now, and possible rate-limiting. if you want to be nice you can put your project name and bsky username (or email) in your user-agent header for api requests._
 
