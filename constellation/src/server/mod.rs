@@ -28,6 +28,7 @@ where
     A: ToSocketAddrs,
 {
     let app = Router::new()
+        .route("/robots.txt", get(robots))
         .route(
             "/",
             get({
@@ -96,6 +97,13 @@ where
         .await?;
 
     Ok(())
+}
+
+async fn robots() -> &'static str {
+    "\
+User-agent: *
+Disallow: /links/
+    "
 }
 
 #[derive(Template, Serialize, Deserialize)]
