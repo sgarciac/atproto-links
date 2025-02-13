@@ -88,7 +88,9 @@ some todos
 - [x] find links and write them to rocksdb
 - [x] handle account active status
 - [x] handle account deletion
-- [ ] handle account privacy setting? (is this a bsky nsid config and should that matter?)
+- [ ] handle account privacy setting? (is this a bsky-nsid-specific config and should that matter?)
+  - instead of looking this up, should be able to listen for it to be published on the firehose.
+    - this should _work_, but without backfill it won't be accurate. targeted backfill might be an option.
 - [x] move ownership of canonical seq to an owned non-atomic
 - [x] custom path for db storage
 - [x] api server to look up backlink count
