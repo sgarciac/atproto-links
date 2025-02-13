@@ -235,6 +235,8 @@ scrape_configs:
     ```
       [...]
       server_name links.bsky.bad-example.com;
+
+      add_header Access-Control-Allow-Origin * always; # bit of hack to have it here but nginx doesn't like it in the `if`
       if ($http_user_agent ~ ^Mozilla/) {
         # for now send *browsers* to the new location, hopefully without impacting api requests
         # (yeah we're doing UA test here and content-negotatiation in the app. whatever.)
