@@ -271,7 +271,7 @@ impl RocksStorage {
     }
 
     fn merge_op_extend_did_ids(
-        _new_key: &[u8],
+        key: &[u8],
         existing: Option<&[u8]>,
         operands: &MergeOperands,
     ) -> Option<Vec<u8>> {
@@ -282,8 +282,13 @@ impl RocksStorage {
                     existing_linkers
                 }
                 Err(e) => {
-                    eprintln!("bug? could not deserialize existing target linkers: {e:?}");
-                    return None;
+                    eprintln!("bug? could not deserialize existing target linkers: {e:?}. key={key:?}. continuing, but data will be lost!");
+                    if existing_bytes.len() < 1000 {
+                        eprintln!("dropping: {existing_bytes:?}");
+                    } else {
+                        eprintln!("(too long to print)");
+                    }
+                    Vec::with_capacity(operands.len())
                 }
             }
         } else {
@@ -293,8 +298,12 @@ impl RocksStorage {
             match _vr(new_linkers) {
                 Ok(TargetLinkers(new_linkers)) => linkers.extend(new_linkers),
                 Err(e) => {
-                    eprintln!("bug? could not deserialize new target linkrers: {e:?}");
-                    return None;
+                    eprintln!("bug? could not deserialize new target linkrers: {e:?}. key={key:?}. continuing, but data will be lost!");
+                    if new_linkers.len() < 1000 {
+                        eprintln!("skipping: {new_linkers:?}");
+                    } else {
+                        eprintln!("(too long to print)");
+                    }
                 }
             }
         }
