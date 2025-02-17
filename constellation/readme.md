@@ -143,6 +143,7 @@ some todos
   - [x] endpoint for count
   - [x] endpoint for listing them
   - [x] add to exploratory /all endpoint
+- [ ] nginx: support http2
 
 cache
 - [ ] set api response headers
