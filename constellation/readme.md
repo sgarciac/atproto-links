@@ -115,16 +115,16 @@ some todos
   - [x] cpu usage
   - [x] mem usage
   - [x] network?
-- [ ] make all rocks apis return Result instead of unwrapping
-- [ ] handle all the unwraps
+- [x] make all rocks apis return Result instead of unwrapping
+- [~] handle all the unwraps
 - [ ] deadletter queue of some kind for failed db writes
   - [ ] also for valid json that was rejected?
 - [x] get it running on raspi
 - [x] get an estimate of disk usage per day after a few days of running
   - very close to 1GB with data model before adding rkeys to linkers + fixing paths
-- [ ] make the did_init check only happen on test config (or remove it)
+- [x] make the did_init check only happen on test config (or remove it) (removed)
 - [ ] actual error types (thiserror?) for lib-ish code
-- [ ] clean up the main readme
+- [~] clean up the main readme
 - [x] web server metrics
   - [x] origin and ua labels
 - [ ] tokio metrics?

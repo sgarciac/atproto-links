@@ -59,7 +59,6 @@ where
 {
     _key_marker: PhantomData<Orig>,
     _val_marker: PhantomData<IdVal>,
-    did_init: bool,
     name: String,
     id_seq: Arc<AtomicU64>,
 }
@@ -72,7 +71,7 @@ where
         ColumnFamilyDescriptor::new(&self.name, rocks_opts_base())
     }
     fn init<const WITH_REVERSE: bool>(
-        mut self,
+        self,
         db: &DBWithThreadMode<MultiThreaded>,
     ) -> Result<IdTable<Orig, IdVal, WITH_REVERSE>> {
         if db.cf_handle(&self.name).is_none() {
@@ -93,7 +92,6 @@ where
             1
         };
         self.id_seq.store(priv_id_seq, Ordering::SeqCst);
-        self.did_init = true;
         Ok(IdTable {
             base: self,
             priv_id_seq,
@@ -125,7 +123,6 @@ where
         IdTableBase::<Orig, IdVal> {
             _key_marker: PhantomData,
             _val_marker: PhantomData,
-            did_init: false,
             name: name.into(),
             id_seq: Arc::new(AtomicU64::new(0)), // zero is "uninint", first seq num will be 1
         }
