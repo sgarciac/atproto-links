@@ -2,10 +2,7 @@ use anyhow::Result;
 use clap::{Parser, ValueEnum};
 use metrics_exporter_prometheus::PrometheusBuilder;
 use std::path::PathBuf;
-use std::sync::{
-    atomic::{AtomicU32, Ordering},
-    Arc,
-};
+use std::sync::{atomic::AtomicU32, Arc};
 use std::thread;
 use std::time;
 use tokio::runtime;
@@ -17,7 +14,7 @@ use constellation::server::serve;
 use constellation::storage::RocksStorage;
 use constellation::storage::{LinkReader, LinkStorage, MemStorage, StorageStats};
 
-const MONITOR_INTERVAL: time::Duration = time::Duration::from_secs(2);
+const MONITOR_INTERVAL: time::Duration = time::Duration::from_secs(15);
 
 /// Aggregate links in the at-mosphere
 #[derive(Parser, Debug)]
@@ -169,10 +166,13 @@ fn run(
             }
 
             'monitor: loop {
-                let queue_size = qsize.load(Ordering::Relaxed);
                 match readable.get_stats() {
-                    Ok(StorageStats { dids, targetables, linking_records }) => println!("queue: {queue_size},\tdids: {dids}, targetables: {targetables}, linking_records: {linking_records}"),
-                    Err(e) => eprintln!("queue: {queue_size}, failed to get stats: {e:?}"),
+                    Ok(StorageStats { dids, targetables, linking_records }) => {
+                        metrics::gauge!("storage.stats.dids").set(dids as f64);
+                        metrics::gauge!("storage.stats.targetables").set(targetables as f64);
+                        metrics::gauge!("storage.stats.linking_records").set(linking_records as f64);
+                    }
+                    Err(e) => eprintln!("failed to get stats: {e:?}"),
                 }
 
                 process_collector.collect();
