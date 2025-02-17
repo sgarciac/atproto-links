@@ -480,17 +480,11 @@ impl RocksStorage {
     }
 
     fn remove_links(&mut self, record_id: &RecordId, batch: &mut WriteBatch) -> Result<()> {
-        let Some(DidIdValue(linking_did_id, did_active)) =
+        let Some(DidIdValue(linking_did_id, _)) =
             self.did_id_table.get_id_val(&self.db, &record_id.did)?
         else {
             return Ok(()); // we don't know her: nothing to do
         };
-        if !did_active {
-            eprintln!(
-                "removing links from apparently-inactive did {:?}",
-                &record_id.did
-            );
-        }
 
         let record_link_key = RecordLinkKey(
             linking_did_id,
