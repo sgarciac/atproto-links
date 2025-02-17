@@ -1,5 +1,13 @@
 use askama::Template;
-use axum::{extract::Query, http, response::IntoResponse, routing::get, Router};
+use axum::{
+    extract::{Query, Request},
+    http::{self, header},
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
+    routing::get,
+    Router,
+};
+use axum_metrics::{ExtraMetricLabels, MetricLayer};
 use bincode::Options;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
@@ -88,7 +96,8 @@ where
             }),
         )
         .layer(tower_http::cors::CorsLayer::new().allow_origin(tower_http::cors::Any))
-        .layer(axum_metrics::MetricLayer::default());
+        .layer(middleware::from_fn(add_lables))
+        .layer(MetricLayer::default());
 
     let listener = TcpListener::bind(addr).await?;
     println!("api: listening at http://{:?}", listener.local_addr()?);
@@ -97,6 +106,36 @@ where
         .await?;
 
     Ok(())
+}
+
+async fn add_lables(request: Request, next: Next) -> Response {
+    let origin = request
+        .headers()
+        .get(header::ORIGIN)
+        .and_then(|o| o.to_str().map(|v| v.to_owned()).ok());
+    let user_agent = request.headers().get(header::USER_AGENT).and_then(|ua| {
+        ua.to_str()
+            .map(|v| {
+                if v.starts_with("Mozilla/") {
+                    "Mozilla/...".into()
+                } else {
+                    v.to_owned()
+                }
+            })
+            .ok()
+    });
+
+    let mut res = next.run(request).await;
+
+    let mut labels = Vec::new();
+    if let Some(o) = origin {
+        labels.push(metrics::Label::new("origin", o));
+    }
+    if let Some(ua) = user_agent {
+        labels.push(metrics::Label::new("user_agent", ua));
+    }
+    res.extensions_mut().insert(ExtraMetricLabels(labels));
+    res
 }
 
 async fn robots() -> &'static str {

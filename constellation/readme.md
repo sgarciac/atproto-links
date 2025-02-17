@@ -144,6 +144,7 @@ some todos
   - [x] endpoint for listing them
   - [x] add to exploratory /all endpoint
 - [ ] nginx: support http2
+- [ ] add TimeoutLayer for axum
 
 cache
 - [ ] set api response headers
