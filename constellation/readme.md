@@ -126,13 +126,14 @@ some todos
 - [ ] actual error types (thiserror?) for lib-ish code
 - [ ] clean up the main readme
 - [x] web server metrics
+  - [x] origin and ua labels
 - [ ] tokio metrics?
 - [x] handle shutdown cleanly -- be nice to rocksdb
 - [x] add user-agent to jetstream request
 - [ ] wow the shutdown stuff i wrote is really bad and doesn't work a lot
 - [x] serve html for browser requests
 - [ ] add a health check endpoint
-- [ ] add seq numbers to metrics
+- [x] add seq numbers to metrics
 - [ ] persist the jetstream server url, error if started with a different one (maybe with --switch-streams or something)
 - [ ] put delete-account tasks into a separate (persisted?) task queue for the writer so it can work on them incrementally.
 - [ ] jetstream: connect retry: only reset counter after some *time* has passed.
@@ -145,6 +146,12 @@ some todos
   - [x] add to exploratory /all endpoint
 - [ ] nginx: support http2
 - [ ] add TimeoutLayer for axum
+- [ ] rocksdb metrics
+  - [ ] write ops (count? per actionable?)
+  - [ ] write time hist
+  - [ ] read ops (api)
+  - [ ] expose internal stats?
+
 
 cache
 - [ ] set api response headers
