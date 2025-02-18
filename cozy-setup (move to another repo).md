@@ -245,6 +245,61 @@ scrape_configs:
       [...]
     ```
 
+- nginx metrics
+
+  - download nginx-prometheus-exporter
+    https://github.com/nginx/nginx-prometheus-exporter/releases/download/v1.4.1/nginx-prometheus-exporter_1.4.1_linux_amd64.tar.gz
+
+  - err actually going to make mistakes and try with snap
+    `snap install nginx-prometheus-exporter`
+      - so it got a binary for me but no systemd task set up. boooo.
+      `snap remove nginx-prometheus-exporter`
+
+  - ```bash
+    curl -LO https://github.com/nginx/nginx-prometheus-exporter/releases/download/v1.4.1/nginx-prometheus-exporter_1.4.1_linux_amd64.tar.gz
+    tar xzf nginx-prometheus-exporter_1.4.1_linux_amd64.tar.gz
+    mv nginx-prometheus-exporter /usr/local/bin
+    useradd --no-create-home --shell /bin/false nginx-prometheus-exporter
+    nano /etc/systemd/system/nginx-prometheus-exporter.service
+      # [Unit]
+      # Description=NGINX Exporter
+      # Wants=network-online.target
+      # After=network-online.target
+
+      # [Service]
+      # User=nginx-prometheus-exporter
+      # Group=nginx-prometheus-exporter
+      # Type=simple
+      # ExecStart=/usr/local/bin/nginx-prometheus-exporter --nginx.scrape-uri=http://gateway:8080/stub_status  --web.listen-address=gateway:9113
+      # Restart=always
+      # RestartSec=3
+
+      # [Install]
+      # WantedBy=multi-user.target
+    systemctl daemon-reload
+    systemctl start nginx-prometheus-exporter.service
+    systemctl enable nginx-prometheus-exporter.service
+    ```
+
+    - nginx `/etc/nginx/sites-available/gateway-nginx-status`
+
+      ```nginx
+      server {
+        listen 8080;
+        listen [::]:8080;
+
+        server_name gateway;
+
+        location /stub_status {
+                stub_status;
+        }
+      }
+      ```
+
+      ```bash
+      ln -s /etc/nginx/sites-available/gateway-nginx-status /etc/nginx/sites-enabled/
+      ```
+
 
 ---
 

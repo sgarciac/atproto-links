@@ -298,7 +298,7 @@ impl RocksStorage {
             match _vr(new_linkers) {
                 Ok(TargetLinkers(new_linkers)) => linkers.extend(new_linkers),
                 Err(e) => {
-                    eprintln!("bug? could not deserialize new target linkrers: {e:?}. key={key:?}. continuing, but data will be lost!");
+                    eprintln!("bug? could not deserialize new target linkers: {e:?}. key={key:?}. continuing, but data will be lost!");
                     if new_linkers.len() < 1000 {
                         eprintln!("skipping: {new_linkers:?}");
                     } else {

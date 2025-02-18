@@ -145,6 +145,7 @@ some todos
   - [x] endpoint for listing them
   - [x] add to exploratory /all endpoint
 - [ ] nginx: support http2
+- [x] nginx metrics
 - [ ] add TimeoutLayer for axum
 - [ ] rocksdb metrics
   - [ ] write ops (count? per actionable?)
