@@ -1,6 +1,7 @@
 use anyhow::Result;
 use clap::{Parser, ValueEnum};
 use metrics_exporter_prometheus::PrometheusBuilder;
+use std::num::NonZero;
 use std::path::PathBuf;
 use std::sync::{atomic::AtomicU32, Arc};
 use std::thread;
@@ -206,6 +207,9 @@ fn install_metrics_server() -> Result<()> {
     let host = [0, 0, 0, 0];
     let port = 8765;
     PrometheusBuilder::new()
+        .set_quantiles(&[0.5, 0.9, 0.99, 1.0])?
+        .set_bucket_duration(time::Duration::from_secs(30))?
+        .set_bucket_count(NonZero::new(10).unwrap()) // count * duration = 5 mins. stuff doesn't happen that fast here.
         .set_enable_unit_suffix(true)
         .with_http_listener((host, port))
         .install()?;

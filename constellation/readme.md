@@ -147,9 +147,9 @@ some todos
 - [ ] nginx: support http2
 - [x] nginx metrics
 - [ ] add TimeoutLayer for axum
-- [ ] rocksdb metrics
-  - [ ] write ops (count? per actionable?)
-  - [ ] write time hist
+- [~] rocksdb metrics
+  - [x] write ops (count? per actionable?)
+  - [x] write time hist
   - [ ] read ops (api)
   - [ ] expose internal stats?
 - [ ] figure out what's the right thing to do if merge op fails. happened on startup after an unclean reboot.

@@ -3,6 +3,7 @@ use crate::{CountsByCount, Did, RecordId};
 use anyhow::{bail, Result};
 use bincode::Options as BincodeOptions;
 use links::CollectedLink;
+use metrics::{counter, describe_counter, describe_histogram, histogram, Unit};
 use rocksdb::{
     AsColumnFamilyRef, ColumnFamilyDescriptor, DBWithThreadMode, IteratorMode, MergeOperands,
     MultiThreaded, Options, PrefixRange, ReadOptions, WriteBatch,
@@ -16,6 +17,7 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
     Arc,
 };
+use std::time::Instant;
 
 static DID_IDS_CF: &str = "did_ids";
 static TARGET_IDS_CF: &str = "target_ids";
@@ -239,6 +241,7 @@ impl IdTableValue for TargetId {
 
 impl RocksStorage {
     pub fn new(path: impl AsRef<Path>) -> Result<Self> {
+        Self::describe_metrics();
         let did_id_table = IdTable::<_, _, true>::setup(DID_IDS_CF);
         let target_id_table = IdTable::<_, _, false>::setup(TARGET_IDS_CF);
 
@@ -271,6 +274,29 @@ impl RocksStorage {
             target_id_table,
             is_writer: true,
         })
+    }
+
+    fn describe_metrics() {
+        describe_histogram!(
+            "storage_rocksdb_read_seconds",
+            Unit::Seconds,
+            "duration of the read stage of actions"
+        );
+        describe_histogram!(
+            "storage_rocksdb_action_seconds",
+            Unit::Seconds,
+            "duration of read + write of actions"
+        );
+        describe_counter!(
+            "storage_rocksdb_batch_ops_total",
+            Unit::Count,
+            "total batched operations from actions"
+        );
+        describe_histogram!(
+            "storage_rocksdb_delete_account_ops",
+            Unit::Count,
+            "total batched ops for account deletions"
+        );
     }
 
     fn merge_op_extend_did_ids(
@@ -522,17 +548,6 @@ impl RocksStorage {
         Ok(())
     }
 
-    fn update_links(
-        &mut self,
-        record_id: &RecordId,
-        new_links: &[CollectedLink],
-        batch: &mut WriteBatch,
-    ) -> Result<()> {
-        self.remove_links(record_id, batch)?;
-        self.add_links(record_id, new_links, batch)?;
-        Ok(())
-    }
-
     fn set_account(&mut self, did: &Did, active: bool, batch: &mut WriteBatch) -> Result<()> {
         // this needs to be read-modify-write since the did_id needs to stay the same,
         // which has a benefit of allowing to avoid adding entries for dids we don't
@@ -544,9 +559,10 @@ impl RocksStorage {
         Ok(())
     }
 
-    fn delete_account(&mut self, did: &Did, batch: &mut WriteBatch) -> Result<()> {
+    fn delete_account(&mut self, did: &Did, batch: &mut WriteBatch) -> Result<usize> {
+        let mut total_batched_ops = 0;
         let Some(DidIdValue(did_id, _)) = self.did_id_table.get_id_val(&self.db, did)? else {
-            return Ok(()); // ignore updates for dids we don't know about
+            return Ok(total_batched_ops); // ignore updates for dids we don't know about
         };
         self.delete_did_id_value(batch, did);
         // TODO: also delete the reverse!!
@@ -572,9 +588,10 @@ impl RocksStorage {
                     })?;
                 }
             }
+            total_batched_ops += mini_batch.len();
             self.db.write(mini_batch)?; // todo
         }
-        Ok(())
+        Ok(total_batched_ops)
     }
 }
 
@@ -609,22 +626,66 @@ impl LinkStorage for RocksStorage {
     }
 
     fn push(&mut self, event: &ActionableEvent, cursor: u64) -> Result<()> {
+        // normal ops
         let mut batch = WriteBatch::default();
-        match event {
+        let t0 = Instant::now();
+        if let Some(action) = match event {
             ActionableEvent::CreateLinks { record_id, links } => {
-                self.add_links(record_id, links, &mut batch)?
+                self.add_links(record_id, links, &mut batch)?;
+                Some("create_links")
             }
             ActionableEvent::UpdateLinks {
                 record_id,
                 new_links,
-            } => self.update_links(record_id, new_links, &mut batch)?,
-            ActionableEvent::DeleteRecord(record_id) => self.remove_links(record_id, &mut batch)?,
-            ActionableEvent::ActivateAccount(did) => self.set_account(did, true, &mut batch)?,
-            ActionableEvent::DeactivateAccount(did) => self.set_account(did, false, &mut batch)?,
-            ActionableEvent::DeleteAccount(did) => self.delete_account(did, &mut batch)?,
+            } => {
+                self.remove_links(record_id, &mut batch)?;
+                self.add_links(record_id, new_links, &mut batch)?;
+                Some("update_links")
+            }
+            ActionableEvent::DeleteRecord(record_id) => {
+                self.remove_links(record_id, &mut batch)?;
+                Some("delete_record")
+            }
+            ActionableEvent::ActivateAccount(did) => {
+                self.set_account(did, true, &mut batch)?;
+                Some("set_account_status")
+            }
+            ActionableEvent::DeactivateAccount(did) => {
+                self.set_account(did, false, &mut batch)?;
+                Some("set_account_status")
+            }
+            ActionableEvent::DeleteAccount(_) => None, // delete account is handled specially
+        } {
+            let t_read = t0.elapsed();
+            batch.put(JETSTREAM_CURSOR_KEY.as_bytes(), _rv(cursor));
+            let batch_ops = batch.len();
+            self.db.write(batch)?;
+            let t_total = t0.elapsed();
+
+            histogram!("storage_rocksdb_read_seconds", "action" => action)
+                .record(t_read.as_secs_f64());
+            histogram!("storage_rocksdb_action_seconds", "action" => action)
+                .record(t_total.as_secs_f64());
+            counter!("storage_rocksdb_batch_ops_total", "action" => action)
+                .increment(batch_ops as u64);
         }
-        batch.put(JETSTREAM_CURSOR_KEY.as_bytes(), _rv(cursor));
-        self.db.write(batch)?;
+
+        // special metrics for account deletion which can be arbitrarily expensive
+        let mut outer_batch = WriteBatch::default();
+        let t0 = Instant::now();
+        if let ActionableEvent::DeleteAccount(did) = event {
+            let inner_batch_ops = self.delete_account(did, &mut outer_batch)?;
+            let total_batch_ops = inner_batch_ops + outer_batch.len();
+            self.db.write(outer_batch)?;
+            let t_total = t0.elapsed();
+
+            histogram!("storage_rocksdb_action_seconds", "action" => "delete_account")
+                .record(t_total.as_secs_f64());
+            counter!("storage_rocksdb_batch_ops_total", "action" => "delete_account")
+                .increment(total_batch_ops as u64);
+            histogram!("storage_rocksdb_delete_account_ops").record(total_batch_ops as f64);
+        }
+
         Ok(())
     }
 
