@@ -30,12 +30,15 @@ fn rocks_opts_base() -> Options {
     opts.set_level_compaction_dynamic_level_bytes(true);
     opts.create_if_missing(true);
     opts.set_compression_type(rocksdb::DBCompressionType::Lz4);
-    opts.set_bottommost_compression_type(rocksdb::DBCompressionType::Zstd);
+    opts.set_bottommost_compression_type(rocksdb::DBCompressionType::Zstd); // this probably doesn't work because it hasn't been enabled
+                                                                            // TODO: actually enable the bottommost compression. but after other changes run for a bit in case zstd is cpu- or mem-expensive.
     opts
 }
 fn get_db_opts() -> Options {
     let mut opts = rocks_opts_base();
     opts.create_missing_column_families(true);
+    opts.increase_parallelism(4); // todo: make configurable if anyone else actually runs a different instance. start at # of cores
+                                  // consider doing optimize_level_style_compaction or optimize_universal_style_compaction
     opts
 }
 
