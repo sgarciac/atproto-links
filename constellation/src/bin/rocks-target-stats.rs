@@ -20,6 +20,9 @@ struct Args {
     /// where is rocksdb's data
     #[arg(short, long)]
     data: PathBuf,
+    /// slow down so we don't kill the firehose consumer, if running concurrently
+    #[arg(short, long)]
+    limit: Option<u64>,
 }
 
 type LinkType = String;
@@ -69,6 +72,14 @@ fn thousands(n: usize) -> String {
 fn main() {
     let args = Args::parse();
 
+    let limit = args.limit.map(|amount| {
+        ratelimit::Ratelimiter::builder(amount, time::Duration::from_secs(1))
+            .max_tokens(amount)
+            .initial_available(amount)
+            .build()
+            .unwrap()
+    });
+
     eprintln!("starting rocksdb...");
     let rocks = RocksStorage::open_readonly(args.data).unwrap();
     eprintln!("rocks ready.");
@@ -87,6 +98,12 @@ fn main() {
 
     let mut i = 0;
     for item in db.iterator_cf(&target_id_cf, IteratorMode::Start) {
+        if let Some(ref limiter) = limit {
+            if let Err(dur) = limiter.try_wait() {
+                std::thread::sleep(dur)
+            }
+        }
+
         if i > 0 && i % REPORT_INTERVAL == 0 {
             let now = time::Instant::now();
             let rate = (REPORT_INTERVAL as f32) / (now.duration_since(t_prev).as_secs_f32());
