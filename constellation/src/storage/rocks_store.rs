@@ -46,7 +46,7 @@ fn get_db_opts() -> Options {
 
 #[derive(Debug, Clone)]
 pub struct RocksStorage {
-    db: Arc<DBWithThreadMode<MultiThreaded>>, // TODO: mov seqs here (concat merge op will be fun)
+    pub db: Arc<DBWithThreadMode<MultiThreaded>>, // TODO: mov seqs here (concat merge op will be fun)
     did_id_table: IdTable<Did, DidIdValue, true>,
     target_id_table: IdTable<TargetKey, TargetId, false>,
     is_writer: bool,
@@ -242,29 +242,40 @@ impl IdTableValue for TargetId {
 impl RocksStorage {
     pub fn new(path: impl AsRef<Path>) -> Result<Self> {
         Self::describe_metrics();
+        RocksStorage::open_readmode(path, false)
+    }
+
+    pub fn open_readonly(path: impl AsRef<Path>) -> Result<Self> {
+        RocksStorage::open_readmode(path, true)
+    }
+
+    fn open_readmode(path: impl AsRef<Path>, readonly: bool) -> Result<Self> {
         let did_id_table = IdTable::<_, _, true>::setup(DID_IDS_CF);
         let target_id_table = IdTable::<_, _, false>::setup(TARGET_IDS_CF);
 
-        let db = DBWithThreadMode::open_cf_descriptors(
-            &get_db_opts(),
-            path,
-            vec![
-                // id reference tables
-                did_id_table.cf_descriptor(),
-                target_id_table.cf_descriptor(),
-                // the reverse links:
-                ColumnFamilyDescriptor::new(TARGET_LINKERS_CF, {
-                    let mut opts = rocks_opts_base();
-                    opts.set_merge_operator_associative(
-                        "merge_op_extend_did_ids",
-                        Self::merge_op_extend_did_ids,
-                    );
-                    opts
-                }),
-                // unfortunately we also need forward links to handle deletes
-                ColumnFamilyDescriptor::new(LINK_TARGETS_CF, rocks_opts_base()),
-            ],
-        )?;
+        let cfs = vec![
+            // id reference tables
+            did_id_table.cf_descriptor(),
+            target_id_table.cf_descriptor(),
+            // the reverse links:
+            ColumnFamilyDescriptor::new(TARGET_LINKERS_CF, {
+                let mut opts = rocks_opts_base();
+                opts.set_merge_operator_associative(
+                    "merge_op_extend_did_ids",
+                    Self::merge_op_extend_did_ids,
+                );
+                opts
+            }),
+            // unfortunately we also need forward links to handle deletes
+            ColumnFamilyDescriptor::new(LINK_TARGETS_CF, rocks_opts_base()),
+        ];
+
+        let db = if readonly {
+            DBWithThreadMode::open_cf_descriptors_read_only(&get_db_opts(), path, cfs, false)?
+        } else {
+            DBWithThreadMode::open_cf_descriptors(&get_db_opts(), path, cfs)?
+        };
+
         let db = Arc::new(db);
         let did_id_table = did_id_table.init(&db)?;
         let target_id_table = target_id_table.init(&db)?;
@@ -933,7 +944,7 @@ impl AsRocksValue for &RecordLinkTargets {}
 impl KeyFromRocks for RecordLinkKey {}
 impl ValueFromRocks for RecordLinkTargets {}
 
-fn _bincode_opts() -> impl BincodeOptions {
+pub fn _bincode_opts() -> impl BincodeOptions {
     bincode::DefaultOptions::new().with_big_endian() // happier db -- numeric prefixes in lsm
 }
 fn _rk(k: impl AsRocksKey) -> Vec<u8> {
@@ -952,14 +963,14 @@ fn _vr<T: ValueFromRocks>(bytes: &[u8]) -> Result<T> {
     Ok(_bincode_opts().deserialize(bytes)?)
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct Collection(String);
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct Collection(pub String);
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct RPath(String);
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct RPath(pub String);
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-struct RKey(String);
+pub struct RKey(pub String);
 
 impl RKey {
     fn empty() -> Self {
@@ -969,7 +980,7 @@ impl RKey {
 
 // did ids
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-struct DidId(u64);
+pub struct DidId(pub u64);
 
 impl DidId {
     fn empty() -> Self {
@@ -995,14 +1006,14 @@ impl DidIdValue {
 struct TargetId(u64); // key
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct Target(String); // the actual target/uri
+pub struct Target(pub String); // the actual target/uri
 
 // targets (uris, dids, etc.): the reverse index
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct TargetKey(Target, Collection, RPath);
+pub struct TargetKey(pub Target, pub Collection, pub RPath);
 
 #[derive(Debug, Default, Serialize, Deserialize)]
-struct TargetLinkers(Vec<(DidId, RKey)>);
+pub struct TargetLinkers(pub Vec<(DidId, RKey)>);
 
 impl TargetLinkers {
     fn remove_linker(&mut self, did: &DidId, rkey: &RKey) -> bool {
@@ -1013,7 +1024,7 @@ impl TargetLinkers {
             false
         }
     }
-    fn count(&self) -> (u64, u64) {
+    pub fn count(&self) -> (u64, u64) {
         // (linkers, deleted links)
         let total = self.0.len() as u64;
         let alive = self.0.iter().filter(|(DidId(id), _)| *id != 0).count() as u64;
