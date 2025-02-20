@@ -69,9 +69,9 @@ fn thousands(n: usize) -> String {
 fn main() {
     let args = Args::parse();
 
-    println!("starting rocksdb...");
+    eprintln!("starting rocksdb...");
     let rocks = RocksStorage::open_readonly(args.data).unwrap();
-    println!("rocks ready.");
+    eprintln!("rocks ready.");
 
     let RocksStorage { ref db, .. } = rocks;
 
@@ -178,7 +178,7 @@ fn main() {
         );
     }
 
-    println!("sup");
+    eprintln!("bye.");
 }
 
 // scan plan
