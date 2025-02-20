@@ -45,7 +45,7 @@ fn get_db_opts() -> Options {
 }
 fn get_db_read_opts() -> Options {
     let mut opts = Options::default();
-    opts.optimize_for_point_lookup(512);
+    opts.optimize_for_point_lookup(128); // mb
     opts
 }
 
