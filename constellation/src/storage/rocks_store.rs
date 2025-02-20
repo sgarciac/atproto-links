@@ -43,6 +43,11 @@ fn get_db_opts() -> Options {
                                   // consider doing optimize_level_style_compaction or optimize_universal_style_compaction
     opts
 }
+fn get_db_read_opts() -> Options {
+    let mut opts = Options::default();
+    opts.optimize_for_point_lookup(512);
+    opts
+}
 
 #[derive(Debug, Clone)]
 pub struct RocksStorage {
@@ -271,7 +276,7 @@ impl RocksStorage {
         ];
 
         let db = if readonly {
-            DBWithThreadMode::open_cf_descriptors_read_only(&get_db_opts(), path, cfs, false)?
+            DBWithThreadMode::open_cf_descriptors_read_only(&get_db_read_opts(), path, cfs, false)?
         } else {
             DBWithThreadMode::open_cf_descriptors(&get_db_opts(), path, cfs)?
         };
