@@ -40,7 +40,7 @@ struct Args {
     /// Start a background task to take backups every N hours
     #[arg(long)]
     backup_interval: Option<u64>,
-    /// If backup_interval is configured, purge the oldest backup once this many backups are saved
+    /// Keep at most this many backups purging oldest first, requires --backup-interval
     #[arg(long)]
     max_old_backups: Option<usize>,
     /// Saved jsonl from jetstream to use instead of a live subscription
