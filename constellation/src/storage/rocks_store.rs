@@ -292,6 +292,28 @@ impl RocksStorage {
         })
     }
 
+    pub fn start_backup(&self, path: impl AsRef<Path>) -> Result<()> {
+        use rocksdb::backup::{BackupEngine, BackupEngineOptions};
+        eprintln!("getting ready to start backup...");
+        let mut engine =
+            BackupEngine::open(&BackupEngineOptions::new(path)?, &rocksdb::Env::new()?)?;
+        std::thread::spawn({
+            let db = self.db.clone();
+            move || {
+                eprintln!("backup starting.");
+                let t0 = Instant::now();
+                if let Err(e) = engine.create_new_backup(&db) {
+                    eprintln!("oh no, backup failed: {e:?}");
+                } else {
+                    eprintln!("yay, backup worked?");
+                }
+                eprintln!("backup finished after {:.2}s", t0.elapsed().as_secs_f32());
+            }
+        });
+        eprintln!("backups should be happening in bg thread.");
+        Ok(())
+    }
+
     fn describe_metrics() {
         describe_histogram!(
             "storage_rocksdb_read_seconds",

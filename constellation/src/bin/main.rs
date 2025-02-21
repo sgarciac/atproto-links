@@ -34,6 +34,9 @@ struct Args {
     #[arg(short, long)]
     #[clap(value_enum, default_value_t = StorageBackend::Memory)]
     backend: StorageBackend,
+    /// Initiate a database backup into this dir, if supported by the storage
+    #[arg(long)]
+    backup: Option<PathBuf>,
     /// Saved jsonl from jetstream to use instead of a live subscription
     #[arg(short, long)]
     fixture: Option<PathBuf>,
@@ -76,6 +79,9 @@ fn main() -> Result<()> {
             let storage_dir = args.data.clone().unwrap_or("rocks.test".into());
             println!("starting rocksdb...");
             let rocks = RocksStorage::new(storage_dir)?;
+            if let Some(backup_dir) = args.backup {
+                rocks.start_backup(backup_dir)?;
+            }
             println!("rocks ready.");
             run(rocks, fixture, args.data, stream)
         }
