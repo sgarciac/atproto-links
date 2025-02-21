@@ -50,7 +50,7 @@ pub fn consume(
             thread::spawn(move || consume_jsonl_file(f, sender)),
         )
     } else {
-        let (sender, receiver) = flume::bounded(2048); // eek
+        let (sender, receiver) = flume::bounded(32_768); // eek
         let cursor = store.get_cursor().unwrap();
         (
             receiver,
