@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{bail, Result};
 use clap::{Parser, ValueEnum};
 use metrics_exporter_prometheus::PrometheusBuilder;
 use std::num::NonZero;
@@ -37,6 +37,12 @@ struct Args {
     /// Initiate a database backup into this dir, if supported by the storage
     #[arg(long)]
     backup: Option<PathBuf>,
+    /// Start a background task to take backups every N hours
+    #[arg(long)]
+    backup_interval: Option<u64>,
+    /// If backup_interval is configured, purge the oldest backup once this many backups are saved
+    #[arg(long)]
+    max_old_backups: Option<usize>,
     /// Saved jsonl from jetstream to use instead of a live subscription
     #[arg(short, long)]
     fixture: Option<PathBuf>,
@@ -72,18 +78,25 @@ fn main() -> Result<()> {
     let stream = jetstream_url(&args.jetstream);
     println!("using jetstream server {stream:?}...",);
 
+    let stay_alive = CancellationToken::new();
+
     match args.backend {
-        StorageBackend::Memory => run(MemStorage::new(), fixture, None, stream),
+        StorageBackend::Memory => run(MemStorage::new(), fixture, None, stream, stay_alive),
         #[cfg(feature = "rocks")]
         StorageBackend::Rocks => {
             let storage_dir = args.data.clone().unwrap_or("rocks.test".into());
             println!("starting rocksdb...");
-            let rocks = RocksStorage::new(storage_dir)?;
+            let mut rocks = RocksStorage::new(storage_dir)?;
             if let Some(backup_dir) = args.backup {
-                rocks.start_backup(backup_dir)?;
+                let auto_backup = match (args.backup_interval, args.max_old_backups) {
+                    (Some(interval_hrs), copies) => Some((interval_hrs, copies)),
+                    (None, None) => None,
+                    (None, Some(_)) => bail!("invalid backup config: --max-old-backups requires --backup-interval to be configured"),
+                };
+                rocks.start_backup(backup_dir, auto_backup, stay_alive.clone())?;
             }
             println!("rocks ready.");
-            run(rocks, fixture, args.data, stream)
+            run(rocks, fixture, args.data, stream, stay_alive)
         }
     }
 }
@@ -93,21 +106,18 @@ fn run(
     fixture: Option<PathBuf>,
     data_dir: Option<PathBuf>,
     stream: String,
+    stay_alive: CancellationToken,
 ) -> Result<()> {
-    let stay_alive = CancellationToken::new();
-
     ctrlc::set_handler({
         let mut desperation: u8 = 0;
         let stay_alive = stay_alive.clone();
-        move || {
-            match desperation {
-                0 => {
-                    println!("ok, shutting down...");
-                    stay_alive.cancel();
-                }
-                1.. => panic!("fine, panicking!"),
+        move || match desperation {
+            0 => {
+                println!("ok, shutting down...");
+                stay_alive.cancel();
+                desperation += 1;
             }
-            desperation += 1;
+            1.. => panic!("fine, panicking!"),
         }
     })?;
 
