@@ -293,7 +293,7 @@ impl RocksStorage {
             db,
             did_id_table,
             target_id_table,
-            is_writer: true,
+            is_writer: !readonly,
             backup_task: None.into(),
         })
     }

@@ -4,6 +4,8 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use tokio_util::sync::CancellationToken;
+
 use constellation::storage::rocks_store::{
     Collection, DidId, RKey, RPath, Target, TargetKey, TargetLinkers, _bincode_opts,
 };
@@ -109,6 +111,21 @@ fn main() {
 
     let RocksStorage { ref db, .. } = rocks;
 
+    let stay_alive = CancellationToken::new();
+    ctrlc::set_handler({
+        let mut desperation: u8 = 0;
+        let stay_alive = stay_alive.clone();
+        move || match desperation {
+            0 => {
+                eprintln!("ok, shutting down...");
+                stay_alive.cancel();
+                desperation += 1;
+            }
+            1.. => panic!("fine, panicking!"),
+        }
+    })
+    .unwrap();
+
     let mut stats = Stats::new();
     let mut err_stats: ErrStats = Default::default();
 
@@ -121,6 +138,10 @@ fn main() {
 
     let mut i = 0;
     for item in db.iterator_cf(&target_id_cf, IteratorMode::Start) {
+        if stay_alive.is_cancelled() {
+            break;
+        }
+
         if let Some(ref limiter) = limit {
             if let Err(dur) = limiter.try_wait() {
                 std::thread::sleep(dur)
@@ -205,13 +226,18 @@ fn main() {
             }
         }
 
-        if i >= 40_000 {
-            break;
-        }
+        // if i >= 40_000 {
+        //     break;
+        // }
     }
 
     eprintln!(
-        "FINISHED summarizing {} link targets in {:.1}s",
+        "{} summarizing {} link targets in {:.1}s",
+        if stay_alive.is_cancelled() {
+            "STOPPED"
+        } else {
+            "FINISHED"
+        },
         thousands(i),
         t0.elapsed().as_secs_f32()
     );
