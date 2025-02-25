@@ -137,6 +137,24 @@ pub fn parse_at_uri(s: &str) -> Option<String> {
     // there's a more normalization to do still. ugh.
 }
 
+pub fn at_uri_collection(at_uri: &str) -> Option<String> {
+    let (proto, rest) = at_uri.split_at_checked(5)?;
+    if !proto.eq_ignore_ascii_case("at://") {
+        return None;
+    }
+    let (_did, rest) = rest.split_once('/')?;
+    if let Some((collection, _path_rest)) = rest.split_once('/') {
+        return Some(collection.to_string());
+    }
+    if let Some((collection, _query_rest)) = rest.split_once('?') {
+        return Some(collection.to_string());
+    }
+    if let Some((collection, _hash_rest)) = rest.split_once('#') {
+        return Some(collection.to_string());
+    }
+    Some(rest.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -231,6 +249,55 @@ mod tests {
         ] {
             assert_eq!(
                 parse_at_uri(case),
+                expected.map(|s| s.to_string()),
+                "{detail}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_at_uri_collection() {
+        for (case, expected, detail) in vec![
+            ("", None, "empty"),
+            ("at://did:plc:vc7f4oafdgxsihk4cry2xpze", None, "did only"),
+            (
+                "at://did:plc:vc7f4oafdgxsihk4cry2xpze/collec.tion",
+                Some("collec.tion"),
+                "no path (weird)",
+            ),
+            (
+                "at://did:plc:vc7f4oafdgxsihk4cry2xpze/collec.tion/path",
+                Some("collec.tion"),
+                "normal at-uri",
+            ),
+            (
+                "at://did:plc:vc7f4oafdgxsihk4cry2xpze/collec.tion?query",
+                Some("collec.tion"),
+                "colleciton with query",
+            ),
+            (
+                "at://did:plc:vc7f4oafdgxsihk4cry2xpze/collec.tion#hash",
+                Some("collec.tion"),
+                "colleciton with hash",
+            ),
+            (
+                "at://did:plc:vc7f4oafdgxsihk4cry2xpze/collec.tion/path?query#hash",
+                Some("collec.tion"),
+                "colleciton with everything",
+            ),
+            (
+                "at://did:web:example.com/collec.tion/path",
+                Some("collec.tion"),
+                "did:web",
+            ),
+            (
+                "at://did:web:example.com/col.lec.tio.ns.so.long.going.on.and.on",
+                Some("col.lec.tio.ns.so.long.going.on.and.on"),
+                "long collection",
+            ),
+        ] {
+            assert_eq!(
+                at_uri_collection(case),
                 expected.map(|s| s.to_string()),
                 "{detail}"
             );

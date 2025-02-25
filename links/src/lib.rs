@@ -35,6 +35,13 @@ impl Link {
             Link::Did(_) => "did",
         }
     }
+    pub fn at_uri_collection(&self) -> Option<String> {
+        if let Link::AtUri(at_uri) = self {
+            at_uri::at_uri_collection(at_uri)
+        } else {
+            None
+        }
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -99,5 +106,27 @@ mod tests {
             parse_any_link("did:plc:44ybard66vv44zksje25o7dz"),
             Some(Link::Did("did:plc:44ybard66vv44zksje25o7dz".into()))
         )
+    }
+
+    #[test]
+    fn test_at_uri_collection() {
+        assert_eq!(
+            parse_any_link("https://example.com")
+                .unwrap()
+                .at_uri_collection(),
+            None
+        );
+        assert_eq!(
+            parse_any_link("did:web:bad-example.com")
+                .unwrap()
+                .at_uri_collection(),
+            None
+        );
+        assert_eq!(
+            parse_any_link("at://did:web:bad-example.com/my.collection/3jwdwj2ctlk26")
+                .unwrap()
+                .at_uri_collection(),
+            Some("my.collection".into())
+        );
     }
 }

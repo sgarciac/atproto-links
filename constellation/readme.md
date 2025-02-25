@@ -153,7 +153,9 @@ some todos
   - [ ] read ops (api)
   - [ ] expose internal stats?
 - [ ] figure out what's the right thing to do if merge op fails. happened on startup after an unclean reboot.
-
+- [x] backups!
+  - [x] manual backup on startup
+  - [x] background task to create backups on an interval
 
 cache
 - [ ] set api response headers

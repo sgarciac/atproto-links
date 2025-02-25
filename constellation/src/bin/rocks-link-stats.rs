@@ -1,5 +1,6 @@
 use bincode::config::Options;
 use clap::Parser;
+use serde::Serialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -27,16 +28,29 @@ struct Args {
 
 type LinkType = String;
 
-#[derive(Debug, Eq, Hash, PartialEq)]
-struct SourceLink(Collection, RPath, LinkType);
+#[derive(Debug, Eq, Hash, PartialEq, Serialize)]
+struct SourceLink(Collection, RPath, LinkType, Option<Collection>); // last is target collection, if it's an at-uri link with a collection
 
-#[derive(Debug, Default)]
-struct Buckets([u64; 23]);
+#[derive(Debug, Serialize)]
+struct SourceSample {
+    did: String,
+    rkey: String,
+}
 
-const BUCKETS: Buckets = Buckets([
-    1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 16, 32, 64, 128, 256, 512, 1024, 4096, 16384, 65535, 262144,
-    1048576,
-]);
+#[derive(Debug, Default, Serialize)]
+struct Bucket {
+    count: u64,
+    sum: u64,
+    sample: Option<SourceSample>,
+}
+
+#[derive(Debug, Default, Serialize)]
+struct Buckets([Bucket; 23]);
+
+const BUCKETS: [u64; 23] = [
+    1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 16, 32, 64, 128, 256, 512, 1024, 4096, 16_384, 65_535,
+    262_144, 1_048_576,
+];
 
 // b1, b2, b3, b4, b5, b6, b7, b8, b9, b10, b12, b16, b32, b64, b128, b256, b512, b1024, b4096, b16384, b65535, b262144, bmax
 
@@ -46,7 +60,16 @@ static TARGET_LINKERS_CF: &str = "target_links";
 
 const REPORT_INTERVAL: usize = 50_000;
 
-type Stats = HashMap<SourceLink, (String, String, Buckets)>;
+type Stats = HashMap<SourceLink, Buckets>;
+
+#[derive(Debug, Serialize)]
+struct Printable {
+    collection: String,
+    path: String,
+    link_type: String,
+    target_collection: Option<String>,
+    buckets: Buckets,
+}
 
 #[derive(Debug, Default)]
 struct ErrStats {
@@ -133,7 +156,12 @@ fn main() {
                 err_stats.failed_to_parse_target_as_link += 1;
                 continue;
             };
-            SourceLink(collection, rpath, parsed.name().into())
+            SourceLink(
+                collection,
+                rpath,
+                parsed.name().into(),
+                parsed.at_uri_collection().map(Collection),
+            )
         };
 
         let Ok(Some(links_raw)) = db.get_cf(&target_links_cf, &target_id) else {
@@ -151,29 +179,35 @@ fn main() {
         }
 
         let mut bucket = 0;
-        for edge in BUCKETS.0 {
+        for edge in BUCKETS {
             if n <= edge || bucket == 22 {
                 break;
             }
             bucket += 1;
         }
 
-        stats
-            .entry(source)
-            .or_insert_with(|| {
-                let (DidId(did_id), RKey(k)) = &linkers.0[(n - 1) as usize];
-                if let Ok(Some(did_bytes)) = db.get_cf(&did_ids_cf, did_id.to_be_bytes()) {
-                    if let Ok(Did(did)) = _bincode_opts().deserialize(&did_bytes) {
-                        return (did, k.clone(), Default::default());
-                    }
+        let b = &mut stats.entry(source).or_default().0[bucket];
+        b.count += 1;
+        b.sum += n;
+        if b.sample.is_none() {
+            let (DidId(did_id), RKey(k)) = &linkers.0[(n - 1) as usize];
+            if let Ok(Some(did_bytes)) = db.get_cf(&did_ids_cf, did_id.to_be_bytes()) {
+                if let Ok(Did(did)) = _bincode_opts().deserialize(&did_bytes) {
+                    b.sample = Some(SourceSample {
+                        did,
+                        rkey: k.clone(),
+                    });
+                } else {
+                    err_stats.failed_to_get_sample += 1;
                 }
+            } else {
                 err_stats.failed_to_get_sample += 1;
-                ("".into(), "".into(), Default::default())
-            })
-            .2
-             .0[bucket] += 1;
+            }
+        }
 
-        // if i >= 400_000 { break }
+        if i >= 40_000 {
+            break;
+        }
     }
 
     eprintln!(
@@ -183,16 +217,25 @@ fn main() {
     );
     eprintln!("{err_stats:?}");
 
-    for (SourceLink(Collection(c), RPath(p), t), (d, r, Buckets(b))) in stats {
-        let sample_at_uri = if !(d.is_empty() || r.is_empty()) {
-            format!("at://{d}/{c}/{r}")
-        } else {
-            "".into()
-        };
-        println!(
-            "{c:?}, {p:?}, {t:?}, {sample_at_uri:?}, {}",
-            b.map(|n| n.to_string()).join(", ")
-        );
+    let itemified = stats
+        .into_iter()
+        .map(
+            |(
+                SourceLink(Collection(collection), RPath(path), link_type, target_collection),
+                buckets,
+            )| Printable {
+                collection,
+                path,
+                link_type,
+                target_collection: target_collection.map(|Collection(c)| c),
+                buckets,
+            },
+        )
+        .collect::<Vec<_>>();
+
+    match serde_json::to_string(&itemified) {
+        Ok(s) => println!("{s}"),
+        Err(e) => eprintln!("failed to serialize results: {e:?}"),
     }
 
     eprintln!("bye.");
