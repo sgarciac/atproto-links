@@ -231,17 +231,9 @@ fn main() {
         // }
     }
 
-    eprintln!(
-        "{} summarizing {} link targets in {:.1}s",
-        if stay_alive.is_cancelled() {
-            "STOPPED"
-        } else {
-            "FINISHED"
-        },
-        thousands(i),
-        t0.elapsed().as_secs_f32()
-    );
-    eprintln!("{err_stats:?}");
+    let dt = t0.elapsed();
+
+    eprintln!("gathering stats for output...");
 
     let itemified = stats
         .into_iter()
@@ -264,6 +256,17 @@ fn main() {
         Err(e) => eprintln!("failed to serialize results: {e:?}"),
     }
 
+    eprintln!(
+        "{} summarizing {} link targets in {:.1}s",
+        if stay_alive.is_cancelled() {
+            "STOPPED"
+        } else {
+            "FINISHED"
+        },
+        thousands(i),
+        dt.as_secs_f32()
+    );
+    eprintln!("{err_stats:?}");
     eprintln!("bye.");
 }
 
