@@ -140,7 +140,7 @@ scrape_configs:
 - raspi node_exporter
 
     ```bash
-    curl -LO https://github.com/prometheus/node_exporter/releases/download/v1.8.2/node_exporter-1.8.2.linux-armv7.tar.g
+    curl -LO https://github.com/prometheus/node_exporter/releases/download/v1.8.2/node_exporter-1.8.2.linux-armv7.tar.gz
     tar xzf node_exporter-1.8.2.linux-armv7.tar.gz
     sudo cp node_exporter-1.8.2.linux-armv7/node_exporter /usr/local/bin/
     sudo useradd --no-create-home --shell /bin/false node_exporter
@@ -300,6 +300,40 @@ scrape_configs:
       ln -s /etc/nginx/sites-available/gateway-nginx-status /etc/nginx/sites-enabled/
       ```
 
+
+## bootes (pi5)
+
+- mount sd card, touch `ssh` file echo `echo "pi:$(echo raspberry | openssl passwd -6 -stdin)" > userconf.txt`
+- raspi-config: enable pcie 3, set hostname, enable ssh
+- put ssh key into `.ssh/authorized_keys`
+- put `PasswordAuthentication no` in `/etc/ssh/sshd_config`
+- `sudo apt update && sudo apt upgrade`
+- `sudo apt install xfsprogs`
+- `sudo mkfs.xfs -L c11n-kv /dev/nvme0n1`
+- `sudo mount /dev/nvme0n1 /mnt`
+- set up tailscale
+- `sudo tailscale up`
+- `git clone https://github.com/atcosm/links.git`
+- tailscale: disable bootes key expiry
+- rustup `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
+- `cd links/constellation`
+- `sudo apt install libssl-dev` needed
+- `sudo apt install clang` needed for bindgen
+- (in tmux) `cargo build --release`
+- `mkdir ~/backup`
+- `sudo mount.cifs "//truenas.local/folks data" /home/pi/backup -o user=phil,uid=pi`
+- `sudo chown pi:pi /mnt/`
+- `RUST_BACKTRACE=full cargo run --bin rocks-restore-from-backup --release -- --from-backup-dir "/home/pi/backup/constellation-index" --to-data-dir /mnt/constellation-index`
+etc
+- follow above `- raspi node_exporter`
+- configure victoriametrics to scrape the new pi
+- `RUST_BACKTRACE=full cargo run --release -- --backend rocks --data /mnt/constellation-index/ --jetstream us-east-2 --backup /home/pi/backup/constellation-index --backup-interval 6 --max-old-backups 20`
+- add server to nginx gateway upstream: `        server 100.123.79.12:6789;  # bootes`
+
+
+
+- todo: overlayfs? would need to figure out builds/updates still, also i guess logs are currently written to sd? (oof)
+- todo: cross-compile for raspi?
 
 ---
 
