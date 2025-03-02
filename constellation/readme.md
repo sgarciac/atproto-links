@@ -156,6 +156,7 @@ some todos
 - [x] backups!
   - [x] manual backup on startup
   - [x] background task to create backups on an interval
+- [ ] add a low-ulimit check on startup?
 
 cache
 - [ ] set api response headers

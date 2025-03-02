@@ -327,9 +327,11 @@ scrape_configs:
 etc
 - follow above `- raspi node_exporter`
 - configure victoriametrics to scrape the new pi
+- configure ulimit before starting! `ulimit -n 16384`
 - `RUST_BACKTRACE=full cargo run --release -- --backend rocks --data /mnt/constellation-index/ --jetstream us-east-2 --backup /home/pi/backup/constellation-index --backup-interval 6 --max-old-backups 20`
 - add server to nginx gateway upstream: `        server 100.123.79.12:6789;  # bootes`
 - stop backups from running on the older instance! `RUST_BACKTRACE=full cargo run --release -- --backend rocks --data /mnt/links-2.rocks/ --jetstream us-east-1`
+- stop upstreaming requests to older instance in nginx
 
 
 - todo: overlayfs? would need to figure out builds/updates still, also i guess logs are currently written to sd? (oof)
