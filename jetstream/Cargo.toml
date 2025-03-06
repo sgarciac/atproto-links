@@ -1,11 +1,11 @@
 [package]
-authors = ["videah <videah@selfish.systems>"]
-name = "jetstream-oxide"
+authors = ["videah <videah@selfish.systems>", "phil <phil@bad-example.com>"]
+name = "jetstream"
 version = "0.1.1"
 edition = "2021"
 license = "MIT"
 description = "Library for easily interacting with and consuming the Bluesky Jetstream service."
-repository = "https://github.com/videah/jetstream-oxide"
+repository = "https://github.com/at-microcosm/links"
 readme = "README.md"
 
 [dependencies]

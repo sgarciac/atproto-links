@@ -2,7 +2,7 @@
 
 use atrium_api::{record::KnownRecord::AppBskyFeedPost, types::string};
 use clap::Parser;
-use jetstream_oxide::{
+use jetstream::{
     events::{commit::CommitEvent, JetstreamEvent::Commit},
     DefaultJetstreamEndpoints, JetstreamCompression, JetstreamConfig, JetstreamConnector,
 };
