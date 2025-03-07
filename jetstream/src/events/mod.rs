@@ -16,8 +16,8 @@ pub struct EventInfo {
 
 #[derive(Deserialize, Debug)]
 #[serde(untagged)]
-pub enum JetstreamEvent {
-    Commit(commit::CommitEvent),
+pub enum JetstreamEvent<R> {
+    Commit(commit::CommitEvent<R>),
     Identity(identity::IdentityEvent),
     Account(account::AccountEvent),
 }

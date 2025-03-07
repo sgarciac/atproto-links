@@ -1,6 +1,6 @@
-//! A very basic example of how to listen for create/delete events on a specific DID and NSID.
+//! An example of how to listen for create/delete events on a specific DID and potentialy unknown NSID
 
-use atrium_api::{record::KnownRecord::AppBskyFeedPost, types::string};
+use atrium_api::types::string;
 use clap::Parser;
 use jetstream::{
     events::{commit::CommitEvent, JetstreamEvent::Commit},
@@ -13,7 +13,7 @@ struct Args {
     /// The DIDs to listen for events on, if not provided we will listen for all DIDs.
     #[arg(short, long)]
     did: Option<Vec<string::Did>>,
-    /// The NSID for the collection to listen for (e.g. `app.bsky.feed.post`).
+    /// The NSID for the collection to listen for (e.g. `blue.flashes.feed.post`).
     #[arg(short, long)]
     nsid: string::Nsid,
 }
@@ -23,7 +23,7 @@ async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
     let dids = args.did.unwrap_or_default();
-    let config = JetstreamConfig {
+    let config: JetstreamConfig<serde_json::Value> = JetstreamConfig {
         endpoint: DefaultJetstreamEndpoints::USEastOne.into(),
         wanted_collections: vec![args.nsid.clone()],
         wanted_dids: dids.clone(),
@@ -31,7 +31,7 @@ async fn main() -> anyhow::Result<()> {
         ..Default::default()
     };
 
-    let jetstream = JetstreamConnector::new(config)?;
+    let jetstream: JetstreamConnector<serde_json::Value> = JetstreamConnector::new(config)?;
     let receiver = jetstream.connect().await?;
 
     println!(
@@ -41,21 +41,8 @@ async fn main() -> anyhow::Result<()> {
     );
 
     while let Ok(event) = receiver.recv_async().await {
-        if let Commit(commit) = event {
-            match commit {
-                CommitEvent::Create { info: _, commit } => {
-                    if let AppBskyFeedPost(record) = commit.record {
-                        println!(
-                            "New post created! ({})\n\n'{}'",
-                            commit.info.rkey, record.text
-                        );
-                    }
-                }
-                CommitEvent::Delete { info: _, commit } => {
-                    println!("A post has been deleted. ({})", commit.rkey);
-                }
-                _ => {}
-            }
+        if let Commit(CommitEvent::Create { commit, .. }) = event {
+            println!("got record {:?}", commit.record);
         }
     }
 

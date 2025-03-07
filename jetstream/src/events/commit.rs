@@ -1,4 +1,3 @@
-use atrium_api::record::KnownRecord;
 use serde::Deserialize;
 
 use crate::{
@@ -9,16 +8,16 @@ use crate::{
 /// An event representing a repo commit, which can be a `create`, `update`, or `delete` operation.
 #[derive(Deserialize, Debug)]
 #[serde(untagged, rename_all = "snake_case")]
-pub enum CommitEvent {
+pub enum CommitEvent<R> {
     Create {
         #[serde(flatten)]
         info: EventInfo,
-        commit: CommitData,
+        commit: CommitData<R>,
     },
     Update {
         #[serde(flatten)]
         info: EventInfo,
-        commit: CommitData,
+        commit: CommitData<R>,
     },
     Delete {
         #[serde(flatten)]
@@ -51,11 +50,11 @@ pub struct CommitInfo {
 /// Detailed data bundled with a commit event. This data is only included when the event is
 /// `create` or `update`.
 #[derive(Deserialize, Debug)]
-pub struct CommitData {
+pub struct CommitData<R> {
     #[serde(flatten)]
     pub info: CommitInfo,
     /// The CID of the record that was operated on.
     pub cid: exports::Cid,
     /// The record that was operated on.
-    pub record: KnownRecord,
+    pub record: R,
 }
