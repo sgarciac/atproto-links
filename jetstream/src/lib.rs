@@ -167,6 +167,13 @@ pub struct JetstreamConfig<R: DeserializeOwned = KnownRecord> {
     /// When reconnecting, use the time_us from your most recently processed event and maybe
     /// provide a negative buffer (i.e. subtract a few seconds) to ensure gapless playback.
     pub cursor: Option<chrono::DateTime<Utc>>,
+    /// Maximum size of send channel for jetstream events.
+    ///
+    /// If your consuming task can't keep up with every new jetstream event in real-time,
+    /// you might get disconnected from the server as a "slow consumer". Increasing channel_size
+    /// can help prevent that if your consumer sometimes pauses, at a cost of higher memory
+    /// usage while events are buffered.
+    pub channel_size: usize,
     /// Marker for record deserializable type.
     ///
     /// See examples/arbitrary_record.rs for an example using serde_json::Value
@@ -184,6 +191,7 @@ impl<R: DeserializeOwned> Default for JetstreamConfig<R> {
             wanted_dids: Vec::new(),
             compression: JetstreamCompression::None,
             cursor: None,
+            channel_size: 1024,
             record_type: PhantomData,
         }
     }
@@ -266,8 +274,7 @@ impl<R: DeserializeOwned + Send + 'static> JetstreamConnector<R> {
             .validate()
             .map_err(ConnectionError::InvalidConfig)?;
 
-        // TODO: Run some benchmarks and look into using a bounded channel instead.
-        let (send_channel, receive_channel) = flume::unbounded();
+        let (send_channel, receive_channel) = flume::bounded(self.config.channel_size);
 
         let configured_endpoint = self
             .config
