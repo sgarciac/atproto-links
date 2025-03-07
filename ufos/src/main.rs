@@ -2,6 +2,9 @@ use clap::Parser;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use tokio::select;
+use tokio_util::sync::CancellationToken;
+
 use jetstream::{
     events::{commit::CommitEvent, JetstreamEvent::Commit},
     DefaultJetstreamEndpoints, JetstreamCompression, JetstreamConfig, JetstreamConnector,
@@ -30,6 +33,21 @@ async fn main() -> anyhow::Result<()> {
         ..Default::default()
     };
 
+    let stay_alive = CancellationToken::new();
+
+    ctrlc::set_handler({
+        let mut desperation: u8 = 0;
+        let stay_alive = stay_alive.clone();
+        move || match desperation {
+            0 => {
+                println!("ok, signalling shutdown...");
+                stay_alive.cancel();
+                desperation += 1;
+            }
+            1.. => panic!("fine, panicking!"),
+        }
+    })?;
+
     let jetstream: JetstreamConnector<serde_json::Value> = JetstreamConnector::new(config)?;
     let receiver = jetstream.connect().await?;
 
@@ -37,18 +55,34 @@ async fn main() -> anyhow::Result<()> {
 
     let print_throttle = Duration::from_millis(400);
     let mut last = Instant::now();
-    while let Ok(event) = receiver.recv_async().await {
-        if let Commit(CommitEvent::Create { commit, .. }) = event {
-            let now = Instant::now();
-            let since = now - last;
-            if since >= print_throttle {
-                let overshoot = since - print_throttle; // adjust to keep the rate on average
-                last = now - overshoot;
-                println!(
-                    "{}: {}",
-                    &*commit.info.collection,
-                    serde_json::to_string(&commit.record)?
-                );
+    loop {
+        select! {
+            _ = stay_alive.cancelled() => {
+                eprintln!("byeeee");
+                break
+            }
+            ev = receiver.recv_async() => {
+                match ev {
+                    Ok(event) => {
+                        if let Commit(CommitEvent::Create { commit, .. }) = event {
+                            let now = Instant::now();
+                            let since = now - last;
+                            if since >= print_throttle {
+                                let overshoot = since - print_throttle; // adjust to keep the rate on average
+                                last = now - overshoot;
+                                println!(
+                                    "{}: {}",
+                                    &*commit.info.collection,
+                                    serde_json::to_string(&commit.record)?
+                                );
+                            }
+                        }
+                    },
+                    Err(e) => {
+                        eprintln!("jetstream event error: {e:?}");
+                        break
+                    }
+                }
             }
         }
     }
