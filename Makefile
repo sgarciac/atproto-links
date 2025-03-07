@@ -5,7 +5,8 @@ test:
 	cargo test
 
 fmt:
-	cargo fmt --all
+	cargo fmt --package links --package constellation
+	cargo +nightly fmt --package jetstream
 
 clippy:
 	cargo clippy --all-targets --all-features -- -D warnings
