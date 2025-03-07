@@ -6,7 +6,7 @@ use std::{
     io::{Cursor, Read},
     marker::PhantomData,
     sync::Arc,
-    time::Duration,
+    time::{Instant, Duration},
 };
 use atrium_api::record::KnownRecord;
 use chrono::Utc;
@@ -230,15 +230,31 @@ impl<R: DeserializeOwned + Send + 'static> JetstreamConnector<R> {
             .map_err(ConnectionError::InvalidEndpoint)?;
 
         tokio::task::spawn(async move {
-            let max_retries = 10;
+            let max_retries = 30;
             let base_delay_ms = 1_000; // 1 second
             let max_delay_ms = 30_000; // 30 seconds
+            let success_threshold_s = 15; // 15 seconds, retry count is reset if we were connected at least this long
 
-            for retry_attempt in 0..max_retries {
+            let mut retry_attempt = 0;
+            loop {
                 let dict = DecoderDictionary::copy(JETSTREAM_ZSTD_DICTIONARY);
 
+                retry_attempt += 1;
                 if let Ok((ws_stream, _)) = connect_async(&configured_endpoint).await {
-                    let _ = websocket_task(dict, ws_stream, send_channel.clone()).await;
+                    let t_connected = Instant::now();
+                    if let Err(e) = websocket_task(dict, ws_stream, send_channel.clone()).await {
+                        log::error!("Jetstream closed after encountering error: {e:?}");
+                    } else {
+                        log::error!("Jetstream connection closed cleanly");
+                    }
+                    if t_connected.elapsed() > Duration::from_secs(success_threshold_s) {
+                        retry_attempt = 0;
+                        continue;
+                    }
+                }
+
+                if retry_attempt >= max_retries {
+                    break;
                 }
 
                 // Exponential backoff
