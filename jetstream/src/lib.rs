@@ -60,6 +60,29 @@ pub enum DefaultJetstreamEndpoints {
     USWestTwo,
 }
 
+impl DefaultJetstreamEndpoints {
+    /// Helper to reference official jetstream instances by shortcut
+    ///
+    /// This function will pass through a jetstream endpoint URL unless it matches a shortcut,
+    /// in which case it will be rewritten to the corresponding bluesky-operated jetstream endpoint
+    /// URL.
+    ///
+    /// The shortcuts available are
+    ///   - 'us-east-1'
+    ///   - 'us-east-2'
+    ///   - 'us-west-1'
+    ///   - 'us-west-2'
+    pub fn endpoint_or_shortcut(s: &str) -> String {
+        match s {
+            "us-east-1" => DefaultJetstreamEndpoints::USEastOne.into(),
+            "us-east-2" => DefaultJetstreamEndpoints::USEastTwo.into(),
+            "us-west-1" => DefaultJetstreamEndpoints::USWestOne.into(),
+            "us-west-2" => DefaultJetstreamEndpoints::USWestTwo.into(),
+            custom => custom.into(),
+        }
+    }
+}
+
 impl From<DefaultJetstreamEndpoints> for String {
     fn from(endpoint: DefaultJetstreamEndpoints) -> Self {
         match endpoint {
