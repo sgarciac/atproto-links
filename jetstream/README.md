@@ -57,3 +57,13 @@ cargo run --example basic -- \
 This listens for posts that *I personally make*. You can substitute your own DID and make a few test posts yourself if
 you'd
 like of course!
+
+
+## Running `rustfmt` (requires nightly)
+
+```bash
+# get nightly set up
+rustup toolchain install nightly --allow-downgrade -c rustfmt
+# run the nightly version of fmt
+cargo +nightly fmt
+```

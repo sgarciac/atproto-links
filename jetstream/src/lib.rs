@@ -3,23 +3,45 @@ pub mod events;
 pub mod exports;
 
 use std::{
-    io::{Cursor, Read},
+    io::{
+        Cursor,
+        Read,
+    },
     marker::PhantomData,
     sync::Arc,
-    time::{Instant, Duration},
+    time::{
+        Duration,
+        Instant,
+    },
 };
+
 use atrium_api::record::KnownRecord;
 use chrono::Utc;
-use futures_util::{stream::StreamExt, SinkExt};
+use futures_util::{
+    stream::StreamExt,
+    SinkExt,
+};
 use serde::de::DeserializeOwned;
-use tokio::{net::TcpStream, sync::Mutex};
-use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
+use tokio::{
+    net::TcpStream,
+    sync::Mutex,
+};
+use tokio_tungstenite::{
+    connect_async,
+    tungstenite::Message,
+    MaybeTlsStream,
+    WebSocketStream,
+};
 use tokio_util::sync::CancellationToken;
 use url::Url;
 use zstd::dict::DecoderDictionary;
 
 use crate::{
-    error::{ConfigValidationError, ConnectionError, JetstreamEventError},
+    error::{
+        ConfigValidationError,
+        ConnectionError,
+        JetstreamEventError,
+    },
     events::JetstreamEvent,
 };
 
@@ -318,8 +340,8 @@ async fn websocket_task<R: DeserializeOwned>(
                             .map_err(JetstreamEventError::ReceivedMalformedJSON)?;
 
                         if send_channel.send(event).is_err() {
-                            // We can assume that all receivers have been dropped, so we can close the
-                            // connection and exit the task.
+                            // We can assume that all receivers have been dropped, so we can close
+                            // the connection and exit the task.
                             log::info!(
                             "All receivers for the Jetstream connection have been dropped, closing connection."
                         );
@@ -343,8 +365,8 @@ async fn websocket_task<R: DeserializeOwned>(
                             .map_err(JetstreamEventError::ReceivedMalformedJSON)?;
 
                         if send_channel.send(event).is_err() {
-                            // We can assume that all receivers have been dropped, so we can close the
-                            // connection and exit the task.
+                            // We can assume that all receivers have been dropped, so we can close
+                            // the connection and exit the task.
                             log::info!(
                             "All receivers for the Jetstream connection have been dropped, closing connection..."
                         );

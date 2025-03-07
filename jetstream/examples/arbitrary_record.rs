@@ -1,10 +1,17 @@
-//! An example of how to listen for create/delete events on a specific DID and potentialy unknown NSID
+//! An example of how to listen for create/delete events on a specific DID and potentialy unknown
+//! NSID
 
 use atrium_api::types::string;
 use clap::Parser;
 use jetstream::{
-    events::{commit::CommitEvent, JetstreamEvent::Commit},
-    DefaultJetstreamEndpoints, JetstreamCompression, JetstreamConfig, JetstreamConnector,
+    events::{
+        commit::CommitEvent,
+        JetstreamEvent::Commit,
+    },
+    DefaultJetstreamEndpoints,
+    JetstreamCompression,
+    JetstreamConfig,
+    JetstreamConnector,
 };
 
 #[derive(Parser, Debug)]
@@ -34,11 +41,7 @@ async fn main() -> anyhow::Result<()> {
     let jetstream: JetstreamConnector<serde_json::Value> = JetstreamConnector::new(config)?;
     let receiver = jetstream.connect().await?;
 
-    println!(
-        "Listening for '{}' events on DIDs: {:?}",
-        &*args.nsid,
-        dids,
-    );
+    println!("Listening for '{}' events on DIDs: {:?}", &*args.nsid, dids);
 
     while let Ok(event) = receiver.recv_async().await {
         if let Commit(CommitEvent::Create { commit, .. }) = event {
