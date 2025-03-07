@@ -36,13 +36,13 @@ async fn main() -> anyhow::Result<()> {
 
     println!(
         "Listening for '{}' events on DIDs: {:?}",
-        args.nsid.to_string(),
+        &*args.nsid,
         dids,
     );
 
     while let Ok(event) = receiver.recv_async().await {
         if let Commit(CommitEvent::Create { commit, .. }) = event {
-            println!("got record {:?}", commit.record);
+            println!("got record: {:?}", commit.record);
         }
     }
 
