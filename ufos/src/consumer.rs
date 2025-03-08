@@ -121,8 +121,9 @@ impl Batcher {
                 created_collection = true;
                 Default::default()
             });
-        collection.push_front(record);
-        collection.truncate(MAX_BATCHED_RECORDS);
+        collection.total_seen += 1;
+        collection.samples.push_front(record);
+        collection.samples.truncate(MAX_BATCHED_RECORDS);
 
         if created_collection {
             self.current_batch.records.len() >= MAX_BATCHED_COLLECTIONS // full if we have collections to the max

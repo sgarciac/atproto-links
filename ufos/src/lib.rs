@@ -12,6 +12,12 @@ pub struct SetRecord {
     pub record: serde_json::Value,
 }
 
+#[derive(Debug, Default)]
+pub struct CollectionSamples {
+    pub total_seen: usize,
+    pub samples: VecDeque<SetRecord>,
+}
+
 #[derive(Debug)]
 pub struct DeleteRecord {
     pub did: Did,
@@ -21,7 +27,7 @@ pub struct DeleteRecord {
 
 #[derive(Debug, Default)]
 pub struct EventBatch {
-    pub records: HashMap<Nsid, VecDeque<SetRecord>>,
+    pub records: HashMap<Nsid, CollectionSamples>,
     pub record_deletes: Vec<DeleteRecord>,
     pub account_removes: Vec<Did>,
 }

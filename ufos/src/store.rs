@@ -20,9 +20,10 @@ fn summarize(batch: EventBatch) {
         record_deletes,
         account_removes,
     } = batch;
-    let total_records: usize = records.values().map(|v| v.len()).sum();
+    let total_records: usize = records.values().map(|v| v.total_seen).sum();
+    let total_samples: usize = records.values().map(|v| v.samples.len()).sum();
     println!(
-        "got batch with {total_records} records in {} collections, {} record deletes, {} account removes",
+        "got batch of {total_samples: >3} samples from {total_records: >3} records in {: >2} collections, {: >2} record deletes, {} account removes",
         records.len(),
         record_deletes.len(),
         account_removes.len()
