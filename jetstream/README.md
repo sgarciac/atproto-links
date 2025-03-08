@@ -1,7 +1,6 @@
-# jetstream-oxide
+# fork of the awesome jetstream-oxide
 
-[![Crate](https://img.shields.io/crates/v/jetstream-oxide.svg)](https://crates.io/crates/jetstream-oxide)
-[![docs.rs](https://docs.rs/jetstream-oxide/badge.svg)](https://docs.rs/jetstream-oxide/latest/jetstream_oxide)
+fork note: this readme is likely a bit out of date! i've been messing around with some apis.
 
 A typed Rust library for easily interacting with and consuming the
 Bluesky [Jetstream](https://github.com/bluesky-social/jetstream)

@@ -4,7 +4,7 @@ pub mod exports;
 
 use std::{
     io::{
-        Cursor,
+        Cursor as IoCursor,
         Read,
     },
     marker::PhantomData,
@@ -16,7 +16,6 @@ use std::{
 };
 
 use atrium_api::record::KnownRecord;
-use chrono::Utc;
 use futures_util::{
     stream::StreamExt,
     SinkExt,
@@ -49,7 +48,10 @@ use crate::{
         ConnectionError,
         JetstreamEventError,
     },
-    events::JetstreamEvent,
+    events::{
+        Cursor,
+        JetstreamEvent,
+    },
 };
 
 /// The Jetstream endpoints officially provided by Bluesky themselves.
@@ -167,13 +169,14 @@ pub struct JetstreamConfig<R: DeserializeOwned = KnownRecord> {
     pub wanted_dids: Vec<exports::Did>,
     /// The compression algorithm to request and use for the WebSocket connection (if any).
     pub compression: JetstreamCompression,
-    /// An optional timestamp to begin playback from.
+    /// Enable automatic cursor for auto-reconnect
     ///
-    /// An absent cursor or a cursor from the future will result in live-tail operation.
+    /// By default, reconnects will never set a cursor for the connection, so a small number of
+    /// events will always be dropped.
     ///
-    /// When reconnecting, use the time_us from your most recently processed event and maybe
-    /// provide a negative buffer (i.e. subtract a few seconds) to ensure gapless playback.
-    pub cursor: Option<chrono::DateTime<Utc>>,
+    /// If you want gapless playback across reconnects, set this to `true`. If you always want
+    /// the latest available events and can tolerate missing some: `false`.
+    pub replay_on_reconnect: bool,
     /// Maximum size of send channel for jetstream events.
     ///
     /// If your consuming task can't keep up with every new jetstream event in real-time,
@@ -197,7 +200,7 @@ impl<R: DeserializeOwned> Default for JetstreamConfig<R> {
             wanted_collections: Vec::new(),
             wanted_dids: Vec::new(),
             compression: JetstreamCompression::None,
-            cursor: None,
+            replay_on_reconnect: false,
             channel_size: 4096, // a few seconds of firehose buffer
             record_type: PhantomData,
         }
@@ -225,14 +228,9 @@ impl<R: DeserializeOwned> JetstreamConfig<R> {
             },
         );
 
-        let cursor = self
-            .cursor
-            .map(|c| ("cursor", c.timestamp_micros().to_string()));
-
         let params = did_search_query
             .chain(collection_search_query)
             .chain(std::iter::once(compression))
-            .chain(cursor)
             .collect::<Vec<(&str, String)>>();
 
         Url::parse_with_params(endpoint, params)
@@ -276,6 +274,29 @@ impl<R: DeserializeOwned + Send + 'static> JetstreamConnector<R> {
     /// A [JetstreamReceiver] is returned which can be used to respond to events. When all instances
     /// of this receiver are dropped, the connection and task are automatically closed.
     pub async fn connect(&self) -> Result<JetstreamReceiver<R>, ConnectionError> {
+        self.base_connect(None).await
+    }
+
+    /// Connects to a Jetstream instance as defined in the [JetstreamConfig] with playback from a
+    /// cursor
+    ///
+    /// A cursor from the future will result in live-tail operation.
+    ///
+    /// The cursor is only used for first successfull connection -- on auto-reconnect it will
+    /// live-tail by default. Set `replay_on_reconnect: true` in the config if you need to
+    /// receive every event, which will keep track of the last-seen cursor and reconnect from
+    /// there.
+    pub async fn connect_cursor(
+        &self,
+        cursor: Cursor,
+    ) -> Result<JetstreamReceiver<R>, ConnectionError> {
+        self.base_connect(Some(cursor)).await
+    }
+
+    async fn base_connect(
+        &self,
+        cursor: Option<Cursor>,
+    ) -> Result<JetstreamReceiver<R>, ConnectionError> {
         // We validate the config again for good measure. Probably not necessary but it can't hurt.
         self.config
             .validate()
@@ -288,6 +309,8 @@ impl<R: DeserializeOwned + Send + 'static> JetstreamConnector<R> {
             .construct_endpoint(&self.config.endpoint)
             .map_err(ConnectionError::InvalidEndpoint)?;
 
+        let replay_on_reconnect = self.config.replay_on_reconnect;
+
         tokio::task::spawn(async move {
             let max_retries = 30;
             let base_delay_ms = 1_000; // 1 second
@@ -295,36 +318,53 @@ impl<R: DeserializeOwned + Send + 'static> JetstreamConnector<R> {
             let success_threshold_s = 15; // 15 seconds, retry count is reset if we were connected at least this long
 
             let mut retry_attempt = 0;
+            let mut connect_cursor = cursor;
             loop {
                 let dict = DecoderDictionary::copy(JETSTREAM_ZSTD_DICTIONARY);
+
+                let mut configured_endpoint = configured_endpoint.clone();
+                if let Some(ref cursor) = connect_cursor {
+                    configured_endpoint
+                        .query_pairs_mut()
+                        .append_pair("cursor", &cursor.to_jetstream());
+                }
+
+                let mut last_cursor = connect_cursor.clone();
 
                 retry_attempt += 1;
                 if let Ok((ws_stream, _)) = connect_async(&configured_endpoint).await {
                     let t_connected = Instant::now();
-                    if let Err(e) = websocket_task(dict, ws_stream, send_channel.clone()).await {
+                    if let Err(e) =
+                        websocket_task(dict, ws_stream, send_channel.clone(), &mut last_cursor)
+                            .await
+                    {
                         log::error!("Jetstream closed after encountering error: {e:?}");
                     } else {
                         log::error!("Jetstream connection closed cleanly");
                     }
                     if t_connected.elapsed() > Duration::from_secs(success_threshold_s) {
                         retry_attempt = 0;
-                        continue;
                     }
                 }
 
                 if retry_attempt >= max_retries {
-                    eprintln!("max retries, bye");
+                    log::error!("hit max retries, bye");
                     break;
                 }
 
-                eprintln!("will try to reconnect");
+                connect_cursor = if replay_on_reconnect {
+                    last_cursor
+                } else {
+                    None
+                };
 
-                // Exponential backoff
-                let delay_ms = base_delay_ms * (2_u64.pow(retry_attempt));
-
-                log::error!("Connection failed, retrying in {delay_ms}ms...");
-                tokio::time::sleep(Duration::from_millis(delay_ms.min(max_delay_ms))).await;
-                log::info!("Attempting to reconnect...")
+                if retry_attempt > 0 {
+                    // Exponential backoff
+                    let delay_ms = base_delay_ms * (2_u64.pow(retry_attempt));
+                    log::error!("Connection failed, retrying in {delay_ms}ms...");
+                    tokio::time::sleep(Duration::from_millis(delay_ms.min(max_delay_ms))).await;
+                    log::info!("Attempting to reconnect...");
+                }
             }
             log::error!("Connection retries exhausted. Jetstream is disconnected.");
         });
@@ -339,6 +379,7 @@ async fn websocket_task<R: DeserializeOwned>(
     dictionary: DecoderDictionary<'_>,
     ws: WebSocketStream<MaybeTlsStream<TcpStream>>,
     send_channel: JetstreamSender<R>,
+    last_cursor: &mut Option<Cursor>,
 ) -> Result<(), JetstreamEventError> {
     // TODO: Use the write half to allow the user to change configuration settings on the fly.
     let (socket_write, mut socket_read) = ws.split();
@@ -373,20 +414,23 @@ async fn websocket_task<R: DeserializeOwned>(
             Some(Ok(message)) => {
                 match message {
                     Message::Text(json) => {
-                        let event = serde_json::from_str(&json)
+                        let event: JetstreamEvent<R> = serde_json::from_str(&json)
                             .map_err(JetstreamEventError::ReceivedMalformedJSON)?;
+                        let event_cursor = event.cursor();
 
                         if send_channel.send(event).await.is_err() {
                             // We can assume that all receivers have been dropped, so we can close
                             // the connection and exit the task.
                             log::info!(
-                            "All receivers for the Jetstream connection have been dropped, closing connection."
-                        );
+                                "All receivers for the Jetstream connection have been dropped, closing connection."
+                            );
                             closing_connection = true;
+                        } else if let Some(v) = last_cursor.as_mut() {
+                            *v = event_cursor;
                         }
                     }
                     Message::Binary(zstd_json) => {
-                        let mut cursor = Cursor::new(zstd_json);
+                        let mut cursor = IoCursor::new(zstd_json);
                         let mut decoder = zstd::stream::Decoder::with_prepared_dictionary(
                             &mut cursor,
                             &dictionary,
@@ -398,16 +442,19 @@ async fn websocket_task<R: DeserializeOwned>(
                             .read_to_string(&mut json)
                             .map_err(JetstreamEventError::CompressionDecoderError)?;
 
-                        let event = serde_json::from_str(&json)
+                        let event: JetstreamEvent<R> = serde_json::from_str(&json)
                             .map_err(JetstreamEventError::ReceivedMalformedJSON)?;
+                        let event_cursor = event.cursor();
 
                         if send_channel.send(event).await.is_err() {
                             // We can assume that all receivers have been dropped, so we can close
                             // the connection and exit the task.
                             log::info!(
-                            "All receivers for the Jetstream connection have been dropped, closing connection..."
-                        );
+                                "All receivers for the Jetstream connection have been dropped, closing connection..."
+                            );
                             closing_connection = true;
+                        } else if let Some(v) = last_cursor.as_mut() {
+                            *v = event_cursor;
                         }
                     }
                     Message::Ping(vec) => {
