@@ -354,18 +354,14 @@ async fn websocket_task<R: DeserializeOwned>(
             let false = ping_cancelled.is_cancelled() else {
                 break;
             };
-            match ping_shared_socket_write
+            if let Err(error) = ping_shared_socket_write
                 .lock()
                 .await
-                .send(Message::Ping("ping!!!!".as_bytes().to_vec()))
+                .send(Message::Ping("ping".as_bytes().to_vec()))
                 .await
             {
-                Ok(_) => (),
-                Err(error) => {
-                    eprintln!("ping send failed");
-                    log::error!("Ping failed: {error}");
-                    break;
-                }
+                log::error!("Ping failed: {error}");
+                break;
             }
         }
         eprintln!("oh this is bad news.");
