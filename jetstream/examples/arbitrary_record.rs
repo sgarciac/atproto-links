@@ -38,12 +38,16 @@ async fn main() -> anyhow::Result<()> {
         ..Default::default()
     };
 
-    let jetstream: JetstreamConnector<serde_json::Value> = JetstreamConnector::new(config)?;
-    let receiver = jetstream.connect().await?;
+    let jetstream = JetstreamConnector::new(config)?;
+    let mut receiver = jetstream.connect().await?;
 
-    println!("Listening for '{}' events on DIDs: {:?}", &*args.nsid, dids);
+    println!(
+        "Listening for '{}' events on DIDs: {:?}",
+        args.nsid.as_str(),
+        dids
+    );
 
-    while let Ok(event) = receiver.recv_async().await {
+    while let Some(event) = receiver.recv().await {
         if let Commit(CommitEvent::Create { commit, .. }) = event {
             println!("got record: {:?}", commit.record);
         }

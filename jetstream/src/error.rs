@@ -40,4 +40,6 @@ pub enum JetstreamEventError {
     CompressionDecoderError(io::Error),
     #[error("all receivers were dropped but the websocket connection failed to close cleanly")]
     WebSocketCloseFailure,
+    #[error("failed to send ping or pong: {0}")]
+    PingPongError(#[from] tokio_tungstenite::tungstenite::Error),
 }

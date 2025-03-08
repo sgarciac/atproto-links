@@ -5,4 +5,5 @@ pub use atrium_api::types::string::{
     Did,
     Handle,
     Nsid,
+    RecordKey,
 };

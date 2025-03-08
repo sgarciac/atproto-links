@@ -24,7 +24,14 @@ use futures_util::{
 use serde::de::DeserializeOwned;
 use tokio::{
     net::TcpStream,
-    sync::Mutex,
+    sync::{
+        mpsc::{
+            channel,
+            Receiver,
+            Sender,
+        },
+        Mutex,
+    },
 };
 use tokio_tungstenite::{
     connect_async,
@@ -113,10 +120,10 @@ const MAX_WANTED_DIDS: usize = 10_000;
 const JETSTREAM_ZSTD_DICTIONARY: &[u8] = include_bytes!("../zstd/dictionary");
 
 /// A receiver channel for consuming Jetstream events.
-pub type JetstreamReceiver<R> = flume::Receiver<JetstreamEvent<R>>;
+pub type JetstreamReceiver<R> = Receiver<JetstreamEvent<R>>;
 
 /// An internal sender channel for sending Jetstream events to [JetstreamReceiver]'s.
-type JetstreamSender<R> = flume::Sender<JetstreamEvent<R>>;
+type JetstreamSender<R> = Sender<JetstreamEvent<R>>;
 
 /// A wrapper connector type for working with a WebSocket connection to a Jetstream instance to
 /// receive and consume events. See [JetstreamConnector::connect] for more info.
@@ -191,7 +198,7 @@ impl<R: DeserializeOwned> Default for JetstreamConfig<R> {
             wanted_dids: Vec::new(),
             compression: JetstreamCompression::None,
             cursor: None,
-            channel_size: 1024,
+            channel_size: 4096, // a few seconds of firehose buffer
             record_type: PhantomData,
         }
     }
@@ -274,7 +281,7 @@ impl<R: DeserializeOwned + Send + 'static> JetstreamConnector<R> {
             .validate()
             .map_err(ConnectionError::InvalidConfig)?;
 
-        let (send_channel, receive_channel) = flume::bounded(self.config.channel_size);
+        let (send_channel, receive_channel) = channel(self.config.channel_size);
 
         let configured_endpoint = self
             .config
@@ -306,8 +313,11 @@ impl<R: DeserializeOwned + Send + 'static> JetstreamConnector<R> {
                 }
 
                 if retry_attempt >= max_retries {
+                    eprintln!("max retries, bye");
                     break;
                 }
+
+                eprintln!("will try to reconnect");
 
                 // Exponential backoff
                 let delay_ms = base_delay_ms * (2_u64.pow(retry_attempt));
@@ -344,20 +354,21 @@ async fn websocket_task<R: DeserializeOwned>(
             let false = ping_cancelled.is_cancelled() else {
                 break;
             };
-            log::trace!("Sending ping");
             match ping_shared_socket_write
                 .lock()
                 .await
-                .send(Message::Ping("ping".as_bytes().to_vec()))
+                .send(Message::Ping("ping!!!!".as_bytes().to_vec()))
                 .await
             {
                 Ok(_) => (),
                 Err(error) => {
+                    eprintln!("ping send failed");
                     log::error!("Ping failed: {error}");
                     break;
                 }
             }
         }
+        eprintln!("oh this is bad news.");
     });
 
     let mut closing_connection = false;
@@ -369,7 +380,7 @@ async fn websocket_task<R: DeserializeOwned>(
                         let event = serde_json::from_str(&json)
                             .map_err(JetstreamEventError::ReceivedMalformedJSON)?;
 
-                        if send_channel.send(event).is_err() {
+                        if send_channel.send(event).await.is_err() {
                             // We can assume that all receivers have been dropped, so we can close
                             // the connection and exit the task.
                             log::info!(
@@ -394,7 +405,7 @@ async fn websocket_task<R: DeserializeOwned>(
                         let event = serde_json::from_str(&json)
                             .map_err(JetstreamEventError::ReceivedMalformedJSON)?;
 
-                        if send_channel.send(event).is_err() {
+                        if send_channel.send(event).await.is_err() {
                             // We can assume that all receivers have been dropped, so we can close
                             // the connection and exit the task.
                             log::info!(
@@ -405,11 +416,12 @@ async fn websocket_task<R: DeserializeOwned>(
                     }
                     Message::Ping(vec) => {
                         log::trace!("Ping recieved, responding");
-                        _ = shared_socket_write
+                        shared_socket_write
                             .lock()
                             .await
                             .send(Message::Pong(vec))
-                            .await;
+                            .await
+                            .map_err(JetstreamEventError::PingPongError)?;
                     }
                     Message::Close(close_frame) => {
                         if let Some(close_frame) = close_frame {

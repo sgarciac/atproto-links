@@ -41,23 +41,28 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let jetstream = JetstreamConnector::new(config)?;
-    let receiver = jetstream.connect().await?;
+    let mut receiver = jetstream.connect().await?;
 
-    println!("Listening for '{}' events on DIDs: {:?}", &*args.nsid, dids);
+    println!(
+        "Listening for '{}' events on DIDs: {:?}",
+        args.nsid.as_str(),
+        dids
+    );
 
-    while let Ok(event) = receiver.recv_async().await {
+    while let Some(event) = receiver.recv().await {
         if let Commit(commit) = event {
             match commit {
                 CommitEvent::Create { info: _, commit } => {
                     if let AppBskyFeedPost(record) = commit.record {
                         println!(
                             "New post created! ({})\n\n'{}'",
-                            commit.info.rkey, record.text
+                            commit.info.rkey.as_str(),
+                            record.text
                         );
                     }
                 }
                 CommitEvent::Delete { info: _, commit } => {
-                    println!("A post has been deleted. ({})", commit.rkey);
+                    println!("A post has been deleted. ({})", commit.rkey.as_str());
                 }
                 _ => {}
             }

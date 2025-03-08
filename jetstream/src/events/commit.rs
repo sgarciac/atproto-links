@@ -42,7 +42,7 @@ pub struct CommitInfo {
     /// The type of commit operation that was performed.
     pub operation: CommitType,
     pub rev: String,
-    pub rkey: String,
+    pub rkey: exports::RecordKey,
     /// The NSID of the record type that this commit is associated with.
     pub collection: exports::Nsid,
 }
