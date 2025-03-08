@@ -1,7 +1,6 @@
 use crate::EventBatch;
 use std::time::Duration;
-use tokio::sync::mpsc::Receiver;
-use tokio::time::sleep;
+use tokio::{sync::mpsc::Receiver, time::sleep};
 
 pub async fn receive(mut receiver: Receiver<EventBatch>) -> anyhow::Result<()> {
     loop {

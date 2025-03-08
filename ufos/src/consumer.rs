@@ -1,10 +1,10 @@
-use jetstream::exports::Did;
 use jetstream::{
     events::{
         account::AccountEvent,
         commit::{CommitData, CommitEvent, CommitInfo},
         Cursor, EventInfo, JetstreamEvent,
     },
+    exports::Did,
     DefaultJetstreamEndpoints, JetstreamCompression, JetstreamConfig, JetstreamConnector,
     JetstreamReceiver,
 };

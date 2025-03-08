@@ -1,7 +1,6 @@
 use clap::Parser;
 use std::path::PathBuf;
-use ufos::consumer;
-use ufos::store;
+use ufos::{consumer, store};
 
 /// Aggregate links in the at-mosphere
 #[derive(Parser, Debug)]
