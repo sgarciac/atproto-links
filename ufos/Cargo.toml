@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0.97"
 clap = { version = "4.5.31", features = ["derive"] }
+fjall = { version = "2.6.7", features = ["miniz", "bytes", "single_writer_tx"], default-features = false }
 jetstream = { path = "../jetstream" }
 serde_json = "1.0.140"
 tokio = { version = "1.43.0", features = ["full", "sync", "time"] }
