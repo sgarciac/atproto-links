@@ -77,11 +77,11 @@ impl Batcher {
             JetstreamEvent::Commit(CommitEvent::Delete { commit, info }) => {
                 self.handle_delete_record(commit, info)
             }
-            JetstreamEvent::Identity(_) => false, // identity events are noops for us
             JetstreamEvent::Account(AccountEvent { info, account }) if !account.active => {
                 self.handle_remove_account(info.did)
             }
             JetstreamEvent::Account(_) => false, // ignore account *activations*
+            JetstreamEvent::Identity(_) => false, // identity events are noops for us
         };
         if batch_full {
             self.batch_sender
