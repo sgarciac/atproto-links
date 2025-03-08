@@ -19,7 +19,7 @@ struct Args {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
-    let batches = consumer::consume(&args.jetstream).await?;
+    let batches = consumer::consume(&args.jetstream, None).await?;
     store::receive(batches).await?;
     Ok(())
 }

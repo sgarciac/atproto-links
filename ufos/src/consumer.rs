@@ -3,7 +3,7 @@ use jetstream::{
     events::{
         account::AccountEvent,
         commit::{CommitData, CommitEvent, CommitInfo},
-        EventInfo, JetstreamEvent,
+        Cursor, EventInfo, JetstreamEvent,
     },
     DefaultJetstreamEndpoints, JetstreamCompression, JetstreamConfig, JetstreamConnector,
     JetstreamReceiver,
@@ -19,7 +19,7 @@ const MAX_BATCHED_COLLECTIONS: usize = 256; // block at this point. pretty arbit
 const MAX_BATCHED_DELETES: usize = 1024; // block at this point. fairly arbitrary, limit unbounded.
 const MAX_ACCOUNT_REMOVES: usize = 1; // block at this point. these can be heavy so hold at each one.
 
-const SEND_TIMEOUT_S: f64 = 3.;
+const SEND_TIMEOUT_S: f64 = 4.;
 
 #[derive(Debug)]
 struct Batcher {
@@ -28,13 +28,18 @@ struct Batcher {
     current_batch: EventBatch,
 }
 
-pub async fn consume(jetstream_endpoint: &str) -> anyhow::Result<Receiver<EventBatch>> {
+pub async fn consume(
+    jetstream_endpoint: &str,
+    cursor: Option<Cursor>,
+) -> anyhow::Result<Receiver<EventBatch>> {
     let config: JetstreamConfig<serde_json::Value> = JetstreamConfig {
         endpoint: DefaultJetstreamEndpoints::endpoint_or_shortcut(jetstream_endpoint),
         compression: JetstreamCompression::Zstd,
         ..Default::default()
     };
-    let jetstream_receiver = JetstreamConnector::new(config)?.connect().await?;
+    let jetstream_receiver = JetstreamConnector::new(config)?
+        .connect_cursor(cursor)
+        .await?;
     let (batch_sender, batch_reciever) = channel::<EventBatch>(1); // *almost* rendezvous: one message in the middle
     let mut batcher = Batcher::new(jetstream_receiver, batch_sender);
     tokio::task::spawn(async move { batcher.run().await });
@@ -67,83 +72,98 @@ impl Batcher {
         &mut self,
         event: JetstreamEvent<serde_json::Value>,
     ) -> anyhow::Result<()> {
-        let batch_full = match event {
+        let event_cursor = event.cursor();
+        match event {
             JetstreamEvent::Commit(CommitEvent::Create { commit, info }) => {
-                self.handle_set_record(true, commit, info)
+                self.handle_set_record(true, commit, info).await?
             }
             JetstreamEvent::Commit(CommitEvent::Update { commit, info }) => {
-                self.handle_set_record(false, commit, info)
+                self.handle_set_record(false, commit, info).await?
             }
             JetstreamEvent::Commit(CommitEvent::Delete { commit, info }) => {
-                self.handle_delete_record(commit, info)
+                self.handle_delete_record(commit, info).await?
             }
             JetstreamEvent::Account(AccountEvent { info, account }) if !account.active => {
-                self.handle_remove_account(info.did)
+                self.handle_remove_account(info.did).await?
             }
-            JetstreamEvent::Account(_) => false, // ignore account *activations*
-            JetstreamEvent::Identity(_) => false, // identity events are noops for us
+            JetstreamEvent::Account(_) => {} // ignore account *activations*
+            JetstreamEvent::Identity(_) => {} // identity events are noops for us
         };
-        if batch_full {
-            self.batch_sender
-                .send_timeout(
-                    mem::take(&mut self.current_batch),
-                    Duration::from_secs_f64(SEND_TIMEOUT_S),
-                )
-                .await?;
-        } else {
-            match self.batch_sender.try_reserve() {
-                Ok(permit) => permit.send(mem::take(&mut self.current_batch)),
-                Err(TrySendError::Full(())) => {} // no worries if not, keep batching while waiting for capacity
-                Err(TrySendError::Closed(())) => anyhow::bail!("batch channel closed"),
-            }
+        self.current_batch.last_jetstream_cursor = Some(event_cursor);
+
+        match self.batch_sender.try_reserve() {
+            Ok(permit) => permit.send(mem::take(&mut self.current_batch)),
+            Err(TrySendError::Full(())) => {} // no worries if not, keep batching while waiting for capacity
+            Err(TrySendError::Closed(())) => anyhow::bail!("batch channel closed"),
         }
         Ok(())
     }
 
-    fn handle_set_record(
+    // holds up all consumer progress until it can send to the channel
+    // use this when the current batch is too full to add more to it
+    async fn send_current_batch_now(&mut self) -> anyhow::Result<()> {
+        self.batch_sender
+            .send_timeout(
+                mem::take(&mut self.current_batch),
+                Duration::from_secs_f64(SEND_TIMEOUT_S),
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn handle_set_record(
         &mut self,
         new: bool,
         commit: CommitData<serde_json::Value>,
         info: EventInfo,
-    ) -> bool {
+    ) -> anyhow::Result<()> {
+        if !self
+            .current_batch
+            .records
+            .contains_key(&commit.info.collection)
+            && self.current_batch.records.len() >= MAX_BATCHED_COLLECTIONS
+        {
+            self.send_current_batch_now().await?;
+        }
         let record = SetRecord {
             new,
             did: info.did,
             rkey: commit.info.rkey,
             record: commit.record,
         };
-        let mut created_collection = false;
         let collection = self
             .current_batch
             .records
             .entry(commit.info.collection)
-            .or_insert_with(|| {
-                created_collection = true;
-                Default::default()
-            });
+            .or_default();
         collection.total_seen += 1;
         collection.samples.push_front(record);
         collection.samples.truncate(MAX_BATCHED_RECORDS);
-
-        if created_collection {
-            self.current_batch.records.len() >= MAX_BATCHED_COLLECTIONS // full if we have collections to the max
-        } else {
-            false
-        }
+        Ok(())
     }
 
-    fn handle_delete_record(&mut self, commit_info: CommitInfo, info: EventInfo) -> bool {
+    async fn handle_delete_record(
+        &mut self,
+        commit_info: CommitInfo,
+        info: EventInfo,
+    ) -> anyhow::Result<()> {
+        if self.current_batch.record_deletes.len() >= MAX_BATCHED_DELETES {
+            self.send_current_batch_now().await?;
+        }
         let rm = DeleteRecord {
             did: info.did,
             collection: commit_info.collection,
             rkey: commit_info.rkey,
         };
         self.current_batch.record_deletes.push(rm);
-        self.current_batch.record_deletes.len() >= MAX_BATCHED_DELETES
+        Ok(())
     }
 
-    fn handle_remove_account(&mut self, did: Did) -> bool {
+    async fn handle_remove_account(&mut self, did: Did) -> anyhow::Result<()> {
+        if self.current_batch.account_removes.len() >= MAX_ACCOUNT_REMOVES {
+            self.send_current_batch_now().await?;
+        }
         self.current_batch.account_removes.push(did);
-        self.current_batch.account_removes.len() >= MAX_ACCOUNT_REMOVES
+        Ok(())
     }
 }

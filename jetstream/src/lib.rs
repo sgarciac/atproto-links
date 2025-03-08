@@ -274,7 +274,7 @@ impl<R: DeserializeOwned + Send + 'static> JetstreamConnector<R> {
     /// A [JetstreamReceiver] is returned which can be used to respond to events. When all instances
     /// of this receiver are dropped, the connection and task are automatically closed.
     pub async fn connect(&self) -> Result<JetstreamReceiver<R>, ConnectionError> {
-        self.base_connect(None).await
+        self.connect_cursor(None).await
     }
 
     /// Connects to a Jetstream instance as defined in the [JetstreamConfig] with playback from a
@@ -287,13 +287,6 @@ impl<R: DeserializeOwned + Send + 'static> JetstreamConnector<R> {
     /// receive every event, which will keep track of the last-seen cursor and reconnect from
     /// there.
     pub async fn connect_cursor(
-        &self,
-        cursor: Cursor,
-    ) -> Result<JetstreamReceiver<R>, ConnectionError> {
-        self.base_connect(Some(cursor)).await
-    }
-
-    async fn base_connect(
         &self,
         cursor: Option<Cursor>,
     ) -> Result<JetstreamReceiver<R>, ConnectionError> {

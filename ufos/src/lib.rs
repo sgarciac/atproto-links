@@ -1,6 +1,7 @@
 pub mod consumer;
 pub mod store;
 
+use jetstream::events::Cursor;
 use jetstream::exports::{Did, Nsid, RecordKey};
 use std::collections::{HashMap, VecDeque};
 
@@ -30,4 +31,5 @@ pub struct EventBatch {
     pub records: HashMap<Nsid, CollectionSamples>,
     pub record_deletes: Vec<DeleteRecord>,
     pub account_removes: Vec<Did>,
+    pub last_jetstream_cursor: Option<Cursor>,
 }
