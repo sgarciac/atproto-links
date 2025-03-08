@@ -2937,11 +2937,9 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
- "ctrlc",
  "jetstream",
  "serde_json",
  "tokio",
- "tokio-util",
 ]
 
 [[package]]
