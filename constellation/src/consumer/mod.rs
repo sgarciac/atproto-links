@@ -187,6 +187,7 @@ pub fn get_actionable(event: &JsonValue) -> Option<(ActionableEvent, u64)> {
                         counter!("consumer_events_actionable", "action_type" => "account", "action" => "delete").increment(1);
                         Some((ActionableEvent::DeleteAccount(did.into()), cursor))
                     }
+                    // TODO: are we missing handling for suspended and deactivated accounts?
                     _ => None,
                 },
                 _ => None,
