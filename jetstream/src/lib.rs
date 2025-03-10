@@ -224,9 +224,7 @@ impl<R: DeserializeOwned> JetstreamConfig<R> {
     /// Constructs a new endpoint URL with the given [JetstreamConfig] applied.
     pub fn get_request_builder(
         &self,
-    ) -> Result<impl Fn(Option<Cursor>) -> Result<Request, ConnectionError>, ConnectionError> {
-        let _: Url = self.endpoint.parse()?; // fail early if the endpoint is invalid
-
+    ) -> impl Fn(Option<Cursor>) -> Result<Request, ConnectionError> {
         let did_search_query = self
             .wanted_dids
             .iter()
@@ -266,7 +264,7 @@ impl<R: DeserializeOwned> JetstreamConfig<R> {
         };
 
         let endpoint = self.endpoint.clone();
-        Ok(move |maybe_cursor: Option<Cursor>| {
+        move |maybe_cursor: Option<Cursor>| {
             let mut params = base_params.clone();
             if let Some(ref cursor) = maybe_cursor {
                 params.push(("cursor", cursor.to_jetstream()));
@@ -278,7 +276,7 @@ impl<R: DeserializeOwned> JetstreamConfig<R> {
                 req = req.with_header("user-agent", ua)
             };
             Ok(req.into_client_request()?)
-        })
+        }
     }
 
     /// Validates the configuration to make sure it is within the limits of the Jetstream API.
@@ -288,6 +286,10 @@ impl<R: DeserializeOwned> JetstreamConfig<R> {
     /// if the Jetstream API has itself changed.
     /// - [MAX_WANTED_COLLECTIONS]
     /// - [MAX_WANTED_DIDS]
+    ///
+    /// # Endpoint
+    ///
+    /// The provided `endpoint` is attempted to be parsed so that any errors occur early.
     pub fn validate(&self) -> Result<(), ConfigValidationError> {
         let collections = self.wanted_collections.len();
         let dids = self.wanted_dids.len();
@@ -299,6 +301,8 @@ impl<R: DeserializeOwned> JetstreamConfig<R> {
         if dids > MAX_WANTED_DIDS {
             return Err(ConfigValidationError::TooManyDids(dids));
         }
+
+        let _ = self.endpoint.parse::<Url>()?;
 
         Ok(())
     }
@@ -342,7 +346,7 @@ impl<R: DeserializeOwned + Send + 'static> JetstreamConnector<R> {
 
         let (send_channel, receive_channel) = channel(self.config.channel_size);
         let replay_on_reconnect = self.config.replay_on_reconnect;
-        let build_request = self.config.get_request_builder()?;
+        let build_request = self.config.get_request_builder();
 
         tokio::task::spawn(async move {
             // TODO: maybe return the task handle so we can surface any errors

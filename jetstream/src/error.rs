@@ -11,6 +11,8 @@ pub enum ConfigValidationError {
     TooManyWantedCollections(usize),
     #[error("too many wanted DIDs: {0} > 10,000")]
     TooManyDids(usize),
+    #[error("invalid endpoint: {0}")]
+    InvalidEndpoint(#[from] url::ParseError),
 }
 
 /// Possible errors that can occur in the process of connecting to a Jetstream instance over
