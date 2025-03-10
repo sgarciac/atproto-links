@@ -6,6 +6,28 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::{sync::mpsc::Receiver, time::sleep};
 
+/**
+ * data format, roughly:
+ *
+ * Global Meta:
+ *   ["js_cursor"] => js_cursor(u64), // used as global sequence
+ *   ["js_endpoint"] => &str, // checked on startup because jetstream instance cursors are not interchangeable
+ *   ["mod_cursor"] => [u64];
+ *   ["rollup_cursor"] => [jetstream_cursor|collection]; // how far the rollup helper has progressed
+ * Mod queue
+ *   ["mod_queue"|cursor] => one of {
+ *      DeleteAccount(did)
+ *      DeleteRecord(did, collection, rkey)
+ *      UpdateRecord(did, collection, rkey, new_record) // (still on this)
+ *   }
+ * Collection and rollup meta:
+ *   ["seen_by_js_cursor_collection"|js_cursor|collection] => u64 // batched total, gets cleaned up by rollup
+ *   ["total_by_collection"|collection] => [u64, js_cursor] // live total requires scanning seen_by_collection after cursor
+ *   ["hour_by_collection"|hour(u64)|collection] => u64 // rollup: computed by helper task based on dirty collections
+ * Samples:
+ *   ["by_collection"|collection|js_cursor] => [did|rkey|record]
+ *   ["by_id"|did|collection|rkey] => js_cursor // required to support deletes; did first prefix for account deletes.
+ **/
 pub struct Storage {
     keyspace: TxKeyspace,
 }
