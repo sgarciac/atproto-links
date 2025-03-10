@@ -21,6 +21,8 @@ pub enum ConfigValidationError {
 pub enum ConnectionError {
     #[error("invalid endpoint: {0}")]
     InvalidEndpoint(#[from] url::ParseError),
+    #[error("failed to construct url: {0}")]
+    InvalidEndpointUri(#[from] tokio_tungstenite::tungstenite::http::uri::InvalidUri),
     #[error("failed to connect to Jetstream instance: {0}")]
     WebSocketFailure(#[from] tokio_tungstenite::tungstenite::Error),
     #[error("the Jetstream config is invalid (this really should not happen here): {0}")]

@@ -34,7 +34,14 @@ use tokio::{
 };
 use tokio_tungstenite::{
     connect_async,
-    tungstenite::Message,
+    tungstenite::{
+        client::{
+            ClientRequestBuilder,
+            IntoClientRequest,
+        },
+        handshake::client::Request,
+        Message,
+    },
     MaybeTlsStream,
     WebSocketStream,
 };
@@ -169,6 +176,10 @@ pub struct JetstreamConfig<R: DeserializeOwned = KnownRecord> {
     pub wanted_dids: Vec<exports::Did>,
     /// The compression algorithm to request and use for the WebSocket connection (if any).
     pub compression: JetstreamCompression,
+    /// User agent string to include with the jetstream connection request
+    pub user_agent: Option<String>,
+    /// Do not append jetstream client info to user agent string
+    pub omit_user_agent_jetstream_info: bool,
     /// Enable automatic cursor for auto-reconnect
     ///
     /// By default, reconnects will never set a cursor for the connection, so a small number of
@@ -200,6 +211,8 @@ impl<R: DeserializeOwned> Default for JetstreamConfig<R> {
             wanted_collections: Vec::new(),
             wanted_dids: Vec::new(),
             compression: JetstreamCompression::None,
+            user_agent: None,
+            omit_user_agent_jetstream_info: false,
             replay_on_reconnect: false,
             channel_size: 4096, // a few seconds of firehose buffer
             record_type: PhantomData,
@@ -209,7 +222,11 @@ impl<R: DeserializeOwned> Default for JetstreamConfig<R> {
 
 impl<R: DeserializeOwned> JetstreamConfig<R> {
     /// Constructs a new endpoint URL with the given [JetstreamConfig] applied.
-    pub fn construct_endpoint(&self, endpoint: &str) -> Result<Url, url::ParseError> {
+    pub fn get_request_builder(
+        &self,
+    ) -> Result<impl Fn(Option<Cursor>) -> Result<Request, ConnectionError>, ConnectionError> {
+        let _: Url = self.endpoint.parse()?; // fail early if the endpoint is invalid
+
         let did_search_query = self
             .wanted_dids
             .iter()
@@ -228,12 +245,40 @@ impl<R: DeserializeOwned> JetstreamConfig<R> {
             },
         );
 
-        let params = did_search_query
+        let base_params = did_search_query
             .chain(collection_search_query)
             .chain(std::iter::once(compression))
-            .collect::<Vec<(&str, String)>>();
+            .collect::<Vec<(&'static str, String)>>();
 
-        Url::parse_with_params(endpoint, params)
+        let ua_info: Option<String> = if self.omit_user_agent_jetstream_info {
+            None
+        } else {
+            Some(format!(
+                "v{} via jetstream-oxide (microcosm/links fork)",
+                env!("CARGO_PKG_VERSION")
+            ))
+        };
+        let maybe_ua = match (&self.user_agent, ua_info) {
+            (Some(ua), Some(info)) => Some(format!("{ua} {info}")),
+            (Some(ua), None) => Some(ua.clone()),
+            (None, Some(info)) => Some(info.clone()),
+            (None, None) => None,
+        };
+
+        let endpoint = self.endpoint.clone();
+        Ok(move |maybe_cursor: Option<Cursor>| {
+            let mut params = base_params.clone();
+            if let Some(ref cursor) = maybe_cursor {
+                params.push(("cursor", cursor.to_jetstream()));
+            }
+            let url = Url::parse_with_params(&endpoint, params)?;
+
+            let mut req = ClientRequestBuilder::new(url.as_str().parse()?);
+            if let Some(ua) = &maybe_ua {
+                req = req.with_header("user-agent", ua)
+            };
+            Ok(req.into_client_request()?)
+        })
     }
 
     /// Validates the configuration to make sure it is within the limits of the Jetstream API.
@@ -296,15 +341,11 @@ impl<R: DeserializeOwned + Send + 'static> JetstreamConnector<R> {
             .map_err(ConnectionError::InvalidConfig)?;
 
         let (send_channel, receive_channel) = channel(self.config.channel_size);
-
-        let configured_endpoint = self
-            .config
-            .construct_endpoint(&self.config.endpoint)
-            .map_err(ConnectionError::InvalidEndpoint)?;
-
         let replay_on_reconnect = self.config.replay_on_reconnect;
+        let build_request = self.config.get_request_builder()?;
 
         tokio::task::spawn(async move {
+            // TODO: maybe return the task handle so we can surface any errors
             let max_retries = 30;
             let base_delay_ms = 1_000; // 1 second
             let max_delay_ms = 30_000; // 30 seconds
@@ -315,17 +356,17 @@ impl<R: DeserializeOwned + Send + 'static> JetstreamConnector<R> {
             loop {
                 let dict = DecoderDictionary::copy(JETSTREAM_ZSTD_DICTIONARY);
 
-                let mut configured_endpoint = configured_endpoint.clone();
-                if let Some(ref cursor) = connect_cursor {
-                    configured_endpoint
-                        .query_pairs_mut()
-                        .append_pair("cursor", &cursor.to_jetstream());
-                }
+                let req = match build_request(connect_cursor.clone()) {
+                    Ok(req) => req,
+                    Err(e) => {
+                        log::error!("Could not build jetstream websocket request: {e:?}");
+                        break; // this is always fatal? no retry.
+                    }
+                };
 
                 let mut last_cursor = connect_cursor.clone();
-
                 retry_attempt += 1;
-                if let Ok((ws_stream, _)) = connect_async(&configured_endpoint).await {
+                if let Ok((ws_stream, _)) = connect_async(req).await {
                     let t_connected = Instant::now();
                     if let Err(e) =
                         websocket_task(dict, ws_stream, send_channel.clone(), &mut last_cursor)
