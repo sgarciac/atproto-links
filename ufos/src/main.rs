@@ -18,7 +18,7 @@ struct Args {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
-    let (storage, cursor) = store::Storage::open(&args.data)?;
+    let (storage, cursor) = store::Storage::open(&args.data, &args.jetstream)?;
     println!("starting consumer with cursor: {cursor:?}");
     let batches = consumer::consume(&args.jetstream, cursor).await?;
     storage.receive(batches).await?;

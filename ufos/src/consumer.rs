@@ -14,10 +14,10 @@ use tokio::sync::mpsc::{channel, error::TrySendError, Receiver, Sender};
 
 use crate::{DeleteRecord, EventBatch, SetRecord};
 
-const MAX_BATCHED_RECORDS: usize = 32; // non-blocking limit. drops oldest batched record per collection.
-const MAX_BATCHED_COLLECTIONS: usize = 256; // block at this point. pretty arbitrary, limit unbounded growth since during replay it could grow a lot.
+const MAX_BATCHED_RECORDS: usize = 2048; // non-blocking limit. drops oldest batched record per collection.
+const MAX_BATCHED_COLLECTIONS: usize = 512; // block at this point. pretty arbitrary, limit unbounded growth since during replay it could grow a lot.
 const MAX_BATCHED_DELETES: usize = 1024; // block at this point. fairly arbitrary, limit unbounded.
-const MAX_ACCOUNT_REMOVES: usize = 1; // block at this point. these can be heavy so hold at each one.
+const MAX_ACCOUNT_REMOVES: usize = 1024; // block at this point. very arbirary.
 
 const SEND_TIMEOUT_S: f64 = 4.;
 
