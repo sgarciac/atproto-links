@@ -5,6 +5,7 @@ pub mod identity;
 use std::time::{
     Duration,
     SystemTime,
+    SystemTimeError,
     UNIX_EPOCH,
 };
 
@@ -15,7 +16,7 @@ use crate::exports;
 /// Opaque wrapper for the time_us cursor used by jetstream
 ///
 /// Generally, you should use a cursor
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Deserialize, Debug, Clone, PartialEq, PartialOrd)]
 pub struct Cursor(u64);
 
 /// Basic data that is included with every event.
@@ -75,6 +76,9 @@ impl Cursor {
     ///
     /// If you want to receive all available jetstream replay (typically a few days), use
     /// .from_start()
+    ///
+    /// Warning: this exploits the internal implementation detail of jetstream cursors
+    /// being ~microsecond timestamps.
     pub fn at(t: SystemTime) -> Self {
         let unix_dt = t
             .duration_since(UNIX_EPOCH)
@@ -86,6 +90,9 @@ impl Cursor {
     /// Panics: if d is greater than the time since the unix epoch: Jan 1, 1970.
     ///
     /// Jetstream instances typically only have a few days of replay.
+    ///
+    /// Warning: this exploits the internal implementation detail of jetstream cursors
+    /// being ~microsecond timestamps.
     pub fn back_by(d: Duration) -> Self {
         Self::at(SystemTime::now() - d)
     }
@@ -102,5 +109,33 @@ impl Cursor {
     /// Format the cursor value for use in a jetstream connection url querystring
     pub fn to_jetstream(&self) -> String {
         self.0.to_string()
+    }
+    /// Compute the time span since an earlier cursor or [SystemTime]
+    ///
+    /// Warning: this exploits the internal implementation detail of jetstream cursors
+    /// being ~microsecond timestamps.
+    pub fn duration_since(
+        &self,
+        earlier: impl Into<SystemTime>,
+    ) -> Result<Duration, SystemTimeError> {
+        let t: SystemTime = self.into();
+        t.duration_since(earlier.into())
+    }
+    /// Compute the age of the cursor vs the local clock
+    ///
+    /// Warning: this exploits the internal implementation detail of jetstream cursors
+    pub fn elapsed(&self) -> Result<Duration, SystemTimeError> {
+        let t: SystemTime = self.into();
+        t.elapsed()
+    }
+}
+
+impl From<&Cursor> for SystemTime {
+    /// Convert a cursor directly to a [SystemTime]
+    ///
+    /// Warning: this exploits the internal implementation detail of jetstream cursors
+    /// being ~microsecond timestamps.
+    fn from(c: &Cursor) -> Self {
+        UNIX_EPOCH + Duration::from_micros(c.0)
     }
 }

@@ -11,6 +11,7 @@ pub struct SetRecord {
     pub did: Did,
     pub rkey: RecordKey,
     pub record: serde_json::Value,
+    pub cursor: Cursor,
 }
 
 #[derive(Debug, Default)]
@@ -24,12 +25,20 @@ pub struct DeleteRecord {
     pub did: Did,
     pub collection: Nsid,
     pub rkey: RecordKey,
+    pub cursor: Cursor,
+}
+
+#[derive(Debug)]
+pub struct DeleteAccount {
+    pub did: Did,
+    pub cursor: Cursor,
 }
 
 #[derive(Debug, Default)]
 pub struct EventBatch {
     pub records: HashMap<Nsid, CollectionSamples>,
     pub record_deletes: Vec<DeleteRecord>,
-    pub account_removes: Vec<Did>,
+    pub account_removes: Vec<DeleteAccount>,
+    pub first_jetstream_cursor: Option<Cursor>,
     pub last_jetstream_cursor: Option<Cursor>,
 }

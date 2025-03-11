@@ -17,6 +17,7 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    env_logger::init();
     let args = Args::parse();
     let (storage, cursor) = store::Storage::open(&args.data, &args.jetstream)?;
     println!("starting consumer with cursor: {cursor:?}");

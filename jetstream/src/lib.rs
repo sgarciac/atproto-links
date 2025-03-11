@@ -372,6 +372,7 @@ impl<R: DeserializeOwned + Send + 'static> JetstreamConnector<R> {
                 retry_attempt += 1;
                 if let Ok((ws_stream, _)) = connect_async(req).await {
                     let t_connected = Instant::now();
+                    log::trace!("jetstream connected. starting websocket task...");
                     if let Err(e) =
                         websocket_task(dict, ws_stream, send_channel.clone(), &mut last_cursor)
                             .await
@@ -428,6 +429,7 @@ async fn websocket_task<R: DeserializeOwned>(
     let ping_cancelled = ping_cancellation_token.clone();
     let ping_shared_socket_write = shared_socket_write.clone();
     tokio::spawn(async move {
+        log::trace!("starting ping task");
         loop {
             ping_interval.tick().await;
             let false = ping_cancelled.is_cancelled() else {
@@ -456,6 +458,13 @@ async fn websocket_task<R: DeserializeOwned>(
                             .map_err(JetstreamEventError::ReceivedMalformedJSON)?;
                         let event_cursor = event.cursor();
 
+                        if let Some(last) = last_cursor {
+                            if event_cursor <= *last {
+                                log::warn!("event cursor {event_cursor:?} was older than the last one: {last:?}. dropping event.");
+                                continue;
+                            }
+                        }
+
                         if send_channel.send(event).await.is_err() {
                             // We can assume that all receivers have been dropped, so we can close
                             // the connection and exit the task.
@@ -463,8 +472,8 @@ async fn websocket_task<R: DeserializeOwned>(
                                 "All receivers for the Jetstream connection have been dropped, closing connection."
                             );
                             closing_connection = true;
-                        } else if let Some(v) = last_cursor.as_mut() {
-                            *v = event_cursor;
+                        } else if let Some(last) = last_cursor.as_mut() {
+                            *last = event_cursor;
                         }
                     }
                     Message::Binary(zstd_json) => {
@@ -484,6 +493,13 @@ async fn websocket_task<R: DeserializeOwned>(
                             .map_err(JetstreamEventError::ReceivedMalformedJSON)?;
                         let event_cursor = event.cursor();
 
+                        if let Some(last) = last_cursor {
+                            if event_cursor <= *last {
+                                log::warn!("event cursor {event_cursor:?} was older than the last one: {last:?}. dropping event.");
+                                continue;
+                            }
+                        }
+
                         if send_channel.send(event).await.is_err() {
                             // We can assume that all receivers have been dropped, so we can close
                             // the connection and exit the task.
@@ -491,8 +507,8 @@ async fn websocket_task<R: DeserializeOwned>(
                                 "All receivers for the Jetstream connection have been dropped, closing connection..."
                             );
                             closing_connection = true;
-                        } else if let Some(v) = last_cursor.as_mut() {
-                            *v = event_cursor;
+                        } else if let Some(last) = last_cursor.as_mut() {
+                            *last = event_cursor;
                         }
                     }
                     Message::Ping(vec) => {
@@ -505,6 +521,7 @@ async fn websocket_task<R: DeserializeOwned>(
                             .map_err(JetstreamEventError::PingPongError)?;
                     }
                     Message::Close(close_frame) => {
+                        log::trace!("Close recieved. I guess we just log here?");
                         if let Some(close_frame) = close_frame {
                             let reason = close_frame.reason;
                             let code = close_frame.code;
@@ -531,6 +548,7 @@ async fn websocket_task<R: DeserializeOwned>(
             }
         }
         if closing_connection {
+            log::trace!("closing connection");
             _ = shared_socket_write.lock().await.close().await;
             return Ok(());
         }
