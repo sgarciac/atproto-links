@@ -34,21 +34,6 @@ pub trait DbBytes {
         Self: Sized;
 }
 
-pub trait DbStringType: AsRef<str> {
-    fn from_string(s: String) -> Result<Self, EncodingError>
-    where
-        Self: Sized;
-}
-
-impl DbBytes for String {
-    fn to_bytes(&self) -> Result<Vec<u8>, EncodingError> {
-        Ok(encode_to_vec::<&Self, _>(self, bincode_conf())?)
-    }
-    fn from_bytes(bytes: &[u8]) -> Result<(Self, usize), EncodingError> {
-        Ok(decode_from_slice(bytes, bincode_conf())?)
-    }
-}
-
 pub struct DbKeyWithPrefix<P: DbBytes, S: DbBytes> {
     prefix: P,
     suffix: S,
@@ -95,6 +80,23 @@ where
 
 //////
 
+// pub trait DbStringType: AsRef<str> {
+//     fn from_string(s: String) -> Result<Self, EncodingError>
+//     where
+//         Self: Sized;
+// }
+
+
+
+impl DbBytes for String {
+    fn to_bytes(&self) -> Result<Vec<u8>, EncodingError> {
+        Ok(encode_to_vec::<&Self, _>(self, bincode_conf())?)
+    }
+    fn from_bytes(bytes: &[u8]) -> Result<(Self, usize), EncodingError> {
+        Ok(decode_from_slice(bytes, bincode_conf())?)
+    }
+}
+
 impl DbBytes for Nsid {
     fn from_bytes(bytes: &[u8]) -> Result<(Self, usize), EncodingError> {
         let (s, n) = decode_from_slice(bytes, bincode_conf())?;
@@ -123,4 +125,32 @@ impl DbBytes for Cursor {
 
 pub fn blah(nsd: Nsid) {
     let _ = nsd.to_bytes().unwrap();
+}
+
+
+mod test {
+    use super::{DbBytes, EncodingError};
+
+    #[test]
+    fn test_string_roundtrip() -> Result<(), EncodingError> {
+        for (case, desc) in vec![
+            ("", "empty string"),
+            ("a", "basic string"),
+            ("asdf asdf asdf even µnicode", "unicode string"),
+        ] {
+            let serialized = case.to_string().to_bytes()?;
+            let (restored, bytes_consumed) = String::from_bytes(&serialized)?;
+            assert_eq!(&restored, case, "string round-trip: {desc}");
+            assert_eq!(bytes_consumed, serialized.len(), "exact bytes consumed for round-trip: {desc}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_string_serialized_lexicographic_sort() -> Result<(), EncodingError> {
+        let aa = "aa".to_string().to_bytes()?;
+        let b = "b".to_string().to_bytes()?;
+        assert!(b > aa);
+        Ok(())
+    }
 }
