@@ -1,5 +1,5 @@
-use crate::EventBatch;
-use fjall::{BlockCache, Config, PartitionCreateOptions, Slice, TxKeyspace};
+use crate::{CreateRecord, EventBatch, Nsid};
+use fjall::{BlockCache, Config, Keyspace, PartitionCreateOptions, PartitionHandle, Slice};
 use jetstream::events::Cursor;
 use std::path::Path;
 use std::sync::Arc;
@@ -32,7 +32,8 @@ use tokio::{sync::mpsc::Receiver, time::sleep};
  * fetching + caching on read.
  **/
 pub struct Storage {
-    keyspace: TxKeyspace,
+    keyspace: Keyspace,
+    partition: PartitionHandle,
 }
 
 impl Storage {
@@ -43,16 +44,14 @@ impl Storage {
                 128 * 2_u64.pow(20),
             )))
             .fsync_ms(Some(1000))
-            .open_transactional()?;
+            .open()?;
 
-        let meta = keyspace.open_partition("meta", PartitionCreateOptions::default())?;
+        let partition = keyspace.open_partition("default", PartitionCreateOptions::default())?;
 
-        let js_cursor = meta
-            .get("js_cursor")?
-            .map(|c| Cursor::from_raw_u64(to_u64(c)));
+        let js_cursor = partition.get("js_cursor")?.map(cursor_from_slice);
 
         if js_cursor.is_some() {
-            let Some(endpoint_bytes) = meta.get("js_endpoint")? else {
+            let Some(endpoint_bytes) = partition.get("js_endpoint")? else {
                 anyhow::bail!("found cursor but missing js_endpoint, refusing to start.");
             };
             let stored = std::str::from_utf8(endpoint_bytes.as_ref())?;
@@ -60,30 +59,43 @@ impl Storage {
                 anyhow::bail!("stored js_endpoint {stored:?} differs from provided {endpoint:?}, refusing to start.");
             }
         } else {
-            let mut tx = keyspace.write_tx();
-            tx.insert(&meta, "js_endpoint", endpoint.as_bytes());
-            tx.commit()?;
+            partition.insert("js_endpoint", endpoint.as_bytes())?;
         }
 
-        Ok((Self { keyspace }, js_cursor))
+        Ok((
+            Self {
+                keyspace,
+                partition,
+            },
+            js_cursor,
+        ))
     }
 
     pub async fn receive(&self, mut receiver: Receiver<EventBatch>) -> anyhow::Result<()> {
-        let meta = self
-            .keyspace
-            .open_partition("meta", PartitionCreateOptions::default())?;
         loop {
-            sleep(Duration::from_secs_f64(0.5)).await;
-            if let Some(batch) = receiver.recv().await {
-                let c = batch.last_jetstream_cursor.clone();
-                summarize(batch);
-                if let Some(cursor) = c {
-                    let mut tx = self.keyspace.write_tx();
-                    tx.insert(&meta, "js_cursor", from_u64(cursor.to_raw_u64()));
-                    tx.commit()?;
+            sleep(Duration::from_secs_f64(0.5)).await; // TODO: minimize during replay
+            if let Some(event_batch) = receiver.recv().await {
+                let last = event_batch.last_jetstream_cursor.clone(); // TODO: get this from the data. track last in consumer. compute or track first.
+                let mut db_batch = self.keyspace.batch();
+
+                for (collection, records) in &event_batch.record_creates {
+                    for record in &records.samples {
+                        // ["by_collection"|collection|js_cursor] => [did|rkey|record]
+                        // ["by_id"|did|collection|rkey|js_cursor] => [] // required to support deletes; did first prefix for account deletes.
+
+                        let key = by_collection_key_to_bytes(collection, record);
+                        let value = by_collection_value_to_bytes(record);
+                        db_batch.insert(&self.partition, key, value);
+                    }
                 }
+
+                summarize(event_batch);
+                if let Some(cursor) = last {
+                    db_batch.insert(&self.partition, "js_cursor", cursor_to_slice(cursor));
+                }
+                db_batch.commit()?;
             } else {
-                anyhow::bail!("receive channel closed")
+                anyhow::bail!("receive channel closed");
             }
         }
     }
@@ -91,29 +103,36 @@ impl Storage {
 
 fn summarize(batch: EventBatch) {
     let EventBatch {
-        records,
-        record_deletes,
+        record_creates,
+        record_modifies,
         account_removes,
         last_jetstream_cursor,
         ..
     } = batch;
-    let total_records: usize = records.values().map(|v| v.total_seen).sum();
-    let total_samples: usize = records.values().map(|v| v.samples.len()).sum();
+    let total_records: usize = record_creates.values().map(|v| v.total_seen).sum();
+    let total_samples: usize = record_creates.values().map(|v| v.samples.len()).sum();
     println!(
-        "got batch of {total_samples: >3} samples from {total_records: >3} records in {: >2} collections, {: >2} record deletes, {} account removes, cursor {:?}",
-        records.len(),
-        record_deletes.len(),
+        "got batch of {total_samples: >3} samples from {total_records: >3} records in {: >2} collections, {: >2} record modifies, {} account removes, cursor {:?}",
+        record_creates.len(),
+        record_modifies.len(),
         account_removes.len(),
         last_jetstream_cursor.map(|c| c.elapsed())
     );
 }
 
-fn from_u64(u: u64) -> [u8; 8] {
-    u.to_be_bytes()
+fn cursor_to_slice(cursor: Cursor) -> [u8; 8] {
+    cursor.to_raw_u64().to_be_bytes()
 }
-fn to_u64(bytes: Slice) -> u64 {
+fn cursor_from_slice(bytes: Slice) -> Cursor {
     let mut buf = [0u8; 8];
     let len = 8.min(bytes.len());
     buf[..len].copy_from_slice(&bytes[..len]);
-    u64::from_be_bytes(buf)
+    Cursor::from_raw_u64(u64::from_be_bytes(buf))
+}
+
+fn by_collection_key_to_bytes(collection: &Nsid, record: &CreateRecord) -> Vec<u8> {
+    vec![]
+}
+fn by_collection_value_to_bytes(record: &CreateRecord) -> Vec<u8> {
+    vec![]
 }

@@ -12,10 +12,10 @@ use std::mem;
 use std::time::Duration;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 
-use crate::{DeleteAccount, DeleteRecord, EventBatch, SetRecord};
+use crate::{CreateRecord, DeleteAccount, DeleteRecord, EventBatch, ModifyRecord, UpdateRecord};
 
 const MAX_BATCHED_RECORDS: usize = 128; // *non-blocking* limit. drops oldest batched record per collection once reached.
-const MAX_BATCHED_DELETES: usize = 256; // hard limit, total deletes across all collections.
+const MAX_BATCHED_MODIFIES: usize = 256; // hard limit, total updates and deletes across all collections.
 const MAX_ACCOUNT_REMOVES: usize = 512; // hard limit, total account deletions. actually the least frequent event, but tiny.
 const MAX_BATCHED_COLLECTIONS: usize = 64; // hard limit, MAX_BATCHED_RECORDS applies per collection
 const MAX_BATCH_SPAN_SECS: f64 = 5.; // hard limit of duration from oldest to latest event cursor within a batch, in seconds.
@@ -89,13 +89,15 @@ impl Batcher {
 
         match event {
             JetstreamEvent::Commit(CommitEvent::Create { commit, info }) => {
-                self.handle_set_record(true, commit, info).await?
+                self.handle_create_record(commit, info).await?
             }
             JetstreamEvent::Commit(CommitEvent::Update { commit, info }) => {
-                self.handle_set_record(false, commit, info).await?
+                self.handle_modify_record(modify_update(commit, info))
+                    .await?
             }
             JetstreamEvent::Commit(CommitEvent::Delete { commit, info }) => {
-                self.handle_delete_record(commit, info).await?
+                self.handle_modify_record(modify_delete(commit, info))
+                    .await?
             }
             JetstreamEvent::Account(AccountEvent { info, account }) if !account.active => {
                 self.handle_remove_account(info.did, info.time_us).await?
@@ -132,22 +134,20 @@ impl Batcher {
         Ok(())
     }
 
-    async fn handle_set_record(
+    async fn handle_create_record(
         &mut self,
-        new: bool,
         commit: CommitData<serde_json::Value>,
         info: EventInfo,
     ) -> anyhow::Result<()> {
         if !self
             .current_batch
-            .records
+            .record_creates
             .contains_key(&commit.info.collection)
-            && self.current_batch.records.len() >= MAX_BATCHED_COLLECTIONS
+            && self.current_batch.record_creates.len() >= MAX_BATCHED_COLLECTIONS
         {
             self.send_current_batch_now().await?;
         }
-        let record = SetRecord {
-            new,
+        let record = CreateRecord {
             did: info.did,
             rkey: commit.info.rkey,
             record: commit.record,
@@ -155,7 +155,7 @@ impl Batcher {
         };
         let collection = self
             .current_batch
-            .records
+            .record_creates
             .entry(commit.info.collection)
             .or_default();
         collection.total_seen += 1;
@@ -164,21 +164,11 @@ impl Batcher {
         Ok(())
     }
 
-    async fn handle_delete_record(
-        &mut self,
-        commit_info: CommitInfo,
-        info: EventInfo,
-    ) -> anyhow::Result<()> {
-        if self.current_batch.record_deletes.len() >= MAX_BATCHED_DELETES {
+    async fn handle_modify_record(&mut self, modify_record: ModifyRecord) -> anyhow::Result<()> {
+        if self.current_batch.record_modifies.len() >= MAX_BATCHED_MODIFIES {
             self.send_current_batch_now().await?;
         }
-        let rm = DeleteRecord {
-            did: info.did,
-            collection: commit_info.collection,
-            rkey: commit_info.rkey,
-            cursor: info.time_us,
-        };
-        self.current_batch.record_deletes.push(rm);
+        self.current_batch.record_modifies.push(modify_record);
         Ok(())
     }
 
@@ -191,4 +181,23 @@ impl Batcher {
             .push(DeleteAccount { did, cursor });
         Ok(())
     }
+}
+
+fn modify_update(commit: CommitData<serde_json::Value>, info: EventInfo) -> ModifyRecord {
+    ModifyRecord::Update(UpdateRecord {
+        did: info.did,
+        collection: commit.info.collection,
+        rkey: commit.info.rkey,
+        record: commit.record,
+        cursor: info.time_us,
+    })
+}
+
+fn modify_delete(commit_info: CommitInfo, info: EventInfo) -> ModifyRecord {
+    ModifyRecord::Delete(DeleteRecord {
+        did: info.did,
+        collection: commit_info.collection,
+        rkey: commit_info.rkey,
+        cursor: info.time_us,
+    })
 }
