@@ -20,11 +20,10 @@ impl ByCollectionKey {
     pub fn prefix_from_nsid(nsid: Nsid) -> Result<Vec<u8>, EncodingError> {
         DbConcat::from_pair(ByCollectionPrefix::default(), nsid).to_db_bytes()
     }
-    pub fn nsid(&self) -> Nsid {
-        self.prefix.suffix.clone()
-    }
-    pub fn cursor(&self) -> Cursor {
-        self.suffix.clone()
+}
+impl From<ByCollectionKey> for (Nsid, Cursor) {
+    fn from(z: ByCollectionKey) -> (Nsid, Cursor) {
+        (z.prefix.suffix, z.suffix)
     }
 }
 
