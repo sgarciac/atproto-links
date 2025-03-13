@@ -33,6 +33,8 @@ pub enum EncodingError {
     BadSlice(#[from] std::array::TryFromSliceError),
     #[error("wrong static prefix. expected {1:?}, found {0:?}")]
     WrongStaticPrefix(String, String), // found, expected
+    #[error("failed to deserialize json")]
+    JsonError(#[from] serde_json::Error),
 }
 
 fn bincode_conf() -> impl Config {
@@ -119,11 +121,12 @@ impl<S: StaticStr> DbBytes for DbStaticStr<S> {
     }
 }
 
-trait Bincodeable: BincodeEncode + BincodeDecode<()> + Sized {}
+/// marker trait: impl on a type to indicate that that DbBytes should use bincode on it
+pub trait UseBincodePlz {}
 
 impl<T> DbBytes for T
 where
-    T: Bincodeable,
+    T: BincodeEncode + BincodeDecode<()> + UseBincodePlz + Sized,
 {
     fn to_db_bytes(&self) -> Result<Vec<u8>, EncodingError> {
         Ok(encode_to_vec(self, bincode_conf())?)
@@ -141,6 +144,9 @@ where
 ///
 /// In the future, null bytes could be escaped, or maybe this becomes SLIP-encoded. Either should be
 /// backwards-compatible I think.
+///
+/// TODO: wrap in another type. it's actually probably not desirable to serialize strings this way
+/// *except* where needed as a prefix.
 impl DbBytes for String {
     fn to_db_bytes(&self) -> Result<Vec<u8>, EncodingError> {
         let mut v = self.as_bytes().to_vec();
@@ -184,6 +190,17 @@ impl DbBytes for Cursor {
         let bytes8 = TryInto::<[u8; 8]>::try_into(&bytes[..8])?;
         let cursor = Cursor::from_raw_u64(u64::from_be_bytes(bytes8));
         Ok((cursor, 8))
+    }
+}
+
+impl DbBytes for serde_json::Value {
+    fn to_db_bytes(&self) -> Result<Vec<u8>, EncodingError> {
+        self.to_string().to_db_bytes()
+    }
+    fn from_db_bytes(bytes: &[u8]) -> Result<(Self, usize), EncodingError> {
+        let (s, n) = String::from_db_bytes(bytes)?;
+        let v = s.parse()?;
+        Ok((v, n))
     }
 }
 

@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.97"
-bincode = "2.0.1"
+bincode = { version = "2.0.1", features = ["serde"] }
 clap = { version = "4.5.31", features = ["derive"] }
 env_logger = "0.11.7"
 fjall = { version = "2.6.7", features = ["miniz", "bytes", "single_writer_tx"], default-features = false }
