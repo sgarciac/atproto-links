@@ -1,4 +1,6 @@
-use crate::{CreateRecord, EventBatch, Nsid};
+use crate::db_types::DbBytes;
+use crate::store_types::{ByCollectionKey, ByCollectionValue, ByIdKey, ByIdValue};
+use crate::{CreateRecord, EventBatch};
 use fjall::{BlockCache, Config, Keyspace, PartitionCreateOptions, PartitionHandle, Slice};
 use jetstream::events::Cursor;
 use std::path::Path;
@@ -75,21 +77,37 @@ impl Storage {
         loop {
             sleep(Duration::from_secs_f64(0.5)).await; // TODO: minimize during replay
             if let Some(event_batch) = receiver.recv().await {
+                summarize(&event_batch);
+
                 let last = event_batch.last_jetstream_cursor.clone(); // TODO: get this from the data. track last in consumer. compute or track first.
                 let mut db_batch = self.keyspace.batch();
 
-                for (collection, records) in &event_batch.record_creates {
-                    for record in &records.samples {
+                for (collection, records) in event_batch.record_creates.into_iter() {
+                    for CreateRecord {
+                        did,
+                        rkey,
+                        cursor,
+                        record,
+                    } in records.samples
+                    {
                         // ["by_collection"|collection|js_cursor] => [did|rkey|record]
-                        // ["by_id"|did|collection|rkey|js_cursor] => [] // required to support deletes; did first prefix for account deletes.
+                        db_batch.insert(
+                            &self.partition,
+                            ByCollectionKey::new(collection.clone(), cursor.clone())
+                                .to_db_bytes()?,
+                            ByCollectionValue::new(did.clone(), rkey.clone(), record)
+                                .to_db_bytes()?,
+                        );
 
-                        let key = by_collection_key_to_bytes(collection, record);
-                        let value = by_collection_value_to_bytes(record);
-                        db_batch.insert(&self.partition, key, value);
+                        // ["by_id"|did|collection|rkey|js_cursor] => [] // required to support deletes; did first prefix for account deletes.
+                        db_batch.insert(
+                            &self.partition,
+                            ByIdKey::new(did, collection.clone(), rkey, cursor).to_db_bytes()?,
+                            ByIdValue::default().to_db_bytes()?,
+                        );
                     }
                 }
 
-                summarize(event_batch);
                 if let Some(cursor) = last {
                     db_batch.insert(&self.partition, "js_cursor", cursor_to_slice(cursor));
                 }
@@ -101,7 +119,7 @@ impl Storage {
     }
 }
 
-fn summarize(batch: EventBatch) {
+fn summarize(batch: &EventBatch) {
     let EventBatch {
         record_creates,
         record_modifies,
@@ -116,7 +134,7 @@ fn summarize(batch: EventBatch) {
         record_creates.len(),
         record_modifies.len(),
         account_removes.len(),
-        last_jetstream_cursor.map(|c| c.elapsed())
+        last_jetstream_cursor.clone().map(|c| c.elapsed())
     );
 }
 
@@ -128,11 +146,4 @@ fn cursor_from_slice(bytes: Slice) -> Cursor {
     let len = 8.min(bytes.len());
     buf[..len].copy_from_slice(&bytes[..len]);
     Cursor::from_raw_u64(u64::from_be_bytes(buf))
-}
-
-fn by_collection_key_to_bytes(_collection: &Nsid, _record: &CreateRecord) -> Vec<u8> {
-    vec![]
-}
-fn by_collection_value_to_bytes(_record: &CreateRecord) -> Vec<u8> {
-    vec![]
 }

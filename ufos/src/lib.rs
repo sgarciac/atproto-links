@@ -7,7 +7,7 @@ use jetstream::events::Cursor;
 use jetstream::exports::{Did, Nsid, RecordKey};
 use std::collections::{HashMap, VecDeque};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CreateRecord {
     pub did: Did,
     // collection omitted because the batch keys off it
@@ -16,7 +16,7 @@ pub struct CreateRecord {
     pub cursor: Cursor,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct CollectionSamples {
     pub total_seen: usize,
     pub samples: VecDeque<CreateRecord>,

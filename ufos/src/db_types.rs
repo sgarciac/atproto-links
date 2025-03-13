@@ -1,4 +1,4 @@
-use crate::{Cursor, Nsid};
+use crate::{Cursor, Did, Nsid, RecordKey};
 use bincode::{
     config::{standard, Config},
     de::Decode as BincodeDecode,
@@ -13,8 +13,8 @@ use thiserror::Error;
 #[non_exhaustive]
 #[derive(Error, Debug)]
 pub enum EncodingError {
-    #[error("failed to parse NSID: {0}")]
-    BadNSID(&'static str),
+    #[error("failed to parse Atrium string type: {0}")]
+    BadAtriumStringType(&'static str),
     #[error("failed to bincode-encode: {0}")]
     BincodeEncodeFailed(#[from] EncodeError),
     #[error("failed to bincode-decode: {0}")]
@@ -82,6 +82,17 @@ impl<P: DbBytes, S: DbBytes> DbBytes for DbConcat<P, S> {
         };
         let (suffix, also_eaten) = S::from_db_bytes(suffix_bytes)?;
         Ok((Self { prefix, suffix }, eaten + also_eaten))
+    }
+}
+
+#[derive(Debug, Default, PartialEq)]
+pub struct DbEmpty(());
+impl DbBytes for DbEmpty {
+    fn to_db_bytes(&self) -> Result<Vec<u8>, EncodingError> {
+        Ok(vec![])
+    }
+    fn from_db_bytes(_: &[u8]) -> Result<(Self, usize), EncodingError> {
+        Ok((Self(()), 0))
     }
 }
 
@@ -168,10 +179,32 @@ impl DbBytes for String {
     }
 }
 
+impl DbBytes for Did {
+    fn from_db_bytes(bytes: &[u8]) -> Result<(Self, usize), EncodingError> {
+        let (s, n) = decode_from_slice(bytes, bincode_conf())?;
+        let me = Self::new(s).map_err(EncodingError::BadAtriumStringType)?;
+        Ok((me, n))
+    }
+    fn to_db_bytes(&self) -> Result<Vec<u8>, EncodingError> {
+        Ok(encode_to_vec(self.as_ref(), bincode_conf())?)
+    }
+}
+
 impl DbBytes for Nsid {
     fn from_db_bytes(bytes: &[u8]) -> Result<(Self, usize), EncodingError> {
         let (s, n) = decode_from_slice(bytes, bincode_conf())?;
-        let me = Self::new(s).map_err(EncodingError::BadNSID)?;
+        let me = Self::new(s).map_err(EncodingError::BadAtriumStringType)?;
+        Ok((me, n))
+    }
+    fn to_db_bytes(&self) -> Result<Vec<u8>, EncodingError> {
+        Ok(encode_to_vec(self.as_ref(), bincode_conf())?)
+    }
+}
+
+impl DbBytes for RecordKey {
+    fn from_db_bytes(bytes: &[u8]) -> Result<(Self, usize), EncodingError> {
+        let (s, n) = decode_from_slice(bytes, bincode_conf())?;
+        let me = Self::new(s).map_err(EncodingError::BadAtriumStringType)?;
         Ok((me, n))
     }
     fn to_db_bytes(&self) -> Result<Vec<u8>, EncodingError> {
@@ -206,7 +239,18 @@ impl DbBytes for serde_json::Value {
 
 #[cfg(test)]
 mod test {
-    use super::{Cursor, DbBytes, DbConcat, DbStaticStr, EncodingError, StaticStr};
+    use super::{Cursor, DbBytes, DbConcat, DbEmpty, DbStaticStr, EncodingError, StaticStr};
+
+    #[test]
+    fn test_db_empty() -> Result<(), EncodingError> {
+        let original = DbEmpty::default();
+        let serialized = original.to_db_bytes()?;
+        assert_eq!(serialized.len(), 0);
+        let (restored, bytes_consumed) = DbEmpty::from_db_bytes(&serialized)?;
+        assert_eq!(restored, original);
+        assert_eq!(bytes_consumed, 0);
+        Ok(())
+    }
 
     #[test]
     fn test_string_roundtrip() -> Result<(), EncodingError> {

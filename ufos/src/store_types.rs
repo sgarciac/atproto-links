@@ -1,8 +1,9 @@
-use crate::db_types::{DbBytes, DbConcat, DbStaticStr, EncodingError, StaticStr, UseBincodePlz};
+use crate::db_types::{
+    DbBytes, DbConcat, DbEmpty, DbStaticStr, EncodingError, StaticStr, UseBincodePlz,
+};
 use crate::{Cursor, Did, Nsid, RecordKey};
 use bincode::{Decode, Encode};
 
-#[derive()]
 #[derive(Debug, PartialEq)]
 pub struct _ByCollectionStaticStr {}
 impl StaticStr for _ByCollectionStaticStr {
@@ -53,6 +54,49 @@ impl From<ByCollectionValue> for (Did, RecordKey, serde_json::Value) {
         (v.prefix.did, v.prefix.rkey, v.suffix)
     }
 }
+
+#[derive(Debug, PartialEq)]
+pub struct _ByIdStaticStr {}
+impl StaticStr for _ByIdStaticStr {
+    fn static_str() -> &'static str {
+        "by_id"
+    }
+}
+type ByIdStaticPrefix = DbStaticStr<_ByIdStaticStr>;
+pub type ByIdDidPrefix = DbConcat<ByIdStaticPrefix, Did>;
+pub type ByIdCollectionPrefix = DbConcat<ByIdDidPrefix, Nsid>;
+pub type ByIdRecordPrefix = DbConcat<ByIdCollectionPrefix, RecordKey>;
+/// look up records by user or directly, instead of by collections
+///
+/// required to support deletes; did first prefix for account deletes.
+/// key format: ["by_id"|did|collection|rkey|js_cursor]
+pub type ByIdKey = DbConcat<ByIdRecordPrefix, Cursor>;
+impl ByIdKey {
+    pub fn new(did: Did, collection: Nsid, rkey: RecordKey, cursor: Cursor) -> Self {
+        Self {
+            prefix: ByIdRecordPrefix {
+                prefix: ByIdCollectionPrefix {
+                    prefix: ByIdDidPrefix::from_pair(Default::default(), did),
+                    suffix: collection,
+                },
+                suffix: rkey,
+            },
+            suffix: cursor,
+        }
+    }
+}
+impl From<ByIdKey> for (Did, Nsid, RecordKey, Cursor) {
+    fn from(k: ByIdKey) -> Self {
+        (
+            k.prefix.prefix.prefix.suffix,
+            k.prefix.prefix.suffix,
+            k.prefix.suffix,
+            k.suffix,
+        )
+    }
+}
+
+pub type ByIdValue = DbEmpty;
 
 #[cfg(test)]
 mod test {
