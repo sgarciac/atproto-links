@@ -7,7 +7,7 @@ use fjall::{BlockCache, Config, Keyspace, PartitionCreateOptions, PartitionHandl
 use jetstream::events::Cursor;
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::{sync::mpsc::Receiver, time::sleep};
 
 /**
@@ -80,7 +80,8 @@ impl Storage {
         loop {
             sleep(Duration::from_secs_f64(0.5)).await; // TODO: minimize during replay
             if let Some(event_batch) = receiver.recv().await {
-                summarize(&event_batch);
+                let batch_for_summary = event_batch.clone();
+                let t0 = Instant::now();
 
                 let last = event_batch.last_jetstream_cursor.clone(); // TODO: get this from the data. track last in consumer. compute or track first.
                 let mut db_batch = self.keyspace.batch();
@@ -133,6 +134,8 @@ impl Storage {
                     db_batch.insert(&self.partition, "js_cursor", cursor_to_slice(cursor));
                 }
                 db_batch.commit()?;
+
+                summarize(&batch_for_summary, t0.elapsed());
             } else {
                 anyhow::bail!("receive channel closed");
             }
@@ -161,7 +164,7 @@ impl Storage {
     }
 }
 
-fn summarize(batch: &EventBatch) {
+fn summarize(batch: &EventBatch, dt: Duration) {
     let EventBatch {
         record_creates,
         record_modifies,
@@ -172,11 +175,12 @@ fn summarize(batch: &EventBatch) {
     let total_records: usize = record_creates.values().map(|v| v.total_seen).sum();
     let total_samples: usize = record_creates.values().map(|v| v.samples.len()).sum();
     println!(
-        "got batch of {total_samples: >3} samples from {total_records: >3} records in {: >2} collections, {: >2} record modifies, {} account removes, cursor {:?}",
+        "got batch of {total_samples: >3} samples from {total_records: >3} records in {: >2} collections, {: >2} record modifies, {} account removes, cursor {:?}, db wrote for {:?}",
         record_creates.len(),
         record_modifies.len(),
         account_removes.len(),
-        last_jetstream_cursor.clone().map(|c| c.elapsed())
+        last_jetstream_cursor.clone().map(|c| c.elapsed()),
+        dt
     );
 }
 

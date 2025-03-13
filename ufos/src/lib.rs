@@ -23,7 +23,7 @@ pub struct CollectionSamples {
     pub samples: VecDeque<CreateRecord>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct UpdateRecord {
     pub did: Did,
     pub collection: Nsid,
@@ -32,7 +32,7 @@ pub struct UpdateRecord {
     pub cursor: Cursor,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct DeleteRecord {
     pub did: Did,
     pub collection: Nsid,
@@ -40,19 +40,19 @@ pub struct DeleteRecord {
     pub cursor: Cursor,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ModifyRecord {
     Update(UpdateRecord),
     Delete(DeleteRecord),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct DeleteAccount {
     pub did: Did,
     pub cursor: Cursor,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct EventBatch {
     pub record_creates: HashMap<Nsid, CollectionSamples>,
     pub record_modifies: Vec<ModifyRecord>,
