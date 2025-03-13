@@ -47,12 +47,15 @@ pub trait DbBytes {
 }
 
 #[derive(Debug, PartialEq)]
-pub struct DbKeyWithPrefix<P: DbBytes, S: DbBytes> {
+pub struct DbConcat<P: DbBytes, S: DbBytes> {
     pub prefix: P,
     pub suffix: S,
 }
 
-impl<P: DbBytes, S: DbBytes> DbKeyWithPrefix<P, S> {
+impl<P: DbBytes, S: DbBytes> DbConcat<P, S> {
+    pub fn from_pair(prefix: P, suffix: S) -> Self {
+        Self { prefix, suffix }
+    }
     pub fn from_prefix_to_db_bytes(prefix: &P) -> Result<Vec<u8>, EncodingError> {
         prefix.to_db_bytes()
     }
@@ -61,7 +64,7 @@ impl<P: DbBytes, S: DbBytes> DbKeyWithPrefix<P, S> {
     }
 }
 
-impl<P: DbBytes, S: DbBytes> DbBytes for DbKeyWithPrefix<P, S> {
+impl<P: DbBytes, S: DbBytes> DbBytes for DbConcat<P, S> {
     fn to_db_bytes(&self) -> Result<Vec<u8>, EncodingError> {
         let mut combined = self.prefix.to_db_bytes()?;
         combined.append(&mut self.suffix.to_db_bytes()?);
@@ -186,7 +189,7 @@ impl DbBytes for Cursor {
 
 #[cfg(test)]
 mod test {
-    use super::{Cursor, DbBytes, DbKeyWithPrefix, DbStaticStr, EncodingError, StaticStr};
+    use super::{Cursor, DbBytes, DbConcat, DbStaticStr, EncodingError, StaticStr};
 
     #[test]
     fn test_string_roundtrip() -> Result<(), EncodingError> {
@@ -217,7 +220,7 @@ mod test {
 
     #[test]
     fn test_string_cursor_prefix_roundtrip() -> Result<(), EncodingError> {
-        type TwoThings = DbKeyWithPrefix<String, Cursor>;
+        type TwoThings = DbConcat<String, Cursor>;
         for (lazy_prefix, tired_suffix, desc) in [
             ("", 0, "empty string and cursor"),
             ("aaa", 0, "zero-cursor"),
@@ -242,7 +245,7 @@ mod test {
 
     #[test]
     fn test_cursor_string_prefix_roundtrip() -> Result<(), EncodingError> {
-        type TwoThings = DbKeyWithPrefix<Cursor, String>;
+        type TwoThings = DbConcat<Cursor, String>;
         for (tired_prefix, sad_suffix, desc) in [
             (0, "", "empty string and cursor"),
             (0, "aaa", "zero-cursor"),
@@ -318,7 +321,7 @@ mod test {
         }
         type ADbStaticPrefix = DbStaticStr<AStaticPrefix>;
 
-        type PrefixedCursor = DbKeyWithPrefix<ADbStaticPrefix, Cursor>;
+        type PrefixedCursor = DbConcat<ADbStaticPrefix, Cursor>;
 
         let original = PrefixedCursor {
             prefix: Default::default(),
