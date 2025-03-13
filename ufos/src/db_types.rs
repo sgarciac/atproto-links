@@ -35,6 +35,8 @@ pub enum EncodingError {
     WrongStaticPrefix(String, String), // found, expected
     #[error("failed to deserialize json")]
     JsonError(#[from] serde_json::Error),
+    #[error("unexpected extra bytes ({0} bytes) left after decoding")]
+    DecodeTooManyBytes(usize),
 }
 
 fn bincode_conf() -> impl Config {
@@ -235,6 +237,14 @@ impl DbBytes for serde_json::Value {
         let v = s.parse()?;
         Ok((v, n))
     }
+}
+
+pub fn db_complete<T: DbBytes>(bytes: &[u8]) -> Result<T, EncodingError> {
+    let (t, n) = T::from_db_bytes(bytes)?;
+    if n < bytes.len() {
+        return Err(EncodingError::DecodeTooManyBytes(bytes.len() - n));
+    }
+    Ok(t)
 }
 
 #[cfg(test)]

@@ -1,8 +1,8 @@
-use crate::db_types::DbBytes;
+use crate::db_types::{db_complete, DbBytes};
 use crate::store_types::{
     ByCollectionKey, ByCollectionValue, ByCursorSeenKey, ByCursorSeenValue, ByIdKey, ByIdValue,
 };
-use crate::{CollectionSamples, CreateRecord, EventBatch};
+use crate::{CollectionSamples, CreateRecord, EventBatch, Nsid};
 use fjall::{BlockCache, Config, Keyspace, PartitionCreateOptions, PartitionHandle, Slice};
 use jetstream::events::Cursor;
 use std::path::Path;
@@ -137,6 +137,27 @@ impl Storage {
                 anyhow::bail!("receive channel closed");
             }
         }
+    }
+
+    pub async fn get_collection_records(
+        &self,
+        collection: &Nsid,
+        limit: usize,
+    ) -> anyhow::Result<Vec<CreateRecord>> {
+        let mut output = Vec::new();
+        let prefix = ByCollectionKey::prefix_from_nsid(collection.clone())?;
+        for pair in self.partition.prefix(&prefix).rev().take(limit) {
+            let (k_bytes, v_bytes) = pair?;
+            let (_, cursor) = db_complete::<ByCollectionKey>(&k_bytes)?.into();
+            let (did, rkey, record) = db_complete::<ByCollectionValue>(&v_bytes)?.into();
+            output.push(CreateRecord {
+                did,
+                rkey,
+                record,
+                cursor,
+            })
+        }
+        Ok(output)
     }
 }
 
