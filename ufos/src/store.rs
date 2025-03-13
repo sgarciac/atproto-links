@@ -130,9 +130,9 @@ fn cursor_from_slice(bytes: Slice) -> Cursor {
     Cursor::from_raw_u64(u64::from_be_bytes(buf))
 }
 
-fn by_collection_key_to_bytes(collection: &Nsid, record: &CreateRecord) -> Vec<u8> {
+fn by_collection_key_to_bytes(_collection: &Nsid, _record: &CreateRecord) -> Vec<u8> {
     vec![]
 }
-fn by_collection_value_to_bytes(record: &CreateRecord) -> Vec<u8> {
+fn by_collection_value_to_bytes(_record: &CreateRecord) -> Vec<u8> {
     vec![]
 }

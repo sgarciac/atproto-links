@@ -7,8 +7,10 @@ use bincode::{
     encode_to_vec,
     error::{DecodeError, EncodeError},
 };
+use std::marker::PhantomData;
 use thiserror::Error;
 
+#[non_exhaustive]
 #[derive(Error, Debug)]
 pub enum EncodingError {
     #[error("failed to parse NSID: {0}")]
@@ -29,6 +31,8 @@ pub enum EncodingError {
     NotUtf8(#[from] std::str::Utf8Error),
     #[error("could not get array from slice: {0}")]
     BadSlice(#[from] std::array::TryFromSliceError),
+    #[error("wrong static prefix. expected {1:?}, found {0:?}")]
+    WrongStaticPrefix(String, String), // found, expected
 }
 
 fn bincode_conf() -> impl Config {
@@ -49,7 +53,10 @@ pub struct DbKeyWithPrefix<P: DbBytes, S: DbBytes> {
 }
 
 impl<P: DbBytes, S: DbBytes> DbKeyWithPrefix<P, S> {
-    pub fn to_prefix_bincoded(&self) -> Result<Vec<u8>, EncodingError> {
+    pub fn from_prefix_to_db_bytes(prefix: &P) -> Result<Vec<u8>, EncodingError> {
+        prefix.to_db_bytes()
+    }
+    pub fn to_prefix_db_bytes(&self) -> Result<Vec<u8>, EncodingError> {
         self.prefix.to_db_bytes()
     }
 }
@@ -70,6 +77,42 @@ impl<P: DbBytes, S: DbBytes> DbBytes for DbKeyWithPrefix<P, S> {
         };
         let (suffix, also_eaten) = S::from_db_bytes(suffix_bytes)?;
         Ok((Self { prefix, suffix }, eaten + also_eaten))
+    }
+}
+
+trait StaticStr {
+    fn static_str() -> &'static str;
+}
+
+#[derive(Debug, PartialEq)]
+struct DbStaticStr<S: StaticStr> {
+    marker: PhantomData<S>,
+}
+impl<S: StaticStr> DbStaticStr<S> {
+    pub fn new() -> Self {
+        Self {
+            marker: PhantomData,
+        }
+    }
+}
+impl<S: StaticStr> DbBytes for DbStaticStr<S> {
+    fn to_db_bytes(&self) -> Result<Vec<u8>, EncodingError> {
+        S::static_str().to_string().to_db_bytes()
+    }
+    fn from_db_bytes(bytes: &[u8]) -> Result<(Self, usize), EncodingError> {
+        let (prefix, eaten) = String::from_db_bytes(bytes)?;
+        if prefix != S::static_str() {
+            return Err(EncodingError::WrongStaticPrefix(
+                prefix,
+                S::static_str().to_string(),
+            ));
+        }
+        Ok((
+            Self {
+                marker: PhantomData,
+            },
+            eaten,
+        ))
     }
 }
 
@@ -143,7 +186,7 @@ impl DbBytes for Cursor {
 
 #[cfg(test)]
 mod test {
-    use super::{Cursor, DbBytes, DbKeyWithPrefix, EncodingError};
+    use super::{Cursor, DbBytes, DbKeyWithPrefix, DbStaticStr, EncodingError, StaticStr}; //, DbKeyWithStaticPrefix, DbStaticKeyPrefix};
 
     #[test]
     fn test_string_roundtrip() -> Result<(), EncodingError> {
@@ -220,6 +263,74 @@ mod test {
                 "exact bytes consumed for round-trip: {desc}"
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn test_static_str() -> Result<(), EncodingError> {
+        #[derive(Debug, PartialEq)]
+        struct AStaticStr {}
+        impl StaticStr for AStaticStr {
+            fn static_str() -> &'static str {
+                "a static str"
+            }
+        }
+        type ADbStaticStr = DbStaticStr<AStaticStr>;
+
+        let original = ADbStaticStr::new();
+        let serialized = original.to_db_bytes()?;
+        let (restored, bytes_consumed) = ADbStaticStr::from_db_bytes(&serialized)?;
+        assert_eq!(restored, original);
+        assert_eq!(bytes_consumed, serialized.len());
+        assert!(serialized.starts_with("a static str".as_bytes()));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_static_str_empty() -> Result<(), EncodingError> {
+        #[derive(Debug, PartialEq)]
+        struct AnEmptyStr {}
+        impl StaticStr for AnEmptyStr {
+            fn static_str() -> &'static str {
+                ""
+            }
+        }
+        type ADbEmptyStr = DbStaticStr<AnEmptyStr>;
+        let original = ADbEmptyStr::new();
+        let serialized = original.to_db_bytes()?;
+        let (restored, bytes_consumed) = ADbEmptyStr::from_db_bytes(&serialized)?;
+        assert_eq!(restored, original);
+        assert_eq!(bytes_consumed, serialized.len());
+        assert_eq!(serialized, &[0x00]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_static_prefix() -> Result<(), EncodingError> {
+        #[derive(Debug, PartialEq)]
+        struct AStaticPrefix {}
+        impl StaticStr for AStaticPrefix {
+            fn static_str() -> &'static str {
+                "a static prefix"
+            }
+        }
+        type ADbStaticPrefix = DbStaticStr<AStaticPrefix>;
+
+        type PrefixedCursor = DbKeyWithPrefix<ADbStaticPrefix, Cursor>;
+
+        let original = PrefixedCursor {
+            prefix: ADbStaticPrefix::new(),
+            suffix: Cursor::from_raw_u64(123),
+        };
+        let serialized = original.to_db_bytes()?;
+        let (restored, bytes_consumed) = PrefixedCursor::from_db_bytes(&serialized)?;
+        assert_eq!(restored, original);
+        assert_eq!(bytes_consumed, serialized.len());
+        assert_eq!(restored.suffix.to_raw_u64(), 123);
+        assert!(serialized.starts_with("a static prefix".as_bytes()));
+
         Ok(())
     }
 }
