@@ -48,8 +48,8 @@ pub trait DbBytes {
 
 #[derive(Debug, PartialEq)]
 pub struct DbKeyWithPrefix<P: DbBytes, S: DbBytes> {
-    prefix: P,
-    suffix: S,
+    pub prefix: P,
+    pub suffix: S,
 }
 
 impl<P: DbBytes, S: DbBytes> DbKeyWithPrefix<P, S> {
@@ -80,16 +80,16 @@ impl<P: DbBytes, S: DbBytes> DbBytes for DbKeyWithPrefix<P, S> {
     }
 }
 
-trait StaticStr {
+pub trait StaticStr {
     fn static_str() -> &'static str;
 }
 
 #[derive(Debug, PartialEq)]
-struct DbStaticStr<S: StaticStr> {
+pub struct DbStaticStr<S: StaticStr> {
     marker: PhantomData<S>,
 }
-impl<S: StaticStr> DbStaticStr<S> {
-    pub fn new() -> Self {
+impl<S: StaticStr> Default for DbStaticStr<S> {
+    fn default() -> Self {
         Self {
             marker: PhantomData,
         }
@@ -186,7 +186,7 @@ impl DbBytes for Cursor {
 
 #[cfg(test)]
 mod test {
-    use super::{Cursor, DbBytes, DbKeyWithPrefix, DbStaticStr, EncodingError, StaticStr}; //, DbKeyWithStaticPrefix, DbStaticKeyPrefix};
+    use super::{Cursor, DbBytes, DbKeyWithPrefix, DbStaticStr, EncodingError, StaticStr};
 
     #[test]
     fn test_string_roundtrip() -> Result<(), EncodingError> {
@@ -277,7 +277,7 @@ mod test {
         }
         type ADbStaticStr = DbStaticStr<AStaticStr>;
 
-        let original = ADbStaticStr::new();
+        let original = ADbStaticStr::default();
         let serialized = original.to_db_bytes()?;
         let (restored, bytes_consumed) = ADbStaticStr::from_db_bytes(&serialized)?;
         assert_eq!(restored, original);
@@ -297,7 +297,7 @@ mod test {
             }
         }
         type ADbEmptyStr = DbStaticStr<AnEmptyStr>;
-        let original = ADbEmptyStr::new();
+        let original = ADbEmptyStr::default();
         let serialized = original.to_db_bytes()?;
         let (restored, bytes_consumed) = ADbEmptyStr::from_db_bytes(&serialized)?;
         assert_eq!(restored, original);
@@ -321,7 +321,7 @@ mod test {
         type PrefixedCursor = DbKeyWithPrefix<ADbStaticPrefix, Cursor>;
 
         let original = PrefixedCursor {
-            prefix: ADbStaticPrefix::new(),
+            prefix: Default::default(),
             suffix: Cursor::from_raw_u64(123),
         };
         let serialized = original.to_db_bytes()?;

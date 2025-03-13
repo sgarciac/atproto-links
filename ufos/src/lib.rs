@@ -1,6 +1,7 @@
 pub mod consumer;
 pub mod db_types;
 pub mod store;
+pub mod store_types;
 
 use jetstream::events::Cursor;
 use jetstream::exports::{Did, Nsid, RecordKey};
