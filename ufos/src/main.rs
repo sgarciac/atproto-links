@@ -1,6 +1,6 @@
 use clap::Parser;
 use std::path::PathBuf;
-use ufos::{consumer, store};
+use ufos::{consumer, server, store};
 
 /// Aggregate links in the at-mosphere
 #[derive(Parser, Debug)]
@@ -20,8 +20,19 @@ async fn main() -> anyhow::Result<()> {
     env_logger::init();
     let args = Args::parse();
     let (storage, cursor) = store::Storage::open(&args.data, &args.jetstream)?;
+
     println!("starting consumer with cursor: {cursor:?}");
     let batches = consumer::consume(&args.jetstream, cursor).await?;
-    storage.receive(batches).await?;
+
+    println!("starting server with storage...");
+    let serving = server::serve(storage.clone());
+
+    tokio::select! {
+        v = serving => eprintln!("serving ended: {v:?}"),
+        v = storage.receive(batches) => eprintln!("storage consumer ended: {v:?}"),
+    };
+
+    println!("bye!");
+
     Ok(())
 }

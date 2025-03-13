@@ -1,5 +1,6 @@
 pub mod consumer;
 pub mod db_types;
+pub mod server;
 pub mod store;
 pub mod store_types;
 

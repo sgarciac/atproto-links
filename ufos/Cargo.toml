@@ -7,6 +7,7 @@ edition = "2021"
 anyhow = "1.0.97"
 bincode = { version = "2.0.1", features = ["serde"] }
 clap = { version = "4.5.31", features = ["derive"] }
+dropshot = "0.16.0"
 env_logger = "0.11.7"
 fjall = { version = "2.6.7", features = ["miniz", "bytes", "single_writer_tx"], default-features = false }
 jetstream = { path = "../jetstream" }

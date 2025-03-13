@@ -35,6 +35,7 @@ use tokio::{sync::mpsc::Receiver, time::sleep};
  * TODO: account privacy preferences. Might wait for the protocol-level (PDS-level?) stuff to land. Will probably do lazy
  * fetching + caching on read.
  **/
+#[derive(Clone)]
 pub struct Storage {
     keyspace: Keyspace,
     partition: PartitionHandle,
