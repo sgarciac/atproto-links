@@ -1,6 +1,8 @@
 use crate::db_types::DbBytes;
-use crate::store_types::{ByCollectionKey, ByCollectionValue, ByIdKey, ByIdValue};
-use crate::{CreateRecord, EventBatch};
+use crate::store_types::{
+    ByCollectionKey, ByCollectionValue, ByCursorSeenKey, ByCursorSeenValue, ByIdKey, ByIdValue,
+};
+use crate::{CollectionSamples, CreateRecord, EventBatch};
 use fjall::{BlockCache, Config, Keyspace, PartitionCreateOptions, PartitionHandle, Slice};
 use jetstream::events::Cursor;
 use std::path::Path;
@@ -82,13 +84,31 @@ impl Storage {
                 let last = event_batch.last_jetstream_cursor.clone(); // TODO: get this from the data. track last in consumer. compute or track first.
                 let mut db_batch = self.keyspace.batch();
 
-                for (collection, records) in event_batch.record_creates.into_iter() {
+                for (
+                    collection,
+                    CollectionSamples {
+                        total_seen,
+                        samples,
+                    },
+                ) in event_batch.record_creates.into_iter()
+                {
+                    if let Some(last_record) = &samples.back() {
+                        db_batch.insert(
+                            &self.partition,
+                            ByCursorSeenKey::new(last_record.cursor.clone(), collection.clone())
+                                .to_db_bytes()?,
+                            ByCursorSeenValue::new(total_seen as u64).to_db_bytes()?,
+                        );
+                    } else {
+                        log::error!("collection samples should only exist when at least one sample has been added");
+                    }
+
                     for CreateRecord {
                         did,
                         rkey,
                         cursor,
                         record,
-                    } in records.samples
+                    } in samples
                     {
                         // ["by_collection"|collection|js_cursor] => [did|rkey|record]
                         db_batch.insert(

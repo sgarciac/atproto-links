@@ -4,6 +4,15 @@ use crate::db_types::{
 use crate::{Cursor, Did, Nsid, RecordKey};
 use bincode::{Decode, Encode};
 
+#[derive(Debug, Clone, Encode, Decode)]
+pub struct SeenCounter(pub u64);
+impl SeenCounter {
+    pub fn new(n: u64) -> Self {
+        Self(n)
+    }
+}
+impl UseBincodePlz for SeenCounter {}
+
 #[derive(Debug, PartialEq)]
 pub struct _ByCollectionStaticStr {}
 impl StaticStr for _ByCollectionStaticStr {
@@ -97,6 +106,35 @@ impl From<ByIdKey> for (Did, Nsid, RecordKey, Cursor) {
 }
 
 pub type ByIdValue = DbEmpty;
+
+#[derive(Debug, PartialEq)]
+pub struct _ByCursorSeenStaticStr {}
+impl StaticStr for _ByCursorSeenStaticStr {
+    fn static_str() -> &'static str {
+        "seen_by_js_cursor"
+    }
+}
+type ByCursorSeenPrefix = DbStaticStr<_ByCursorSeenStaticStr>;
+/// key format: ["seen_by_js_cursor"|js_cursor|collection]
+pub type ByCursorSeenKey = DbConcat<DbConcat<ByCursorSeenPrefix, Cursor>, Nsid>;
+impl ByCursorSeenKey {
+    pub fn new(cursor: Cursor, nsid: Nsid) -> Self {
+        Self {
+            prefix: DbConcat::from_pair(Default::default(), cursor),
+            suffix: nsid,
+        }
+    }
+    pub fn prefix_from_cursor(cursor: Cursor) -> Result<Vec<u8>, EncodingError> {
+        DbConcat::from_pair(ByCursorSeenPrefix::default(), cursor).to_db_bytes()
+    }
+}
+impl From<ByCursorSeenKey> for (Cursor, Nsid) {
+    fn from(k: ByCursorSeenKey) -> Self {
+        (k.prefix.suffix, k.suffix)
+    }
+}
+
+pub type ByCursorSeenValue = SeenCounter;
 
 #[cfg(test)]
 mod test {
