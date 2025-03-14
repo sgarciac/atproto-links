@@ -91,7 +91,7 @@ http {
 running
 
 ```bash
-RUST_LOG=info ./ufos --jetstream ws://192.168.1.139:8080/subscribe --force --data /mnt/ufos-data-blah/
+RUST_LOG=info ./ufos --jetstream ws://192.168.1.139:8080/subscribe --jetstream-force --jetstream-no-zstd --data /mnt/ufos-data-blah/
 ```
 
 try without info-level logs for better perf

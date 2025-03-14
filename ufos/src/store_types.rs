@@ -136,6 +136,100 @@ impl From<ByCursorSeenKey> for (Cursor, Nsid) {
 
 pub type ByCursorSeenValue = SeenCounter;
 
+#[derive(Debug, PartialEq)]
+pub struct _ModQueueItemStaticStr {}
+impl StaticStr for _ModQueueItemStaticStr {
+    fn static_str() -> &'static str {
+        "mod_queue"
+    }
+}
+type ModQueueItemPrefix = DbStaticStr<_ModQueueItemStaticStr>;
+/// key format: ["mod_queue"|js_cursor]
+pub type ModQueueItemKey = DbConcat<ModQueueItemPrefix, Cursor>;
+impl ModQueueItemKey {
+    pub fn new(cursor: Cursor) -> Self {
+        Self::from_pair(Default::default(), cursor)
+    }
+}
+impl From<ModQueueItemKey> for Cursor {
+    fn from(k: ModQueueItemKey) -> Self {
+        k.suffix
+    }
+}
+
+#[derive(Debug, Encode, Decode)]
+pub enum ModQueueItemStringValue {
+    DeleteAccount(String),                        // did
+    DeleteRecord(String, String, String),         // did, collection, rkey
+    UpdateRecord(String, String, String, String), // did, collection, rkey, json record
+}
+impl UseBincodePlz for ModQueueItemStringValue {}
+#[derive(Debug, Clone, PartialEq)]
+pub enum ModQueueItemValue {
+    DeleteAccount(Did),
+    DeleteRecord(Did, Nsid, RecordKey),
+    UpdateRecord(Did, Nsid, RecordKey, serde_json::Value),
+}
+impl From<ModQueueItemValue> for ModQueueItemStringValue {
+    fn from(v: ModQueueItemValue) -> Self {
+        match v {
+            ModQueueItemValue::DeleteAccount(did) => {
+                ModQueueItemStringValue::DeleteAccount(did.to_string())
+            }
+            ModQueueItemValue::DeleteRecord(did, collection, rkey) => {
+                ModQueueItemStringValue::DeleteRecord(
+                    did.to_string(),
+                    collection.to_string(),
+                    rkey.to_string(),
+                )
+            }
+            ModQueueItemValue::UpdateRecord(did, collection, rkey, record) => {
+                ModQueueItemStringValue::UpdateRecord(
+                    did.to_string(),
+                    collection.to_string(),
+                    rkey.to_string(),
+                    record.to_string(),
+                )
+            }
+        }
+    }
+}
+impl TryFrom<ModQueueItemStringValue> for ModQueueItemValue {
+    type Error = EncodingError;
+    fn try_from(v: ModQueueItemStringValue) -> Result<Self, Self::Error> {
+        match v {
+            ModQueueItemStringValue::DeleteAccount(did) => Ok(ModQueueItemValue::DeleteAccount(
+                Did::new(did).map_err(EncodingError::BadAtriumStringType)?,
+            )),
+            ModQueueItemStringValue::DeleteRecord(did, collection, rkey) => {
+                Ok(ModQueueItemValue::DeleteRecord(
+                    Did::new(did).map_err(EncodingError::BadAtriumStringType)?,
+                    Nsid::new(collection).map_err(EncodingError::BadAtriumStringType)?,
+                    RecordKey::new(rkey).map_err(EncodingError::BadAtriumStringType)?,
+                ))
+            }
+            ModQueueItemStringValue::UpdateRecord(did, collection, rkey, record) => {
+                Ok(ModQueueItemValue::UpdateRecord(
+                    Did::new(did).map_err(EncodingError::BadAtriumStringType)?,
+                    Nsid::new(collection).map_err(EncodingError::BadAtriumStringType)?,
+                    RecordKey::new(rkey).map_err(EncodingError::BadAtriumStringType)?,
+                    record.parse()?,
+                ))
+            }
+        }
+    }
+}
+impl DbBytes for ModQueueItemValue {
+    fn to_db_bytes(&self) -> Result<std::vec::Vec<u8>, EncodingError> {
+        Into::<ModQueueItemStringValue>::into(self.clone()).to_db_bytes()
+    }
+    fn from_db_bytes(bytes: &[u8]) -> Result<(Self, usize), EncodingError> {
+        let (stringy, n) = ModQueueItemStringValue::from_db_bytes(bytes)?;
+        let me = TryInto::<ModQueueItemValue>::try_into(stringy)?;
+        Ok((me, n))
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::{ByCollectionKey, ByCollectionValue, Cursor, Did, EncodingError, Nsid, RecordKey};
