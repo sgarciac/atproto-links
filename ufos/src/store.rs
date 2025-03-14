@@ -149,17 +149,9 @@ struct BatchWriter {
 impl BatchWriter {
     fn write(self, event_batch: EventBatch, last: Option<Cursor>) -> anyhow::Result<()> {
         let mut db_batch = self.keyspace.batch();
-
-        let EventBatch {
-            record_creates,
-            record_modifies,
-            account_removes,
-            ..
-        } = event_batch;
-        self.add_record_creates(&mut db_batch, record_creates)?;
-        self.add_record_modifies(&mut db_batch, record_modifies)?;
-        self.add_account_removes(&mut db_batch, account_removes)?;
-
+        self.add_record_creates(&mut db_batch, event_batch.record_creates)?;
+        self.add_record_modifies(&mut db_batch, event_batch.record_modifies)?;
+        self.add_account_removes(&mut db_batch, event_batch.account_removes)?;
         if let Some(cursor) = last {
             db_batch.insert(&self.partition, "js_cursor", cursor_to_slice(cursor));
         }
