@@ -3,10 +3,9 @@ use crate::store_types::{
     ByCollectionKey, ByCollectionValue, ByCursorSeenKey, ByCursorSeenValue, ByIdKey, ByIdValue,
 };
 use crate::{CollectionSamples, CreateRecord, EventBatch, Nsid};
-use fjall::{BlockCache, Config, Keyspace, PartitionCreateOptions, PartitionHandle, Slice};
+use fjall::{Config, Keyspace, PartitionCreateOptions, PartitionHandle, Slice};
 use jetstream::events::Cursor;
 use std::path::Path;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::{sync::mpsc::Receiver, time::sleep};
 
@@ -42,14 +41,13 @@ pub struct Storage {
 }
 
 impl Storage {
-    pub fn open(path: impl AsRef<Path>, endpoint: &str) -> anyhow::Result<(Self, Option<Cursor>)> {
+    pub fn open(
+        path: impl AsRef<Path>,
+        endpoint: &str,
+        force_endpoint: bool,
+    ) -> anyhow::Result<(Self, Option<Cursor>)> {
         // TODO: make this async? or should the caller remember that storage is sync?
-        let keyspace = Config::new(path)
-            .block_cache(Arc::new(BlockCache::with_capacity_bytes(
-                128 * 2_u64.pow(20),
-            )))
-            .fsync_ms(Some(1000))
-            .open()?;
+        let keyspace = Config::new(path).fsync_ms(Some(4_000)).open()?;
 
         let partition = keyspace.open_partition("default", PartitionCreateOptions::default())?;
 
@@ -61,7 +59,11 @@ impl Storage {
             };
             let stored = std::str::from_utf8(endpoint_bytes.as_ref())?;
             if stored != endpoint {
-                anyhow::bail!("stored js_endpoint {stored:?} differs from provided {endpoint:?}, refusing to start.");
+                if force_endpoint {
+                    log::warn!("forcing a jetstream switch from {stored:?} to {endpoint:?}");
+                } else {
+                    anyhow::bail!("stored js_endpoint {stored:?} differs from provided {endpoint:?}, refusing to start.");
+                }
             }
         } else {
             partition.insert("js_endpoint", endpoint.as_bytes())?;
@@ -78,64 +80,77 @@ impl Storage {
 
     pub async fn receive(&self, mut receiver: Receiver<EventBatch>) -> anyhow::Result<()> {
         loop {
-            sleep(Duration::from_secs_f64(0.5)).await; // TODO: minimize during replay
+            let t_sleep = Instant::now();
+            sleep(Duration::from_secs_f64(0.3)).await; // TODO: minimize during replay
+            let slept_for = t_sleep.elapsed();
+            let queue_size = receiver.len();
+
             if let Some(event_batch) = receiver.recv().await {
-                let batch_for_summary = event_batch.clone();
+                let batch_summary = summarize_batch(&event_batch);
+
                 let t0 = Instant::now();
 
                 let last = event_batch.last_jetstream_cursor.clone(); // TODO: get this from the data. track last in consumer. compute or track first.
-                let mut db_batch = self.keyspace.batch();
 
-                for (
-                    collection,
-                    CollectionSamples {
-                        total_seen,
-                        samples,
-                    },
-                ) in event_batch.record_creates.into_iter()
-                {
-                    if let Some(last_record) = &samples.back() {
-                        db_batch.insert(
-                            &self.partition,
-                            ByCursorSeenKey::new(last_record.cursor.clone(), collection.clone())
-                                .to_db_bytes()?,
-                            ByCursorSeenValue::new(total_seen as u64).to_db_bytes()?,
-                        );
-                    } else {
-                        log::error!("collection samples should only exist when at least one sample has been added");
-                    }
+                let keyspace = self.keyspace.clone();
+                let partition = self.partition.clone();
 
-                    for CreateRecord {
-                        did,
-                        rkey,
-                        cursor,
-                        record,
-                    } in samples
+                tokio::task::spawn_blocking(move || {
+                    let mut db_batch = keyspace.batch();
+                    for (
+                        collection,
+                        CollectionSamples {
+                            total_seen,
+                            samples,
+                        },
+                    ) in event_batch.record_creates.into_iter()
                     {
-                        // ["by_collection"|collection|js_cursor] => [did|rkey|record]
-                        db_batch.insert(
-                            &self.partition,
-                            ByCollectionKey::new(collection.clone(), cursor.clone())
-                                .to_db_bytes()?,
-                            ByCollectionValue::new(did.clone(), rkey.clone(), record)
-                                .to_db_bytes()?,
-                        );
+                        if let Some(last_record) = &samples.back() {
+                            db_batch.insert(
+                                &partition,
+                                ByCursorSeenKey::new(last_record.cursor.clone(), collection.clone())
+                                    .to_db_bytes().unwrap(),
+                                ByCursorSeenValue::new(total_seen as u64).to_db_bytes().unwrap(),
+                            );
+                        } else {
+                            log::error!("collection samples should only exist when at least one sample has been added");
+                        }
 
-                        // ["by_id"|did|collection|rkey|js_cursor] => [] // required to support deletes; did first prefix for account deletes.
-                        db_batch.insert(
-                            &self.partition,
-                            ByIdKey::new(did, collection.clone(), rkey, cursor).to_db_bytes()?,
-                            ByIdValue::default().to_db_bytes()?,
-                        );
+                        for CreateRecord {
+                            did,
+                            rkey,
+                            cursor,
+                            record,
+                        } in samples
+                        {
+                            // ["by_collection"|collection|js_cursor] => [did|rkey|record]
+                            db_batch.insert(
+                                &partition,
+                                ByCollectionKey::new(collection.clone(), cursor.clone())
+                                    .to_db_bytes().unwrap(),
+                                ByCollectionValue::new(did.clone(), rkey.clone(), record)
+                                    .to_db_bytes().unwrap(),
+                            );
+
+                            // ["by_id"|did|collection|rkey|js_cursor] => [] // required to support deletes; did first prefix for account deletes.
+                            db_batch.insert(
+                                &partition,
+                                ByIdKey::new(did, collection.clone(), rkey, cursor).to_db_bytes().unwrap(),
+                                ByIdValue::default().to_db_bytes().unwrap(),
+                            );
+                        }
                     }
-                }
+                    if let Some(cursor) = last {
+                        db_batch.insert(&partition, "js_cursor", cursor_to_slice(cursor));
+                    }
+                    db_batch.commit().unwrap();
 
-                if let Some(cursor) = last {
-                    db_batch.insert(&self.partition, "js_cursor", cursor_to_slice(cursor));
-                }
-                db_batch.commit()?;
+                    let batched_for = t0.elapsed();
 
-                summarize(&batch_for_summary, t0.elapsed());
+
+                    println!("{batch_summary}, slept for {slept_for: <12?}, wrote for {batched_for: <11?}, queue size: {queue_size}");
+
+                }).await?;
             } else {
                 anyhow::bail!("receive channel closed");
             }
@@ -147,24 +162,28 @@ impl Storage {
         collection: &Nsid,
         limit: usize,
     ) -> anyhow::Result<Vec<CreateRecord>> {
-        let mut output = Vec::new();
+        let partition = self.partition.clone();
         let prefix = ByCollectionKey::prefix_from_nsid(collection.clone())?;
-        for pair in self.partition.prefix(&prefix).rev().take(limit) {
-            let (k_bytes, v_bytes) = pair?;
-            let (_, cursor) = db_complete::<ByCollectionKey>(&k_bytes)?.into();
-            let (did, rkey, record) = db_complete::<ByCollectionValue>(&v_bytes)?.into();
-            output.push(CreateRecord {
-                did,
-                rkey,
-                record,
-                cursor,
-            })
-        }
-        Ok(output)
+        tokio::task::spawn_blocking(move || {
+            let mut output = Vec::new();
+            for pair in partition.prefix(&prefix).rev().take(limit) {
+                let (k_bytes, v_bytes) = pair?;
+                let (_, cursor) = db_complete::<ByCollectionKey>(&k_bytes)?.into();
+                let (did, rkey, record) = db_complete::<ByCollectionValue>(&v_bytes)?.into();
+                output.push(CreateRecord {
+                    did,
+                    rkey,
+                    record,
+                    cursor,
+                })
+            }
+            Ok(output)
+        })
+        .await?
     }
 }
 
-fn summarize(batch: &EventBatch, dt: Duration) {
+fn summarize_batch(batch: &EventBatch) -> String {
     let EventBatch {
         record_creates,
         record_modifies,
@@ -174,14 +193,13 @@ fn summarize(batch: &EventBatch, dt: Duration) {
     } = batch;
     let total_records: usize = record_creates.values().map(|v| v.total_seen).sum();
     let total_samples: usize = record_creates.values().map(|v| v.samples.len()).sum();
-    println!(
-        "got batch of {total_samples: >3} samples from {total_records: >3} records in {: >2} collections, {: >2} record modifies, {} account removes, cursor {:?}, db wrote for {:?}",
+    format!(
+        "got batch of {total_samples: >3} samples from {total_records: >4} records in {: >2} collections, {: >3} record modifies, {} account removes, cursor {: <14?}",
         record_creates.len(),
         record_modifies.len(),
         account_removes.len(),
-        last_jetstream_cursor.clone().map(|c| c.elapsed()),
-        dt
-    );
+        last_jetstream_cursor.clone().map(|c| c.elapsed())
+    )
 }
 
 fn cursor_to_slice(cursor: Cursor) -> [u8; 8] {

@@ -158,6 +158,16 @@ impl From<JetstreamCompression> for bool {
     }
 }
 
+impl From<bool> for JetstreamCompression {
+    fn from(compress: bool) -> Self {
+        if compress {
+            JetstreamCompression::Zstd
+        } else {
+            JetstreamCompression::None
+        }
+    }
+}
+
 pub struct JetstreamConfig<R: DeserializeOwned = KnownRecord> {
     /// A Jetstream endpoint to connect to with a WebSocket Scheme i.e.
     /// `wss://jetstream1.us-east.bsky.network/subscribe`.
@@ -438,7 +448,7 @@ async fn websocket_task<R: DeserializeOwned>(
             if let Err(error) = ping_shared_socket_write
                 .lock()
                 .await
-                .send(Message::Ping("ping".as_bytes().to_vec()))
+                .send(Message::Ping("ping".into()))
                 .await
             {
                 log::error!("Ping failed: {error}");
@@ -529,8 +539,8 @@ async fn websocket_task<R: DeserializeOwned>(
                         }
                     }
                     Message::Pong(pong) => {
-                        let pong_payload =
-                            String::from_utf8(pong).unwrap_or("Invalid payload".to_string());
+                        let pong_payload = String::from_utf8(pong.to_vec())
+                            .unwrap_or("Invalid payload".to_string());
                         log::trace!("Pong recieved. Payload: {pong_payload}");
                     }
                     Message::Frame(_) => (),

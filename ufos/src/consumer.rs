@@ -15,14 +15,16 @@ use tokio::sync::mpsc::{channel, Receiver, Sender};
 use crate::{CreateRecord, DeleteAccount, DeleteRecord, EventBatch, ModifyRecord, UpdateRecord};
 
 const MAX_BATCHED_RECORDS: usize = 128; // *non-blocking* limit. drops oldest batched record per collection once reached.
-const MAX_BATCHED_MODIFIES: usize = 256; // hard limit, total updates and deletes across all collections.
+const MAX_BATCHED_MODIFIES: usize = 512; // hard limit, total updates and deletes across all collections.
 const MAX_ACCOUNT_REMOVES: usize = 512; // hard limit, total account deletions. actually the least frequent event, but tiny.
 const MAX_BATCHED_COLLECTIONS: usize = 64; // hard limit, MAX_BATCHED_RECORDS applies per collection
-const MAX_BATCH_SPAN_SECS: f64 = 5.; // hard limit of duration from oldest to latest event cursor within a batch, in seconds.
+const MIN_BATCH_SPAN_SECS: f64 = 2.; // try to get a bit of rest a bit.
+const MAX_BATCH_SPAN_SECS: f64 = 10.; // hard limit of duration from oldest to latest event cursor within a batch, in seconds.
 
-const SEND_TIMEOUT_S: f64 = 4.;
+const SEND_TIMEOUT_S: f64 = 6.;
 
-const BATCH_QUEUE_SIZE: usize = 4096;
+const BATCH_QUEUE_SIZE: usize = 32;
+// const BATCH_QUEUE_SIZE: usize = 4096;
 
 #[derive(Debug)]
 struct Batcher {
@@ -34,10 +36,15 @@ struct Batcher {
 pub async fn consume(
     jetstream_endpoint: &str,
     cursor: Option<Cursor>,
+    no_compress: bool,
 ) -> anyhow::Result<Receiver<EventBatch>> {
     let config: JetstreamConfig<serde_json::Value> = JetstreamConfig {
         endpoint: DefaultJetstreamEndpoints::endpoint_or_shortcut(jetstream_endpoint),
-        compression: JetstreamCompression::Zstd,
+        compression: if no_compress {
+            JetstreamCompression::None
+        } else {
+            JetstreamCompression::Zstd
+        },
         channel_size: 64, // small because we'd rather buffer events into batches
         ..Default::default()
     };
@@ -105,17 +112,21 @@ impl Batcher {
             JetstreamEvent::Account(_) => {} // ignore account *activations*
             JetstreamEvent::Identity(_) => {} // identity events are noops for us
         };
-        self.current_batch.last_jetstream_cursor = Some(event_cursor);
+        self.current_batch.last_jetstream_cursor = Some(event_cursor.clone());
 
-        // if the queue is empty, send immediately. otherewise, let the current batch fill up.
-        if self.batch_sender.capacity() == BATCH_QUEUE_SIZE {
-            log::warn!("queue empty: immediately sending batch.");
-            if let Err(send_err) = self
-                .batch_sender
-                .send(mem::take(&mut self.current_batch))
-                .await
+        // if the queue is empty and we have enough, send immediately. otherewise, let the current batch fill up.
+        if let Some(earliest) = &self.current_batch.first_jetstream_cursor {
+            if event_cursor.duration_since(earliest)?.as_secs_f64() > MIN_BATCH_SPAN_SECS
+                && self.batch_sender.capacity() == BATCH_QUEUE_SIZE
             {
-                anyhow::bail!("Could not send batch, likely because the receiver closed or dropped: {send_err:?}");
+                log::warn!("queue empty: immediately sending batch.");
+                if let Err(send_err) = self
+                    .batch_sender
+                    .send(mem::take(&mut self.current_batch))
+                    .await
+                {
+                    anyhow::bail!("Could not send batch, likely because the receiver closed or dropped: {send_err:?}");
+                }
             }
         }
         Ok(())

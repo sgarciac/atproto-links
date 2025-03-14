@@ -122,7 +122,7 @@ pub async fn serve(storage: Storage) -> Result<(), String> {
 
     ServerBuilder::new(api, context, log)
         .config(ConfigDropshot {
-            bind_address: "127.0.0.1:9999".parse().unwrap(),
+            bind_address: "0.0.0.0:9999".parse().unwrap(),
             ..Default::default()
         })
         .start()
