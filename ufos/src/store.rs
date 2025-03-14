@@ -5,7 +5,8 @@ use crate::store_types::{
 };
 use crate::{CollectionSamples, CreateRecord, DeleteAccount, EventBatch, ModifyRecord, Nsid};
 use fjall::{
-    Batch as FjallBatch, Config, Keyspace, PartitionCreateOptions, PartitionHandle, Slice,
+    Batch as FjallBatch, CompressionType, Config, Keyspace, PartitionCreateOptions,
+    PartitionHandle, Slice,
 };
 use jetstream::events::Cursor;
 use std::collections::HashMap;
@@ -53,7 +54,10 @@ impl Storage {
         // TODO: make this async? or should the caller remember that storage is sync?
         let keyspace = Config::new(path).fsync_ms(Some(4_000)).open()?;
 
-        let partition = keyspace.open_partition("default", PartitionCreateOptions::default())?;
+        let partition = keyspace.open_partition(
+            "default",
+            PartitionCreateOptions::default().compression(CompressionType::None),
+        )?;
 
         let js_cursor = partition.get("js_cursor")?.map(cursor_from_slice);
 

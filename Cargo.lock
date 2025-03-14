@@ -2039,7 +2039,6 @@ dependencies = [
  "guardian",
  "interval-heap",
  "log",
- "miniz_oxide",
  "path-absolutize",
  "quick_cache",
  "rustc-hash 2.1.1",
