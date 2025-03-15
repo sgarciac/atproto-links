@@ -1,4 +1,4 @@
-use crate::store::Storage;
+use crate::store::{Storage, StorageInfo};
 use crate::{CreateRecord, Nsid};
 use dropshot::endpoint;
 use dropshot::ApiDescription;
@@ -32,11 +32,30 @@ async fn get_openapi(
     Ok(HttpResponseOk(spec))
 }
 
+#[derive(Debug, Serialize, JsonSchema)]
+struct MetaInfo {
+    storage_info: StorageInfo,
+}
+/// Get meta information about UFOs itself
+#[endpoint {
+    method = GET,
+    path = "/meta"
+}]
+async fn get_meta_info(
+    ctx: RequestContext<Context>,
+) -> Result<HttpResponseOk<MetaInfo>, HttpError> {
+    let Context { storage, .. } = ctx.context();
+    let storage_info = storage
+        .get_meta_info()
+        .await
+        .map_err(|e| HttpError::for_internal_error(format!("failed to get meta info: {e}")))?;
+    Ok(HttpResponseOk(MetaInfo { storage_info }))
+}
+
 #[derive(Debug, Deserialize, JsonSchema)]
 struct CollectionQuery {
     collection: String, // JsonSchema not implemented for Nsid :(
 }
-
 #[derive(Debug, Serialize, JsonSchema)]
 struct ApiRecord {
     did: String,
@@ -62,7 +81,6 @@ impl ApiRecord {
         }
     }
 }
-
 /// Get recent records by collection
 #[endpoint {
     method = GET,
@@ -109,6 +127,7 @@ pub async fn serve(storage: Storage) -> Result<(), String> {
     let mut api = ApiDescription::new();
 
     api.register(get_openapi).unwrap();
+    api.register(get_meta_info).unwrap();
     api.register(get_records_by_collection).unwrap();
 
     let context = Context {

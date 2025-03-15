@@ -143,6 +143,28 @@ impl Storage {
         })
         .await?
     }
+
+    pub async fn get_meta_info(&self) -> Result<StorageInfo, tokio::task::JoinError> {
+        let keyspace = self.keyspace.clone();
+        let partition = self.partition.clone();
+        tokio::task::spawn_blocking(move || {
+            Ok(StorageInfo {
+                keyspace_disk_space: keyspace.disk_space(),
+                keyspace_journal_count: keyspace.journal_count(),
+                keyspace_sequence: keyspace.instant(),
+                partition_approximate_len: partition.approximate_len(),
+            })
+        })
+        .await?
+    }
+}
+
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
+pub struct StorageInfo {
+    pub keyspace_disk_space: u64,
+    pub keyspace_journal_count: usize,
+    pub keyspace_sequence: u64,
+    pub partition_approximate_len: usize,
 }
 
 struct BatchWriter {
