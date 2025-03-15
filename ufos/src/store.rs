@@ -1,16 +1,16 @@
-use crate::db_types::{db_complete, DbBytes};
+use crate::db_types::{db_complete, DbBytes, DbStaticStr, StaticStr};
 use crate::store_types::{
     ByCollectionKey, ByCollectionValue, ByCursorSeenKey, ByCursorSeenValue, ByIdKey, ByIdValue,
-    ModQueueItemKey, ModQueueItemValue,
+    JetstreamCursorKey, JetstreamCursorValue, JetstreamEndpointKey, JetstreamEndpointValue,
+    ModCursorKey, ModCursorValue, ModQueueItemKey, ModQueueItemValue,
 };
 use crate::{CollectionSamples, CreateRecord, DeleteAccount, EventBatch, ModifyRecord, Nsid};
 use fjall::{
-    Batch as FjallBatch, CompressionType, Config, Keyspace, PartitionCreateOptions,
-    PartitionHandle, Slice,
+    Batch as FjallBatch, CompressionType, Config, Keyspace, PartitionCreateOptions, PartitionHandle,
 };
 use jetstream::events::Cursor;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use tokio::{sync::mpsc::Receiver, time::sleep};
 
@@ -46,44 +46,44 @@ pub struct Storage {
 }
 
 impl Storage {
-    pub fn open(
-        path: impl AsRef<Path>,
-        endpoint: &str,
-        force_endpoint: bool,
-    ) -> anyhow::Result<(Self, Option<Cursor>)> {
-        // TODO: make this async? or should the caller remember that storage is sync?
+    fn init_self(path: impl AsRef<Path>) -> anyhow::Result<Self> {
         let keyspace = Config::new(path).fsync_ms(Some(4_000)).open()?;
-
         let partition = keyspace.open_partition(
             "default",
             PartitionCreateOptions::default().compression(CompressionType::None),
         )?;
+        Ok(Self {
+            keyspace,
+            partition,
+        })
+    }
 
-        let js_cursor = partition.get("js_cursor")?.map(cursor_from_slice);
+    pub async fn open(
+        path: PathBuf,
+        endpoint: &str,
+        force_endpoint: bool,
+    ) -> anyhow::Result<(Self, Option<Cursor>)> {
+        let me = tokio::task::spawn_blocking(move || Storage::init_self(path)).await??;
+
+        let js_cursor = me.get_jetstream_cursor().await?;
 
         if js_cursor.is_some() {
-            let Some(endpoint_bytes) = partition.get("js_endpoint")? else {
+            let Some(JetstreamEndpointValue(stored)) = me.get_jetstream_endpoint().await? else {
                 anyhow::bail!("found cursor but missing js_endpoint, refusing to start.");
             };
-            let stored = std::str::from_utf8(endpoint_bytes.as_ref())?;
             if stored != endpoint {
                 if force_endpoint {
                     log::warn!("forcing a jetstream switch from {stored:?} to {endpoint:?}");
+                    me.set_jetstream_endpoint(endpoint).await?;
                 } else {
                     anyhow::bail!("stored js_endpoint {stored:?} differs from provided {endpoint:?}, refusing to start.");
                 }
             }
         } else {
-            partition.insert("js_endpoint", endpoint.as_bytes())?;
+            me.set_jetstream_endpoint(endpoint).await?;
         }
 
-        Ok((
-            Self {
-                keyspace,
-                partition,
-            },
-            js_cursor,
-        ))
+        Ok((me, js_cursor))
     }
 
     pub async fn receive(&self, mut receiver: Receiver<EventBatch>) -> anyhow::Result<()> {
@@ -144,7 +144,7 @@ impl Storage {
         .await?
     }
 
-    pub async fn get_meta_info(&self) -> Result<StorageInfo, tokio::task::JoinError> {
+    pub async fn get_meta_info(&self) -> anyhow::Result<StorageInfo> {
         let keyspace = self.keyspace.clone();
         let partition = self.partition.clone();
         tokio::task::spawn_blocking(move || {
@@ -157,19 +157,70 @@ impl Storage {
         })
         .await?
     }
+
+    pub async fn get_jetstream_endpoint(&self) -> anyhow::Result<Option<JetstreamEndpointValue>> {
+        let partition = self.partition.clone();
+        tokio::task::spawn_blocking(move || {
+            get_static::<JetstreamEndpointKey, JetstreamEndpointValue>(&partition)
+        })
+        .await?
+    }
+
+    async fn set_jetstream_endpoint(&self, endpoint: &str) -> anyhow::Result<()> {
+        let partition = self.partition.clone();
+        let endpoint = endpoint.to_string();
+        tokio::task::spawn_blocking(move || {
+            insert_static::<JetstreamEndpointKey>(&partition, JetstreamEndpointValue(endpoint))
+        })
+        .await?
+    }
+
+    pub async fn get_jetstream_cursor(&self) -> anyhow::Result<Option<Cursor>> {
+        let partition = self.partition.clone();
+        tokio::task::spawn_blocking(move || {
+            get_static::<JetstreamCursorKey, JetstreamCursorValue>(&partition)
+        })
+        .await?
+    }
+
+    pub async fn get_mod_cursor(&self) -> anyhow::Result<Option<Cursor>> {
+        let partition = self.partition.clone();
+        tokio::task::spawn_blocking(move || get_static::<ModCursorKey, ModCursorValue>(&partition))
+            .await?
+    }
 }
 
-#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
-pub struct StorageInfo {
-    pub keyspace_disk_space: u64,
-    pub keyspace_journal_count: usize,
-    pub keyspace_sequence: u64,
-    pub partition_approximate_len: usize,
+/// Get a value from a fixed key
+fn get_static<K: StaticStr, V: DbBytes>(partition: &PartitionHandle) -> anyhow::Result<Option<V>> {
+    let key_bytes = DbStaticStr::<K>::default().to_db_bytes()?;
+    let value = partition
+        .get(&key_bytes)?
+        .map(|value_bytes| db_complete(&value_bytes))
+        .transpose()?;
+    Ok(value)
 }
 
-struct BatchWriter {
-    keyspace: Keyspace,
-    partition: PartitionHandle,
+/// Set a value to a fixed key
+fn insert_static<K: StaticStr>(
+    partition: &PartitionHandle,
+    value: impl DbBytes,
+) -> anyhow::Result<()> {
+    let key_bytes = DbStaticStr::<K>::default().to_db_bytes()?;
+    let value_bytes = value.to_db_bytes()?;
+    partition.insert(&key_bytes, &value_bytes)?;
+    Ok(())
+}
+
+/// Set a value to a fixed key
+fn insert_batch_static<K: StaticStr>(
+    batch: &mut FjallBatch,
+    partition: &PartitionHandle,
+    value: impl DbBytes,
+) -> anyhow::Result<()> {
+    let key_bytes = DbStaticStr::<K>::default().to_db_bytes()?;
+    let value_bytes = value.to_db_bytes()?;
+    batch.insert(partition, &key_bytes, &value_bytes);
+    Ok(())
 }
 
 impl BatchWriter {
@@ -179,7 +230,7 @@ impl BatchWriter {
         self.add_record_modifies(&mut db_batch, event_batch.record_modifies)?;
         self.add_account_removes(&mut db_batch, event_batch.account_removes)?;
         if let Some(cursor) = last {
-            db_batch.insert(&self.partition, "js_cursor", cursor_to_slice(cursor));
+            insert_batch_static::<JetstreamCursorKey>(&mut db_batch, &self.partition, cursor)?;
         }
         db_batch.commit()?;
         Ok(())
@@ -277,6 +328,21 @@ impl BatchWriter {
     }
 }
 
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
+pub struct StorageInfo {
+    pub keyspace_disk_space: u64,
+    pub keyspace_journal_count: usize,
+    pub keyspace_sequence: u64,
+    pub partition_approximate_len: usize,
+}
+
+struct BatchWriter {
+    keyspace: Keyspace,
+    partition: PartitionHandle,
+}
+
+////////// temp stuff to remove:
+
 fn summarize_batch(batch: &EventBatch) -> String {
     let EventBatch {
         record_creates,
@@ -294,14 +360,4 @@ fn summarize_batch(batch: &EventBatch) -> String {
         account_removes.len(),
         last_jetstream_cursor.clone().map(|c| c.elapsed())
     )
-}
-
-fn cursor_to_slice(cursor: Cursor) -> [u8; 8] {
-    cursor.to_raw_u64().to_be_bytes()
-}
-fn cursor_from_slice(bytes: Slice) -> Cursor {
-    let mut buf = [0u8; 8];
-    let len = 8.min(bytes.len());
-    buf[..len].copy_from_slice(&bytes[..len]);
-    Cursor::from_raw_u64(u64::from_be_bytes(buf))
 }

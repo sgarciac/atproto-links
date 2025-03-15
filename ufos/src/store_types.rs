@@ -4,6 +4,50 @@ use crate::db_types::{
 use crate::{Cursor, Did, Nsid, RecordKey};
 use bincode::{Decode, Encode};
 
+/// key format: ["js_cursor"]
+#[derive(Debug, PartialEq)]
+pub struct JetstreamCursorKey {}
+impl StaticStr for JetstreamCursorKey {
+    fn static_str() -> &'static str {
+        "js_cursor"
+    }
+}
+pub type JetstreamCursorValue = Cursor;
+
+/// key format: ["mod_cursor"]
+#[derive(Debug, PartialEq)]
+pub struct ModCursorKey {}
+impl StaticStr for ModCursorKey {
+    fn static_str() -> &'static str {
+        "mod_cursor"
+    }
+}
+pub type ModCursorValue = Cursor;
+
+/// key format: ["js_endpoint"]
+#[derive(Debug, PartialEq)]
+pub struct JetstreamEndpointKey {}
+impl StaticStr for JetstreamEndpointKey {
+    fn static_str() -> &'static str {
+        "js_endpoint"
+    }
+}
+#[derive(Debug, PartialEq)]
+pub struct JetstreamEndpointValue(pub String);
+/// String wrapper for jetstream endpoint value
+///
+/// Warning: this is a non-terminating byte representation of a string: it cannot be used in prefix position of DbConcat
+impl DbBytes for JetstreamEndpointValue {
+    // TODO: maybe make a helper type in db_types
+    fn to_db_bytes(&self) -> Result<Vec<u8>, EncodingError> {
+        Ok(self.0.as_bytes().to_vec())
+    }
+    fn from_db_bytes(bytes: &[u8]) -> Result<(Self, usize), EncodingError> {
+        let s = std::str::from_utf8(bytes)?.to_string();
+        Ok((Self(s), bytes.len()))
+    }
+}
+
 #[derive(Debug, Clone, Encode, Decode)]
 pub struct SeenCounter(pub u64);
 impl SeenCounter {

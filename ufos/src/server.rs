@@ -35,6 +35,9 @@ async fn get_openapi(
 #[derive(Debug, Serialize, JsonSchema)]
 struct MetaInfo {
     storage_info: StorageInfo,
+    jetstream_endpoint: Option<String>,
+    jetstream_cursor: Option<u64>,
+    mod_cursor: Option<u64>,
 }
 /// Get meta information about UFOs itself
 #[endpoint {
@@ -45,11 +48,39 @@ async fn get_meta_info(
     ctx: RequestContext<Context>,
 ) -> Result<HttpResponseOk<MetaInfo>, HttpError> {
     let Context { storage, .. } = ctx.context();
+
+    let failed_to_get =
+        |what| move |e| HttpError::for_internal_error(format!("failed to get {what}: {e:?}"));
+
     let storage_info = storage
         .get_meta_info()
         .await
-        .map_err(|e| HttpError::for_internal_error(format!("failed to get meta info: {e}")))?;
-    Ok(HttpResponseOk(MetaInfo { storage_info }))
+        .map_err(failed_to_get("meta info"))?;
+
+    let jetstream_endpoint = storage
+        .get_jetstream_endpoint()
+        .await
+        .map_err(failed_to_get("jetstream endpoint"))?
+        .map(|v| v.0);
+
+    let jetstream_cursor = storage
+        .get_jetstream_cursor()
+        .await
+        .map_err(failed_to_get("jetstream cursor"))?
+        .map(|c| c.to_raw_u64());
+
+    let mod_cursor = storage
+        .get_mod_cursor()
+        .await
+        .map_err(failed_to_get("jetstream cursor"))?
+        .map(|c| c.to_raw_u64());
+
+    Ok(HttpResponseOk(MetaInfo {
+        storage_info,
+        jetstream_endpoint,
+        jetstream_cursor,
+        mod_cursor,
+    }))
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
