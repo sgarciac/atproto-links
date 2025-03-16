@@ -68,14 +68,14 @@ type ByCollectionPrefix = DbStaticStr<_ByCollectionStaticStr>;
 /// key format: ["by_collection"|collection|js_cursor]
 pub type ByCollectionKey = DbConcat<DbConcat<ByCollectionPrefix, Nsid>, Cursor>;
 impl ByCollectionKey {
-    pub fn new(nsid: Nsid, cursor: Cursor) -> Self {
+    pub fn new(collection: Nsid, cursor: Cursor) -> Self {
         Self {
-            prefix: DbConcat::from_pair(Default::default(), nsid),
+            prefix: DbConcat::from_pair(Default::default(), collection),
             suffix: cursor,
         }
     }
-    pub fn prefix_from_nsid(nsid: Nsid) -> Result<Vec<u8>, EncodingError> {
-        DbConcat::from_pair(ByCollectionPrefix::default(), nsid).to_db_bytes()
+    pub fn prefix_from_collection(collection: Nsid) -> Result<Vec<u8>, EncodingError> {
+        DbConcat::from_pair(ByCollectionPrefix::default(), collection).to_db_bytes()
     }
 }
 impl From<ByCollectionKey> for (Nsid, Cursor) {
@@ -126,16 +126,22 @@ pub type ByIdRecordPrefix = DbConcat<ByIdCollectionPrefix, RecordKey>;
 pub type ByIdKey = DbConcat<ByIdRecordPrefix, Cursor>;
 impl ByIdKey {
     pub fn new(did: Did, collection: Nsid, rkey: RecordKey, cursor: Cursor) -> Self {
-        Self {
-            prefix: ByIdRecordPrefix {
-                prefix: ByIdCollectionPrefix {
-                    prefix: ByIdDidPrefix::from_pair(Default::default(), did),
-                    suffix: collection,
-                },
-                suffix: rkey,
+        Self::from_pair(Self::record_prefix(did, collection, rkey), cursor)
+    }
+    pub fn record_prefix(did: Did, collection: Nsid, rkey: RecordKey) -> ByIdRecordPrefix {
+        ByIdRecordPrefix {
+            prefix: ByIdCollectionPrefix {
+                prefix: Self::did_prefix(did),
+                suffix: collection,
             },
-            suffix: cursor,
+            suffix: rkey,
         }
+    }
+    pub fn did_prefix(did: Did) -> ByIdDidPrefix {
+        ByIdDidPrefix::from_pair(Default::default(), did)
+    }
+    pub fn cursor(&self) -> Cursor {
+        self.suffix.clone()
     }
 }
 impl From<ByIdKey> for (Did, Nsid, RecordKey, Cursor) {
@@ -195,9 +201,15 @@ impl ModQueueItemKey {
         Self::from_pair(Default::default(), cursor)
     }
 }
+// todo: remove this? all we need is the ModCursorValue version?
 impl From<ModQueueItemKey> for Cursor {
     fn from(k: ModQueueItemKey) -> Self {
         k.suffix
+    }
+}
+impl From<&ModQueueItemKey> for ModCursorValue {
+    fn from(k: &ModQueueItemKey) -> Self {
+        k.suffix.clone()
     }
 }
 
@@ -290,7 +302,7 @@ mod test {
 
         let serialized_prefix = original.to_prefix_db_bytes()?;
         assert!(serialized.starts_with(&serialized_prefix));
-        let just_prefix = ByCollectionKey::prefix_from_nsid(nsid)?;
+        let just_prefix = ByCollectionKey::prefix_from_collection(nsid)?;
         assert_eq!(just_prefix, serialized_prefix);
         assert!(just_prefix.starts_with("by_collection".as_bytes()));
 

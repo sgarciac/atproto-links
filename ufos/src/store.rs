@@ -1,11 +1,13 @@
-use crate::db_types::{db_complete, DbBytes, DbStaticStr, StaticStr};
+use crate::db_types::{db_complete, DbBytes, DbStaticStr, EncodingError, StaticStr};
 use crate::store_types::{
     ByCollectionKey, ByCollectionValue, ByCursorSeenKey, ByCursorSeenValue, ByIdKey, ByIdValue,
     JetstreamCursorKey, JetstreamCursorValue, JetstreamEndpointKey, JetstreamEndpointValue,
     ModCursorKey, ModCursorValue, ModQueueItemKey, ModQueueItemPrefix, ModQueueItemStringValue,
     ModQueueItemValue,
 };
-use crate::{CollectionSamples, CreateRecord, DeleteAccount, EventBatch, ModifyRecord, Nsid};
+use crate::{
+    CollectionSamples, CreateRecord, DeleteAccount, Did, EventBatch, ModifyRecord, Nsid, RecordKey,
+};
 use fjall::{
     Batch as FjallBatch, CompressionType, Config, Keyspace, PartitionCreateOptions, PartitionHandle,
 };
@@ -108,11 +110,11 @@ impl Storage {
 
                 let writer_t0 = Instant::now();
                 tokio::task::spawn_blocking(move || {
-                    BatchWriter {
+                    DBWriter {
                         keyspace,
                         partition,
                     }
-                    .write(event_batch, last)
+                    .write_batch(event_batch, last)
                 })
                 .await??;
                 let wrote_for = writer_t0.elapsed();
@@ -128,31 +130,29 @@ impl Storage {
     pub async fn rw_loop(&self) -> anyhow::Result<()> {
         // TODO: lock so that only one rw loop can possibly be run. or even better, take a mutable resource thing to enforce at compile time.
         loop {
-            sleep(Duration::from_secs_f64(1.)).await;
-            let _keyspace = self.partition.clone();
+            sleep(Duration::from_secs_f64(0.2)).await;
+            let keyspace = self.keyspace.clone();
             let partition = self.partition.clone();
             tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
                 let prefix = ModQueueItemPrefix::default().to_db_bytes()?;
+                // TODO: use the mod cursor to avoid scanning over all the deletes (delete range would actually be nice)
                 let Some(pair) = partition.prefix(prefix).next() else {
                     eprintln!("mod queue empty.");
-                    return Ok(())
+                    return Ok(());
                 };
                 let (key_bytes, val_bytes) = pair?;
-                let _mod_cursor: Cursor = db_complete::<ModQueueItemKey>(&key_bytes)?.into();
-                let mod_value: ModQueueItemValue = db_complete::<ModQueueItemStringValue>(&val_bytes)?.try_into()?;
-                match mod_value {
-                    ModQueueItemValue::DeleteAccount(did) => {
-                        eprintln!("delete account: {did:?} (not yet implemented)");
-                    },
-                    ModQueueItemValue::DeleteRecord(did, collection, rkey) => {
-                        eprintln!("delete record: {did:?} {collection:?} {rkey:?} (not yet implemented)");
-                    },
-                    ModQueueItemValue::UpdateRecord(did, collection, rkey, record) => {
-                        eprintln!("update record: {did:?} {collection:?} {rkey:?} {record:?} (not yet implemented)");
-                    },
+                let mod_key: ModQueueItemKey = db_complete::<ModQueueItemKey>(&key_bytes)?;
+                let mod_value: ModQueueItemValue =
+                    db_complete::<ModQueueItemStringValue>(&val_bytes)?.try_into()?;
+
+                DBWriter {
+                    keyspace,
+                    partition,
                 }
+                .write_rw(mod_key, mod_value)?;
                 Ok(())
-            }).await??;
+            })
+            .await??;
         }
     }
 
@@ -162,7 +162,7 @@ impl Storage {
         limit: usize,
     ) -> anyhow::Result<Vec<CreateRecord>> {
         let partition = self.partition.clone();
-        let prefix = ByCollectionKey::prefix_from_nsid(collection.clone())?;
+        let prefix = ByCollectionKey::prefix_from_collection(collection.clone())?;
         tokio::task::spawn_blocking(move || {
             let mut output = Vec::new();
             for pair in partition.prefix(&prefix).rev().take(limit) {
@@ -260,8 +260,19 @@ fn insert_batch_static<K: StaticStr>(
     Ok(())
 }
 
-impl BatchWriter {
-    fn write(self, event_batch: EventBatch, last: Option<Cursor>) -> anyhow::Result<()> {
+/// Remove a key
+fn remove_batch<K: DbBytes>(
+    batch: &mut FjallBatch,
+    partition: &PartitionHandle,
+    key: K,
+) -> Result<(), EncodingError> {
+    let key_bytes = key.to_db_bytes()?;
+    batch.remove(partition, &key_bytes);
+    Ok(())
+}
+
+impl DBWriter {
+    fn write_batch(self, event_batch: EventBatch, last: Option<Cursor>) -> anyhow::Result<()> {
         let mut db_batch = self.keyspace.batch();
         self.add_record_creates(&mut db_batch, event_batch.record_creates)?;
         self.add_record_modifies(&mut db_batch, event_batch.record_modifies)?;
@@ -269,7 +280,78 @@ impl BatchWriter {
         if let Some(cursor) = last {
             insert_batch_static::<JetstreamCursorKey>(&mut db_batch, &self.partition, cursor)?;
         }
-        db_batch.commit()?;
+        Ok(db_batch.commit()?)
+    }
+
+    fn write_rw(
+        self,
+        mod_key: ModQueueItemKey,
+        mod_value: ModQueueItemValue,
+    ) -> anyhow::Result<()> {
+        let mut db_batch = self.keyspace.batch();
+
+        // update the current rw cursor to this item (atomically with the batch if it succeeds)
+        let mod_cursor_value: ModCursorValue = (&mod_key).into();
+        insert_batch_static::<ModCursorKey>(
+            &mut db_batch,
+            &self.partition,
+            mod_cursor_value.clone(),
+        )?;
+
+        // remove the queued rw task so that we'll continue with the *next* one (atomically with batch)
+        remove_batch::<ModQueueItemKey>(&mut db_batch, &self.partition, mod_key)?;
+
+        match mod_value {
+            ModQueueItemValue::DeleteAccount(did) => {
+                eprintln!("delete account: {did:?} (not yet implemented)");
+                return Ok(()); // don't let the batch commit until we implement this
+            }
+            ModQueueItemValue::DeleteRecord(did, collection, rkey) => {
+                eprintln!("delete record: {did:?} {collection:?} {rkey:?}");
+                self.delete_record(&mut db_batch, mod_cursor_value, did, collection, rkey)?;
+            }
+            ModQueueItemValue::UpdateRecord(did, collection, rkey, record) => {
+                eprintln!("update record: {did:?} {collection:?} {rkey:?} {record:?} (not yet implemented)");
+                return Ok(()); // don't let the batch commit until we implement this
+            }
+        }
+        Ok(db_batch.commit()?)
+    }
+
+    fn delete_record(
+        &self,
+        db_batch: &mut FjallBatch,
+        cursor: Cursor,
+        did: Did,
+        collection: Nsid,
+        rkey: RecordKey,
+    ) -> anyhow::Result<()> {
+        let key_prefix_bytes =
+            ByIdKey::record_prefix(did, collection.clone(), rkey).to_db_bytes()?;
+
+        let mut n_removed = 0;
+        for pair in self.partition.prefix(&key_prefix_bytes) {
+            // find all (hopefully 1)
+            let (key_bytes, _) = pair?;
+            let found_cursor = db_complete::<ByIdKey>(&key_bytes)?.cursor();
+            if found_cursor > cursor {
+                // we are *only* allowed to delete records that came before the record delete event
+                eprintln!("delete_record: found and ignoring newer version(s)");
+                break;
+            }
+
+            // remove the by_id entry
+            db_batch.remove(&self.partition, key_bytes);
+
+            // remove its record sample
+            let by_collection_key_bytes =
+                ByCollectionKey::new(collection.clone(), found_cursor).to_db_bytes()?;
+            db_batch.remove(&self.partition, by_collection_key_bytes);
+
+            n_removed += 1;
+        }
+
+        eprintln!("removed {n_removed} records.");
         Ok(())
     }
 
@@ -373,7 +455,7 @@ pub struct StorageInfo {
     pub partition_approximate_len: usize,
 }
 
-struct BatchWriter {
+struct DBWriter {
     keyspace: Keyspace,
     partition: PartitionHandle,
 }
