@@ -187,7 +187,7 @@ impl StaticStr for _ModQueueItemStaticStr {
         "mod_queue"
     }
 }
-type ModQueueItemPrefix = DbStaticStr<_ModQueueItemStaticStr>;
+pub type ModQueueItemPrefix = DbStaticStr<_ModQueueItemStaticStr>;
 /// key format: ["mod_queue"|js_cursor]
 pub type ModQueueItemKey = DbConcat<ModQueueItemPrefix, Cursor>;
 impl ModQueueItemKey {

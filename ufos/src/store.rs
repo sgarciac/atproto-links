@@ -2,7 +2,8 @@ use crate::db_types::{db_complete, DbBytes, DbStaticStr, StaticStr};
 use crate::store_types::{
     ByCollectionKey, ByCollectionValue, ByCursorSeenKey, ByCursorSeenValue, ByIdKey, ByIdValue,
     JetstreamCursorKey, JetstreamCursorValue, JetstreamEndpointKey, JetstreamEndpointValue,
-    ModCursorKey, ModCursorValue, ModQueueItemKey, ModQueueItemValue,
+    ModCursorKey, ModCursorValue, ModQueueItemKey, ModQueueItemPrefix, ModQueueItemStringValue,
+    ModQueueItemValue,
 };
 use crate::{CollectionSamples, CreateRecord, DeleteAccount, EventBatch, ModifyRecord, Nsid};
 use fjall::{
@@ -86,7 +87,11 @@ impl Storage {
         Ok((me, js_cursor))
     }
 
+    /// Jetstream event batch receiver: writes without any reads
+    ///
+    /// Events that require reads like record updates or delets are written to a queue
     pub async fn receive(&self, mut receiver: Receiver<EventBatch>) -> anyhow::Result<()> {
+        // TODO: see rw_loop: enforce single-thread.
         loop {
             let t_sleep = Instant::now();
             sleep(Duration::from_secs_f64(0.3)).await; // TODO: minimize during replay
@@ -116,6 +121,38 @@ impl Storage {
             } else {
                 anyhow::bail!("receive channel closed");
             }
+        }
+    }
+
+    /// Read-write loop reads from the queue for record-modifying events and does rollups
+    pub async fn rw_loop(&self) -> anyhow::Result<()> {
+        // TODO: lock so that only one rw loop can possibly be run. or even better, take a mutable resource thing to enforce at compile time.
+        loop {
+            sleep(Duration::from_secs_f64(1.)).await;
+            let _keyspace = self.partition.clone();
+            let partition = self.partition.clone();
+            tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+                let prefix = ModQueueItemPrefix::default().to_db_bytes()?;
+                let Some(pair) = partition.prefix(prefix).next() else {
+                    eprintln!("mod queue empty.");
+                    return Ok(())
+                };
+                let (key_bytes, val_bytes) = pair?;
+                let _mod_cursor: Cursor = db_complete::<ModQueueItemKey>(&key_bytes)?.into();
+                let mod_value: ModQueueItemValue = db_complete::<ModQueueItemStringValue>(&val_bytes)?.try_into()?;
+                match mod_value {
+                    ModQueueItemValue::DeleteAccount(did) => {
+                        eprintln!("delete account: {did:?} (not yet implemented)");
+                    },
+                    ModQueueItemValue::DeleteRecord(did, collection, rkey) => {
+                        eprintln!("delete record: {did:?} {collection:?} {rkey:?} (not yet implemented)");
+                    },
+                    ModQueueItemValue::UpdateRecord(did, collection, rkey, record) => {
+                        eprintln!("update record: {did:?} {collection:?} {rkey:?} {record:?} (not yet implemented)");
+                    },
+                }
+                Ok(())
+            }).await??;
         }
     }
 

@@ -48,6 +48,7 @@ async fn main() -> anyhow::Result<()> {
     tokio::select! {
         v = serving => eprintln!("serving ended: {v:?}"),
         v = storage.receive(batches) => eprintln!("storage consumer ended: {v:?}"),
+        v = storage.rw_loop() => eprintln!("storage rw-loop ended: {v:?}"),
     };
 
     println!("bye!");
