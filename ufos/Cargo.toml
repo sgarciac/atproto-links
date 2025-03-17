@@ -12,6 +12,7 @@ env_logger = "0.11.7"
 fjall = { version = "2.6.7", features = ["bytes", "single_writer_tx"], default-features = false }
 jetstream = { path = "../jetstream" }
 log = "0.4.26"
+lsm-tree = "2.6.6"
 schemars = "0.8.22"
 semver = "1.0.26"
 serde = "1.0.219"

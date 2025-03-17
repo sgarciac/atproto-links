@@ -7,7 +7,10 @@ use atrium_api::{
 use clap::Parser;
 use jetstream::{
     events::{
-        commit::CommitEvent,
+        commit::{
+            CommitEvent,
+            CommitType,
+        },
         JetstreamEvent::Commit,
     },
     DefaultJetstreamEndpoints,
@@ -52,7 +55,9 @@ async fn main() -> anyhow::Result<()> {
     while let Some(event) = receiver.recv().await {
         if let Commit(commit) = event {
             match commit {
-                CommitEvent::Create { info: _, commit } => {
+                CommitEvent::CreateOrUpdate { info: _, commit }
+                    if commit.info.operation == CommitType::Create =>
+                {
                     if let AppBskyFeedPost(record) = commit.record {
                         println!(
                             "New post created! ({})\n\n'{}'",

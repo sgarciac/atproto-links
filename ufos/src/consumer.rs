@@ -1,7 +1,7 @@
 use jetstream::{
     events::{
         account::AccountEvent,
-        commit::{CommitData, CommitEvent, CommitInfo},
+        commit::{CommitData, CommitEvent, CommitInfo, CommitType},
         Cursor, EventInfo, JetstreamEvent,
     },
     exports::Did,
@@ -95,12 +95,17 @@ impl Batcher {
         }
 
         match event {
-            JetstreamEvent::Commit(CommitEvent::Create { commit, info }) => {
-                self.handle_create_record(commit, info).await?
-            }
-            JetstreamEvent::Commit(CommitEvent::Update { commit, info }) => {
-                self.handle_modify_record(modify_update(commit, info))
-                    .await?
+            JetstreamEvent::Commit(CommitEvent::CreateOrUpdate { commit, info }) => {
+                match commit.info.operation {
+                    CommitType::Create => self.handle_create_record(commit, info).await?,
+                    CommitType::Update => {
+                        self.handle_modify_record(modify_update(commit, info))
+                            .await?
+                    }
+                    CommitType::Delete => {
+                        panic!("jetstream Commit::CreateOrUpdate had Delete operation type")
+                    }
+                }
             }
             JetstreamEvent::Commit(CommitEvent::Delete { commit, info }) => {
                 self.handle_modify_record(modify_delete(commit, info))

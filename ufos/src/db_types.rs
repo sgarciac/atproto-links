@@ -7,7 +7,10 @@ use bincode::{
     encode_to_vec,
     error::{DecodeError, EncodeError},
 };
+use lsm_tree::range::prefix_to_range;
+use std::fmt;
 use std::marker::PhantomData;
+use std::ops::{Bound, Range};
 use thiserror::Error;
 
 #[non_exhaustive]
@@ -37,6 +40,8 @@ pub enum EncodingError {
     JsonError(#[from] serde_json::Error),
     #[error("unexpected extra bytes ({0} bytes) left after decoding")]
     DecodeTooManyBytes(usize),
+    #[error("expected exclusive bound from lsm_tree (likely bug)")]
+    BadRangeBound,
 }
 
 fn bincode_conf() -> impl Config {
@@ -50,13 +55,15 @@ pub trait DbBytes {
         Self: Sized;
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(PartialEq)]
 pub struct DbConcat<P: DbBytes, S: DbBytes> {
     pub prefix: P,
     pub suffix: S,
 }
 
-impl<P: DbBytes, S: DbBytes> DbConcat<P, S> {
+impl<P: DbBytes + PartialEq + std::fmt::Debug, S: DbBytes + PartialEq + std::fmt::Debug>
+    DbConcat<P, S>
+{
     pub fn from_pair(prefix: P, suffix: S) -> Self {
         Self { prefix, suffix }
     }
@@ -65,6 +72,20 @@ impl<P: DbBytes, S: DbBytes> DbConcat<P, S> {
     }
     pub fn to_prefix_db_bytes(&self) -> Result<Vec<u8>, EncodingError> {
         self.prefix.to_db_bytes()
+    }
+    pub fn range_to_prefix_end(&self) -> Result<Range<Vec<u8>>, EncodingError> {
+        let mut key_bytes = self.prefix.to_db_bytes()?;
+        let (_, Bound::Excluded(range_end)) = prefix_to_range(&key_bytes) else {
+            return Err(EncodingError::BadRangeBound);
+        };
+        key_bytes.append(&mut self.suffix.to_db_bytes()?);
+        Ok(key_bytes..range_end.to_vec())
+    }
+}
+
+impl<P: DbBytes + std::fmt::Debug, S: DbBytes + std::fmt::Debug> fmt::Debug for DbConcat<P, S> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "DbConcat<{:?} || {:?}>", self.prefix, self.suffix)
     }
 }
 
@@ -102,7 +123,7 @@ pub trait StaticStr {
     fn static_str() -> &'static str;
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(PartialEq)]
 pub struct DbStaticStr<S: StaticStr> {
     marker: PhantomData<S>,
 }
@@ -111,6 +132,11 @@ impl<S: StaticStr> Default for DbStaticStr<S> {
         Self {
             marker: PhantomData,
         }
+    }
+}
+impl<S: StaticStr> fmt::Debug for DbStaticStr<S> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "DbStaticStr({:?})", S::static_str())
     }
 }
 impl<S: StaticStr> DbBytes for DbStaticStr<S> {

@@ -9,12 +9,7 @@ use crate::{
 #[derive(Deserialize, Debug)]
 #[serde(untagged, rename_all = "snake_case")]
 pub enum CommitEvent<R> {
-    Create {
-        #[serde(flatten)]
-        info: EventInfo,
-        commit: CommitData<R>,
-    },
-    Update {
+    CreateOrUpdate {
         #[serde(flatten)]
         info: EventInfo,
         commit: CommitData<R>,
@@ -27,7 +22,7 @@ pub enum CommitEvent<R> {
 }
 
 /// The type of commit operation that was performed.
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum CommitType {
     Create,

@@ -42,13 +42,13 @@ async fn main() -> anyhow::Result<()> {
     let mut receiver = jetstream.connect().await?;
 
     println!(
-        "Listening for '{}' events on DIDs: {:?}",
+        "Listening for new and updated '{}' events on DIDs: {:?}",
         args.nsid.as_str(),
         dids
     );
 
     while let Some(event) = receiver.recv().await {
-        if let Commit(CommitEvent::Create { commit, .. }) = event {
+        if let Commit(CommitEvent::CreateOrUpdate { commit, .. }) = event {
             println!("got record: {:?}", commit.record);
         }
     }

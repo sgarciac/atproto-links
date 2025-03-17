@@ -46,10 +46,7 @@ pub enum EventKind {
 impl<R> JetstreamEvent<R> {
     pub fn cursor(&self) -> Cursor {
         match self {
-            JetstreamEvent::Commit(commit::CommitEvent::Create { info, .. }) => {
-                info.time_us.clone()
-            }
-            JetstreamEvent::Commit(commit::CommitEvent::Update { info, .. }) => {
+            JetstreamEvent::Commit(commit::CommitEvent::CreateOrUpdate { info, .. }) => {
                 info.time_us.clone()
             }
             JetstreamEvent::Commit(commit::CommitEvent::Delete { info, .. }) => {

@@ -39,7 +39,10 @@ async fn main() -> anyhow::Result<()> {
     let (storage, cursor) =
         store::Storage::open(args.data, &args.jetstream, args.jetstream_force).await?;
 
-    println!("starting consumer with cursor: {cursor:?}");
+    println!(
+        "starting consumer with cursor: {cursor:?} from {:?} ago",
+        cursor.clone().map(|c| c.elapsed())
+    );
     let batches = consumer::consume(&args.jetstream, cursor, args.jetstream_no_zstd).await?;
 
     println!("starting server with storage...");
