@@ -18,14 +18,16 @@ use std::time::{Duration, Instant};
 use tokio::{sync::mpsc::Receiver, time::sleep};
 
 /// Commit the RW batch immediately if this nubmer of events have been read off the mod queue
-const MAX_BATCHED_RW_EVENTS: usize = 96;
+const MAX_BATCHED_RW_EVENTS: usize = 18;
 
 /// Commit the RW batch immediately if this number of records is reached
 ///
 /// there are probably some efficiency gains for higher, at cost of more memory.
 /// interestingly, this kind of sets a priority weight for the RW loop:
 ///     - doing more work whenever scheduled means getting more CPU time in general
-const MAX_BATCHED_RW_ITEMS: usize = 32;
+///
+/// this is higher than [MAX_BATCHED_RW_EVENTS] because account-deletes can have lots of items
+const MAX_BATCHED_RW_ITEMS: usize = 36;
 
 /**
  * data format, roughly:
