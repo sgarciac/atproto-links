@@ -73,13 +73,22 @@ impl<P: DbBytes + PartialEq + std::fmt::Debug, S: DbBytes + PartialEq + std::fmt
     pub fn to_prefix_db_bytes(&self) -> Result<Vec<u8>, EncodingError> {
         self.prefix.to_db_bytes()
     }
-    pub fn range_to_prefix_end(&self) -> Result<Range<Vec<u8>>, EncodingError> {
-        let mut key_bytes = self.prefix.to_db_bytes()?;
-        let (_, Bound::Excluded(range_end)) = prefix_to_range(&key_bytes) else {
+    pub fn range_end(&self) -> Result<Vec<u8>, EncodingError> {
+        let prefix_bytes = self.prefix.to_db_bytes()?;
+        let (_, Bound::Excluded(range_end)) = prefix_to_range(&prefix_bytes) else {
             return Err(EncodingError::BadRangeBound);
         };
-        key_bytes.append(&mut self.suffix.to_db_bytes()?);
-        Ok(key_bytes..range_end.to_vec())
+        Ok(range_end.to_vec())
+    }
+    pub fn range(&self) -> Result<Range<Vec<u8>>, EncodingError> {
+        let prefix_bytes = self.prefix.to_db_bytes()?;
+        let (Bound::Included(start), Bound::Excluded(end)) = prefix_to_range(&prefix_bytes) else {
+            return Err(EncodingError::BadRangeBound);
+        };
+        Ok(start.to_vec()..end.to_vec())
+    }
+    pub fn range_to_prefix_end(&self) -> Result<Range<Vec<u8>>, EncodingError> {
+        Ok(self.to_db_bytes()?..self.range_end()?)
     }
 }
 

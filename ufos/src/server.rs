@@ -148,6 +148,30 @@ async fn get_records_by_collection(
     Ok(HttpResponseOk(api_records))
 }
 
+/// Get total records seen by collection
+#[endpoint {
+    method = GET,
+    path = "/records/total-seen"
+}]
+async fn get_asdf(
+    ctx: RequestContext<Context>,
+    collection_query: Query<CollectionQuery>,
+) -> Result<HttpResponseOk<u64>, HttpError> {
+    let Ok(collection) = Nsid::new(collection_query.into_inner().collection) else {
+        return Err(HttpError::for_bad_request(
+            None,
+            "collection must be an NSID".to_string(),
+        ));
+    };
+    let Context { storage, .. } = ctx.context();
+    let total = storage
+        .get_collection_total_seen(&collection)
+        .await
+        .map_err(|e| HttpError::for_internal_error(format!("boooo: {e:?}")))?;
+
+    Ok(HttpResponseOk(total))
+}
+
 pub async fn serve(storage: Storage) -> Result<(), String> {
     let log = ConfigLogging::StderrTerminal {
         level: ConfigLoggingLevel::Info,
@@ -160,6 +184,7 @@ pub async fn serve(storage: Storage) -> Result<(), String> {
     api.register(get_openapi).unwrap();
     api.register(get_meta_info).unwrap();
     api.register(get_records_by_collection).unwrap();
+    api.register(get_asdf).unwrap();
 
     let context = Context {
         spec: Arc::new(

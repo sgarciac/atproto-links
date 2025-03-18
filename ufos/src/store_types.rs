@@ -3,6 +3,7 @@ use crate::db_types::{
 };
 use crate::{Cursor, Did, Nsid, RecordKey};
 use bincode::{Decode, Encode};
+use std::ops::Range;
 
 /// key format: ["js_cursor"]
 #[derive(Debug, PartialEq)]
@@ -23,6 +24,17 @@ impl StaticStr for ModCursorKey {
     }
 }
 pub type ModCursorValue = Cursor;
+
+/// key format: ["rollup_cursor"]
+#[derive(Debug, PartialEq)]
+pub struct RollupCursorKey {}
+impl StaticStr for RollupCursorKey {
+    fn static_str() -> &'static str {
+        "rollup_cursor"
+    }
+}
+/// value format: [rollup_cursor(Cursor)|collection(Nsid)]
+pub type RollupCursorValue = DbConcat<Cursor, Nsid>;
 
 /// key format: ["js_endpoint"]
 #[derive(Debug, PartialEq)]
@@ -165,8 +177,9 @@ impl StaticStr for _ByCursorSeenStaticStr {
     }
 }
 type ByCursorSeenPrefix = DbStaticStr<_ByCursorSeenStaticStr>;
+type ByCursorSeenCursorPrefix = DbConcat<ByCursorSeenPrefix, Cursor>;
 /// key format: ["seen_by_js_cursor"|js_cursor|collection]
-pub type ByCursorSeenKey = DbConcat<DbConcat<ByCursorSeenPrefix, Cursor>, Nsid>;
+pub type ByCursorSeenKey = DbConcat<ByCursorSeenCursorPrefix, Nsid>;
 impl ByCursorSeenKey {
     pub fn new(cursor: Cursor, nsid: Nsid) -> Self {
         Self {
@@ -174,8 +187,22 @@ impl ByCursorSeenKey {
             suffix: nsid,
         }
     }
-    pub fn prefix_from_cursor(cursor: Cursor) -> Result<Vec<u8>, EncodingError> {
-        DbConcat::from_pair(ByCursorSeenPrefix::default(), cursor).to_db_bytes()
+    pub fn full_range() -> Result<Range<Vec<u8>>, EncodingError> {
+        let prefix = ByCursorSeenCursorPrefix::from_pair(Default::default(), Cursor::from_start());
+        prefix.range()
+    }
+    pub fn range_from(&self) -> Result<Range<Vec<u8>>, EncodingError> {
+        let start = self.to_db_bytes()?;
+        let end = self.prefix.range_end()?;
+        Ok(start..end)
+    }
+    pub fn collection(&self) -> &Nsid {
+        &self.suffix
+    }
+}
+impl From<RollupCursorValue> for ByCursorSeenKey {
+    fn from(v: RollupCursorValue) -> Self {
+        Self::new(v.prefix, v.suffix)
     }
 }
 impl From<ByCursorSeenKey> for (Cursor, Nsid) {

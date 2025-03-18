@@ -3,6 +3,7 @@ use crate::store_types::{
     ByCollectionKey, ByCollectionValue, ByCursorSeenKey, ByCursorSeenValue, ByIdKey, ByIdValue,
     JetstreamCursorKey, JetstreamCursorValue, JetstreamEndpointKey, JetstreamEndpointValue,
     ModCursorKey, ModCursorValue, ModQueueItemKey, ModQueueItemStringValue, ModQueueItemValue,
+    RollupCursorKey, RollupCursorValue, SeenCounter,
 };
 use crate::{
     CollectionSamples, CreateRecord, DeleteAccount, Did, EventBatch, ModifyRecord, Nsid, RecordKey,
@@ -205,6 +206,12 @@ impl Storage {
         .await?
     }
 
+    pub async fn get_collection_total_seen(&self, collection: &Nsid) -> anyhow::Result<u64> {
+        let partition = self.partition.clone();
+        let collection = collection.clone();
+        tokio::task::spawn_blocking(move || get_unrolled_asdf(&partition, collection)).await?
+    }
+
     pub async fn get_jetstream_endpoint(&self) -> anyhow::Result<Option<JetstreamEndpointValue>> {
         let partition = self.partition.clone();
         tokio::task::spawn_blocking(move || {
@@ -279,6 +286,42 @@ fn remove_batch<K: DbBytes>(
     let key_bytes = key.to_db_bytes()?;
     batch.remove(partition, &key_bytes);
     Ok(())
+}
+
+/// Get stats that haven't been rolled up yet
+fn get_unrolled_asdf(partition: &PartitionHandle, collection: Nsid) -> anyhow::Result<u64> {
+    let range =
+        if let Some(cursor_value) = get_static::<RollupCursorKey, RollupCursorValue>(partition)? {
+            eprintln!("found existing cursor");
+            let key: ByCursorSeenKey = cursor_value.into();
+            key.range_from()?
+        } else {
+            eprintln!("cursor from start.");
+            ByCursorSeenKey::full_range()?
+        };
+
+    let mut collection_total = 0;
+
+    let mut scanned = 0;
+    let mut rolled = 0;
+    for (i, pair) in partition.range(range).enumerate() {
+        let (key_bytes, value_bytes) = pair?;
+        let key = db_complete::<ByCursorSeenKey>(&key_bytes)?;
+        let val = db_complete::<ByCursorSeenValue>(&value_bytes)?;
+        if i >= 20 {
+            eprintln!("{key:?} => {val:?}")
+        }
+        if *key.collection() == collection {
+            let SeenCounter(n) = val;
+            collection_total += n;
+            rolled += 1;
+        }
+        scanned += 1;
+    }
+
+    eprintln!("scanned: {scanned}, rolled: {rolled}");
+
+    Ok(collection_total)
 }
 
 impl DBWriter {
