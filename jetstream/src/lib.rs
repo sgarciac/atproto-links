@@ -8,7 +8,6 @@ use std::{
         Read,
     },
     marker::PhantomData,
-    sync::Arc,
     time::{
         Duration,
         Instant,
@@ -23,13 +22,10 @@ use futures_util::{
 use serde::de::DeserializeOwned;
 use tokio::{
     net::TcpStream,
-    sync::{
-        mpsc::{
-            channel,
-            Receiver,
-            Sender,
-        },
-        Mutex,
+    sync::mpsc::{
+        channel,
+        Receiver,
+        Sender,
     },
 };
 use tokio_tungstenite::{
@@ -45,7 +41,6 @@ use tokio_tungstenite::{
     MaybeTlsStream,
     WebSocketStream,
 };
-use tokio_util::sync::CancellationToken;
 use url::Url;
 use zstd::dict::DecoderDictionary;
 
@@ -360,7 +355,7 @@ impl<R: DeserializeOwned + Send + 'static> JetstreamConnector<R> {
 
         tokio::task::spawn(async move {
             // TODO: maybe return the task handle so we can surface any errors
-            let max_retries = 30;
+            let max_retries = 300;
             let base_delay_ms = 1_000; // 1 second
             let max_delay_ms = 30_000; // 30 seconds
             let success_threshold_s = 15; // 15 seconds, retry count is reset if we were connected at least this long
@@ -409,9 +404,9 @@ impl<R: DeserializeOwned + Send + 'static> JetstreamConnector<R> {
 
                 if retry_attempt > 0 {
                     // Exponential backoff
-                    let delay_ms = base_delay_ms * (2_u64.pow(retry_attempt));
-                    log::error!("Connection failed, retrying in {delay_ms}ms...");
-                    tokio::time::sleep(Duration::from_millis(delay_ms.min(max_delay_ms))).await;
+                    let delay = (base_delay_ms * (2_u64.pow(retry_attempt))).min(max_delay_ms);
+                    log::error!("Connection failed, retrying in {delay}ms...");
+                    tokio::time::sleep(Duration::from_millis(delay)).await;
                     log::info!("Attempting to reconnect...");
                 }
             }
@@ -431,32 +426,7 @@ async fn websocket_task<R: DeserializeOwned>(
     last_cursor: &mut Option<Cursor>,
 ) -> Result<(), JetstreamEventError> {
     // TODO: Use the write half to allow the user to change configuration settings on the fly.
-    let (socket_write, mut socket_read) = ws.split();
-    let shared_socket_write = Arc::new(Mutex::new(socket_write));
-
-    let ping_cancellation_token = CancellationToken::new();
-    let mut ping_interval = tokio::time::interval(Duration::from_secs(30));
-    let ping_cancelled = ping_cancellation_token.clone();
-    let ping_shared_socket_write = shared_socket_write.clone();
-    tokio::spawn(async move {
-        log::trace!("starting ping task");
-        loop {
-            ping_interval.tick().await;
-            let false = ping_cancelled.is_cancelled() else {
-                break;
-            };
-            if let Err(error) = ping_shared_socket_write
-                .lock()
-                .await
-                .send(Message::Ping("ping".into()))
-                .await
-            {
-                log::error!("Ping failed: {error}");
-                break;
-            }
-        }
-        eprintln!("oh this is bad news.");
-    });
+    let (mut socket_write, mut socket_read) = ws.split();
 
     let mut closing_connection = false;
     loop {
@@ -523,9 +493,7 @@ async fn websocket_task<R: DeserializeOwned>(
                     }
                     Message::Ping(vec) => {
                         log::trace!("Ping recieved, responding");
-                        shared_socket_write
-                            .lock()
-                            .await
+                        socket_write
                             .send(Message::Pong(vec))
                             .await
                             .map_err(JetstreamEventError::PingPongError)?;
@@ -548,18 +516,16 @@ async fn websocket_task<R: DeserializeOwned>(
             }
             Some(Err(error)) => {
                 log::error!("Web socket error: {error}");
-                ping_cancellation_token.cancel();
                 closing_connection = true;
             }
             None => {
                 log::error!("No web socket result");
-                ping_cancellation_token.cancel();
                 closing_connection = true;
             }
         }
         if closing_connection {
             log::trace!("closing connection");
-            _ = shared_socket_write.lock().await.close().await;
+            _ = socket_write.close().await;
             return Ok(());
         }
     }
