@@ -17,7 +17,15 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use tokio::{sync::mpsc::Receiver, time::sleep};
 
-const MAX_BATCHED_DELETE_ACCOUNT_RECORDS: usize = 32; // there are probably some efficiency gains for higher, at cost of more memory
+/// Commit the RW batch immediately if this nubmer of events have been read off the mod queue
+const MAX_BATCHED_RW_EVENTS: usize = 96;
+
+/// Commit the RW batch immediately if this number of records is reached
+///
+/// there are probably some efficiency gains for higher, at cost of more memory.
+/// interestingly, this kind of sets a priority weight for the RW loop:
+///     - doing more work whenever scheduled means getting more CPU time in general
+const MAX_BATCHED_RW_ITEMS: usize = 32;
 
 /**
  * data format, roughly:
@@ -132,35 +140,46 @@ impl Storage {
     pub async fn rw_loop(&self) -> anyhow::Result<()> {
         // TODO: lock so that only one rw loop can possibly be run. or even better, take a mutable resource thing to enforce at compile time.
         loop {
-            sleep(Duration::from_secs_f64(0.001)).await;
+            sleep(Duration::from_secs_f64(0.001)).await; // todo: interval rate-limit instead
             let keyspace = self.keyspace.clone();
             let partition = self.partition.clone();
             tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
                 let mod_cursor = get_static::<ModCursorKey, ModCursorValue>(&partition)?
                     .unwrap_or(Cursor::from_start());
                 let range = ModQueueItemKey::new(mod_cursor.clone()).range_to_prefix_end()?;
-                let Some(pair) = partition.range(range.clone()).next() else {
-                    // eprintln!("mod queue empty.");
-                    return Ok(());
-                };
 
-                let (key_bytes, val_bytes) = pair?;
-                let mod_key = match db_complete::<ModQueueItemKey>(&key_bytes) {
-                    Ok(k) => k,
-                    Err(EncodingError::WrongStaticPrefix(_, _)) => {
-                        panic!("wsp: mod queue empty.");
+                let mut db_batch = keyspace.batch();
+                let mut batched_rw_items = 0;
+
+                for (i, pair) in partition.range(range.clone()).enumerate() {
+                    if i >= MAX_BATCHED_RW_EVENTS {
+                        break;
                     }
-                    otherwise => otherwise?,
-                };
 
-                let mod_value: ModQueueItemValue =
-                    db_complete::<ModQueueItemStringValue>(&val_bytes)?.try_into()?;
+                    let (key_bytes, val_bytes) = pair?;
+                    let mod_key = match db_complete::<ModQueueItemKey>(&key_bytes) {
+                        Ok(k) => k,
+                        Err(EncodingError::WrongStaticPrefix(_, _)) => {
+                            panic!("wsp: mod queue empty.");
+                        }
+                        otherwise => otherwise?,
+                    };
 
-                DBWriter {
-                    keyspace,
-                    partition,
+                    let mod_value: ModQueueItemValue =
+                        db_complete::<ModQueueItemStringValue>(&val_bytes)?.try_into()?;
+
+                    batched_rw_items += DBWriter {
+                        keyspace: keyspace.clone(),
+                        partition: partition.clone(),
+                    }
+                    .write_rw(&mut db_batch, mod_key, mod_value)?;
+
+                    if batched_rw_items >= MAX_BATCHED_RW_ITEMS {
+                        break;
+                    }
                 }
-                .write_rw(mod_key, mod_value)?;
+
+                db_batch.commit()?;
                 Ok(())
             })
             .await??;
@@ -304,13 +323,11 @@ fn get_unrolled_asdf(partition: &PartitionHandle, collection: Nsid) -> anyhow::R
 
     let mut scanned = 0;
     let mut rolled = 0;
-    for (i, pair) in partition.range(range).enumerate() {
+    for pair in partition.range(range) {
         let (key_bytes, value_bytes) = pair?;
         let key = db_complete::<ByCursorSeenKey>(&key_bytes)?;
         let val = db_complete::<ByCursorSeenValue>(&value_bytes)?;
-        if i >= 20 {
-            eprintln!("{key:?} => {val:?}")
-        }
+
         if *key.collection() == collection {
             let SeenCounter(n) = val;
             collection_total += n;
@@ -338,33 +355,33 @@ impl DBWriter {
 
     fn write_rw(
         self,
+        db_batch: &mut FjallBatch,
         mod_key: ModQueueItemKey,
         mod_value: ModQueueItemValue,
-    ) -> anyhow::Result<()> {
-        let mut db_batch = self.keyspace.batch();
-
+    ) -> anyhow::Result<usize> {
         // update the current rw cursor to this item (atomically with the batch if it succeeds)
         let mod_cursor: Cursor = (&mod_key).into();
-        insert_batch_static::<ModCursorKey>(&mut db_batch, &self.partition, mod_cursor.clone())?;
+        insert_batch_static::<ModCursorKey>(db_batch, &self.partition, mod_cursor.clone())?;
 
-        let completed = match mod_value {
+        let items_modified = match mod_value {
             ModQueueItemValue::DeleteAccount(did) => {
-                self.delete_account(&mut db_batch, mod_cursor, did)?
+                let (items, finished) = self.delete_account(db_batch, mod_cursor, did)?;
+                if finished {
+                    // only remove the queued rw task if we have actually completed its account removal work
+                    remove_batch::<ModQueueItemKey>(db_batch, &self.partition, mod_key)?;
+                }
+                items
             }
             ModQueueItemValue::DeleteRecord(did, collection, rkey) => {
-                self.delete_record(&mut db_batch, mod_cursor, did, collection, rkey)?;
-                true
+                remove_batch::<ModQueueItemKey>(db_batch, &self.partition, mod_key)?;
+                self.delete_record(db_batch, mod_cursor, did, collection, rkey)?
             }
             ModQueueItemValue::UpdateRecord(did, collection, rkey, record) => {
-                self.update_record(&mut db_batch, mod_cursor, did, collection, rkey, record)?;
-                true
+                remove_batch::<ModQueueItemKey>(db_batch, &self.partition, mod_key)?;
+                self.update_record(db_batch, mod_cursor, did, collection, rkey, record)?
             }
         };
-        if completed {
-            // remove the queued rw task so that we'll continue with the *next* one (atomically with batch)
-            remove_batch::<ModQueueItemKey>(&mut db_batch, &self.partition, mod_key)?;
-        }
-        Ok(db_batch.commit()?)
+        Ok(items_modified)
     }
 
     fn update_record(
@@ -377,7 +394,7 @@ impl DBWriter {
         record: serde_json::Value,
     ) -> anyhow::Result<usize> {
         // 1. delete any existing versions older than us
-        let n_deleted = self.delete_record(
+        let items_deleted = self.delete_record(
             db_batch,
             cursor.clone(),
             did.clone(),
@@ -388,7 +405,8 @@ impl DBWriter {
         // 2. insert the updated version, at our new cursor
         self.add_record(db_batch, cursor, did, collection, rkey, record)?;
 
-        Ok(n_deleted)
+        let items_total = items_deleted + 1;
+        Ok(items_total)
     }
 
     fn delete_record(
@@ -402,7 +420,7 @@ impl DBWriter {
         let key_prefix_bytes =
             ByIdKey::record_prefix(did, collection.clone(), rkey).to_db_bytes()?;
 
-        let mut n_removed = 0;
+        let mut items_removed = 0;
         for pair in self.partition.prefix(&key_prefix_bytes) {
             // find all (hopefully 1)
             let (key_bytes, _) = pair?;
@@ -422,11 +440,11 @@ impl DBWriter {
                 ByCollectionKey::new(collection.clone(), found_cursor).to_db_bytes()?;
             db_batch.remove(&self.partition, by_collection_key_bytes);
 
-            n_removed += 1;
+            items_removed += 1;
         }
 
-        if n_removed > 1 {
-            eprintln!("odd, removed {n_removed} records for one record removal:");
+        if items_removed > 1 {
+            eprintln!("odd, removed {items_removed} records for one record removal:");
             for (i, pair) in self.partition.prefix(&key_prefix_bytes).enumerate() {
                 // find all (hopefully 1)
                 let (key_bytes, _) = pair?;
@@ -439,7 +457,7 @@ impl DBWriter {
                 eprintln!("  {i}: key {key:?}");
             }
         }
-        Ok(n_removed)
+        Ok(items_removed)
     }
 
     fn delete_account(
@@ -447,10 +465,10 @@ impl DBWriter {
         db_batch: &mut FjallBatch,
         cursor: Cursor,
         did: Did,
-    ) -> anyhow::Result<bool> {
+    ) -> anyhow::Result<(usize, bool)> {
         let key_prefix_bytes = ByIdKey::did_prefix(did).to_db_bytes()?;
 
-        let mut n_found = 0;
+        let mut items_added = 0;
         for pair in self.partition.prefix(&key_prefix_bytes) {
             let (key_bytes, _) = pair?;
 
@@ -470,14 +488,13 @@ impl DBWriter {
                 ByCollectionKey::new(collection, found_cursor).to_db_bytes()?;
             db_batch.remove(&self.partition, by_collection_key_bytes);
 
-            n_found += 1;
-            if n_found >= MAX_BATCHED_DELETE_ACCOUNT_RECORDS {
-                return Ok(false); // there might be more records but we've done enough for this batch
+            items_added += 1;
+            if items_added >= MAX_BATCHED_RW_ITEMS {
+                return Ok((items_added, false)); // there might be more records but we've done enough for this batch
             }
         }
 
-        // eprintln!("removed {n_found} account records.");
-        Ok(true)
+        Ok((items_added, true))
     }
 
     fn add_record_creates(
