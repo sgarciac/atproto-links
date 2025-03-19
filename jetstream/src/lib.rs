@@ -382,6 +382,13 @@ impl<R: DeserializeOwned + Send + 'static> JetstreamConnector<R> {
                         websocket_task(dict, ws_stream, send_channel.clone(), &mut last_cursor)
                             .await
                     {
+                        match e {
+                            JetstreamEventError::ReceiverClosedError => {
+                                log::error!("Jetstream receiver channel closed. Exiting consumer.");
+                                return;
+                            }
+                            _ => {}
+                        }
                         log::error!("Jetstream closed after encountering error: {e:?}");
                     } else {
                         log::error!("Jetstream connection closed cleanly");
@@ -404,8 +411,9 @@ impl<R: DeserializeOwned + Send + 'static> JetstreamConnector<R> {
 
                 if retry_attempt > 0 {
                     // Exponential backoff
-                    let delay = (base_delay_ms * (2_u64.pow(retry_attempt))).min(max_delay_ms);
-                    log::error!("Connection failed, retrying in {delay}ms...");
+                    let delay =
+                        (base_delay_ms * (2_u64.saturating_pow(retry_attempt))).min(max_delay_ms);
+                    log::error!("Connection failed, retry #{retry_attempt} in {delay}ms...");
                     tokio::time::sleep(Duration::from_millis(delay)).await;
                     log::info!("Attempting to reconnect...");
                 }
@@ -451,7 +459,8 @@ async fn websocket_task<R: DeserializeOwned>(
                             log::info!(
                                 "All receivers for the Jetstream connection have been dropped, closing connection."
                             );
-                            closing_connection = true;
+                            socket_write.close().await?;
+                            return Err(JetstreamEventError::ReceiverClosedError);
                         } else if let Some(last) = last_cursor.as_mut() {
                             *last = event_cursor;
                         }
@@ -484,9 +493,10 @@ async fn websocket_task<R: DeserializeOwned>(
                             // We can assume that all receivers have been dropped, so we can close
                             // the connection and exit the task.
                             log::info!(
-                                "All receivers for the Jetstream connection have been dropped, closing connection..."
+                                "All receivers for the Jetstream connection have been dropped, closing connection."
                             );
-                            closing_connection = true;
+                            socket_write.close().await?;
+                            return Err(JetstreamEventError::ReceiverClosedError);
                         } else if let Some(last) = last_cursor.as_mut() {
                             *last = event_cursor;
                         }

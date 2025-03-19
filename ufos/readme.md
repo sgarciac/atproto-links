@@ -16,6 +16,18 @@ set up `cross`
 cross build --release --target arm-unknown-linux-gnueabihf && scp ../target/arm-unknown-linux-gnueabihf/release/ufos angel-hair.local:ufos
 ```
 
+for bonilla (rp4)
+
+```bash
+cross build --release --target armv7-unknown-linux-gnueabihf && scp ../target/armv7-unknown-linux-gnueabihf/release/ufos pi@bonilla.local:ufos
+```
+
+glibc will cause problems when switching between (`GLIBC_2.25` message). clean up (next build will be slowww)
+
+```bash
+cargo clean
+```
+
 nginx forward proxy for websocket (run this on another host):
 
 ```nginx
@@ -95,3 +107,18 @@ RUST_LOG=info ./ufos --jetstream ws://192.168.1.139:8080/subscribe --jetstream-f
 ```
 
 try without info-level logs for better perf
+
+running on bonilla
+
+```bash
+./ufos --jetstream us-west-2 --jetstream-force --data /mnt/ufos-data-no-compression-2/
+```
+
+(reusing data dir from angel-hair)
+
+
+ipv6 is having some trouble. but also maybe there's a deadlock somewhere
+
+```bash
+sudo sysctl -w net.ipv6.conf.default.disable_ipv6=1
+```

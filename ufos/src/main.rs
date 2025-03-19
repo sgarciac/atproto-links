@@ -30,8 +30,8 @@ struct Args {
     data: PathBuf,
 }
 
-// #[tokio::main]
-#[tokio::main(flavor = "current_thread")] // TODO: move this to config via args
+// #[tokio::main(flavor = "current_thread")] // TODO: move this to config via args
+#[tokio::main]
 async fn main() -> anyhow::Result<()> {
     env_logger::init();
 
@@ -48,11 +48,37 @@ async fn main() -> anyhow::Result<()> {
     println!("starting server with storage...");
     let serving = server::serve(storage.clone());
 
-    tokio::select! {
-        v = serving => eprintln!("serving ended: {v:?}"),
-        v = storage.receive(batches) => eprintln!("storage consumer ended: {v:?}"),
-        v = storage.rw_loop() => eprintln!("storage rw-loop ended: {v:?}"),
-    };
+    let t1 = tokio::task::spawn(async {
+        let r = serving.await;
+        log::warn!("serving ended with: {r:?}");
+    });
+
+    let t2 = tokio::task::spawn({
+        let storage = storage.clone();
+        async move {
+            let r = storage.receive(batches).await;
+            log::warn!("storage.receive ended with: {r:?}");
+        }
+    });
+
+    let t3 = tokio::task::spawn(async move {
+        let r = storage.rw_loop().await;
+        log::warn!("storage.rw_loop ended with: {r:?}");
+    });
+
+    // tokio::select! {
+    //     // v = serving => eprintln!("serving ended: {v:?}"),
+    //     v = storage.receive(batches) => eprintln!("storage consumer ended: {v:?}"),
+    //     v = storage.rw_loop() => eprintln!("storage rw-loop ended: {v:?}"),
+    // };
+
+    log::trace!("tasks running. waiting.");
+    t1.await?;
+    log::trace!("serve task ended.");
+    t2.await?;
+    log::trace!("storage receive task ended.");
+    t3.await?;
+    log::trace!("storage rw task ended.");
 
     println!("bye!");
 

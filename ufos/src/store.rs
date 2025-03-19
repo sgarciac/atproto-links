@@ -1,3 +1,4 @@
+// use std::sync::{Arc, Mutex}; // BLOCKING mutex -- only in spawn_blocking tasks!
 use crate::db_types::{db_complete, DbBytes, DbStaticStr, EncodingError, StaticStr};
 use crate::store_types::{
     ByCollectionKey, ByCollectionValue, ByCursorSeenKey, ByCursorSeenValue, ByIdKey, ByIdValue,
@@ -18,7 +19,7 @@ use std::time::{Duration, Instant};
 use tokio::{sync::mpsc::Receiver, time::sleep};
 
 /// Commit the RW batch immediately if this nubmer of events have been read off the mod queue
-const MAX_BATCHED_RW_EVENTS: usize = 18;
+const MAX_BATCHED_RW_EVENTS: usize = 3;
 
 /// Commit the RW batch immediately if this number of records is reached
 ///
@@ -58,6 +59,7 @@ const MAX_BATCHED_RW_ITEMS: usize = 36;
 pub struct Storage {
     keyspace: Keyspace,
     partition: PartitionHandle,
+    // write_lock: Arc<Mutex<()>>,
 }
 
 impl Storage {
@@ -70,6 +72,7 @@ impl Storage {
         Ok(Self {
             keyspace,
             partition,
+            // write_lock: Arc::new(Mutex::new(())),
         })
     }
 
@@ -108,31 +111,37 @@ impl Storage {
         // TODO: see rw_loop: enforce single-thread.
         loop {
             let t_sleep = Instant::now();
-            sleep(Duration::from_secs_f64(0.3)).await; // TODO: minimize during replay
+            sleep(Duration::from_secs_f64(0.8)).await; // TODO: minimize during replay
             let slept_for = t_sleep.elapsed();
             let queue_size = receiver.len();
 
             if let Some(event_batch) = receiver.recv().await {
+                log::trace!("write: received write batch");
                 let batch_summary = summarize_batch(&event_batch);
 
                 let last = event_batch.last_jetstream_cursor.clone(); // TODO: get this from the data. track last in consumer. compute or track first.
 
                 let keyspace = self.keyspace.clone();
                 let partition = self.partition.clone();
+                // let write_lock = self.write_lock.clone();
 
                 let writer_t0 = Instant::now();
+                log::trace!("spawn_blocking for write batch");
                 tokio::task::spawn_blocking(move || {
                     DBWriter {
                         keyspace,
                         partition,
+                        // write_lock,
                     }
                     .write_batch(event_batch, last)
                 })
                 .await??;
+                log::trace!("write: back from blocking task, successfully wrote batch");
                 let wrote_for = writer_t0.elapsed();
 
                 println!("{batch_summary}, slept {slept_for: <12?}, wrote {wrote_for: <11?}, queue: {queue_size}");
             } else {
+                log::error!("store consumer: receive channel failed (dropped/closed?)");
                 anyhow::bail!("receive channel closed");
             }
         }
@@ -145,15 +154,22 @@ impl Storage {
             sleep(Duration::from_secs_f64(0.001)).await; // todo: interval rate-limit instead
             let keyspace = self.keyspace.clone();
             let partition = self.partition.clone();
+            log::trace!("rw: spawn blocking for batch...");
             tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+                log::trace!("rw: getting rw cursor...");
                 let mod_cursor = get_static::<ModCursorKey, ModCursorValue>(&partition)?
                     .unwrap_or(Cursor::from_start());
                 let range = ModQueueItemKey::new(mod_cursor.clone()).range_to_prefix_end()?;
 
                 let mut db_batch = keyspace.batch();
                 let mut batched_rw_items = 0;
+                let mut any_tasks_found = false;
 
+                log::trace!("rw: iterating newer rw items...");
                 for (i, pair) in partition.range(range.clone()).enumerate() {
+                    log::trace!("rw: iterating {i}");
+                    any_tasks_found = true;
+
                     if i >= MAX_BATCHED_RW_EVENTS {
                         break;
                     }
@@ -170,22 +186,35 @@ impl Storage {
                     let mod_value: ModQueueItemValue =
                         db_complete::<ModQueueItemStringValue>(&val_bytes)?.try_into()?;
 
+                    log::trace!("rw: iterating {i}: sending to batcher {mod_key:?} => {mod_value:?}");
                     batched_rw_items += DBWriter {
                         keyspace: keyspace.clone(),
                         partition: partition.clone(),
                     }
                     .write_rw(&mut db_batch, mod_key, mod_value)?;
+                    log::trace!("rw: iterating {i}: back from batcher.");
 
                     if batched_rw_items >= MAX_BATCHED_RW_ITEMS {
+                        log::trace!("rw: iterating {i}: batch big enough, breaking out.");
                         break;
                     }
                 }
 
-                db_batch.commit()?;
+                if !any_tasks_found {
+                    log::trace!("rw: skipping batch commit since apparently no items were added (this is normal, skipping is new)");
+                    return Ok(());
+                }
+
+                log::info!("rw: committing rw batch with {batched_rw_items} items (items != total inserts/deletes)...");
+                let r = db_batch.commit();
+                log::info!("rw: commit result: {r:?}");
+                r?;
                 Ok(())
             })
             .await??;
+            log::trace!("rw: back from blocking for rw...");
         }
+        // log::warn!("exited rw loop (rw task)");
     }
 
     pub async fn get_collection_records(
@@ -352,7 +381,11 @@ impl DBWriter {
         if let Some(cursor) = last {
             insert_batch_static::<JetstreamCursorKey>(&mut db_batch, &self.partition, cursor)?;
         }
-        Ok(db_batch.commit()?)
+        log::info!("write: committing write batch...");
+        let r = db_batch.commit();
+        log::info!("write: commit result: {r:?}");
+        r?;
+        Ok(())
     }
 
     fn write_rw(
@@ -367,20 +400,28 @@ impl DBWriter {
 
         let items_modified = match mod_value {
             ModQueueItemValue::DeleteAccount(did) => {
+                log::trace!("rw: batcher: delete account...");
                 let (items, finished) = self.delete_account(db_batch, mod_cursor, did)?;
+                log::trace!("rw: batcher: back from delete account (finished? {finished})");
                 if finished {
                     // only remove the queued rw task if we have actually completed its account removal work
                     remove_batch::<ModQueueItemKey>(db_batch, &self.partition, mod_key)?;
+                    items + 1
+                } else {
+                    items
                 }
-                items
             }
             ModQueueItemValue::DeleteRecord(did, collection, rkey) => {
+                log::trace!("rw: batcher: delete record...");
+                let items = self.delete_record(db_batch, mod_cursor, did, collection, rkey)?;
+                log::trace!("rw: batcher: back from delete record");
                 remove_batch::<ModQueueItemKey>(db_batch, &self.partition, mod_key)?;
-                self.delete_record(db_batch, mod_cursor, did, collection, rkey)?
+                items + 1
             }
             ModQueueItemValue::UpdateRecord(did, collection, rkey, record) => {
+                let items = self.update_record(db_batch, mod_cursor, did, collection, rkey, record)?;
                 remove_batch::<ModQueueItemKey>(db_batch, &self.partition, mod_key)?;
-                self.update_record(db_batch, mod_cursor, did, collection, rkey, record)?
+                items + 1
             }
         };
         Ok(items_modified)
@@ -423,14 +464,17 @@ impl DBWriter {
             ByIdKey::record_prefix(did, collection.clone(), rkey).to_db_bytes()?;
 
         let mut items_removed = 0;
-        for pair in self.partition.prefix(&key_prefix_bytes) {
+
+        log::trace!("delete_record: iterate over prefix(!)...");
+        for (i, pair) in self.partition.prefix(&key_prefix_bytes).enumerate() {
+            log::trace!("delete_record iter {i}: found");
             // find all (hopefully 1)
             let (key_bytes, _) = pair?;
             let key = db_complete::<ByIdKey>(&key_bytes)?;
             let found_cursor = key.cursor();
             if found_cursor > cursor {
                 // we are *only* allowed to delete records that came before the record delete event
-                eprintln!("delete_record: found (and ignoring) newer version(s). key: {key:?}");
+                log::trace!("delete_record: found (and ignoring) newer version(s). key: {key:?}");
                 break;
             }
 
@@ -445,20 +489,20 @@ impl DBWriter {
             items_removed += 1;
         }
 
-        if items_removed > 1 {
-            eprintln!("odd, removed {items_removed} records for one record removal:");
-            for (i, pair) in self.partition.prefix(&key_prefix_bytes).enumerate() {
-                // find all (hopefully 1)
-                let (key_bytes, _) = pair?;
-                let found_cursor = db_complete::<ByIdKey>(&key_bytes)?.cursor();
-                if found_cursor > cursor {
-                    break;
-                }
+        // if items_removed > 1 {
+        //     log::trace!("odd, removed {items_removed} records for one record removal:");
+        //     for (i, pair) in self.partition.prefix(&key_prefix_bytes).enumerate() {
+        //         // find all (hopefully 1)
+        //         let (key_bytes, _) = pair?;
+        //         let found_cursor = db_complete::<ByIdKey>(&key_bytes)?.cursor();
+        //         if found_cursor > cursor {
+        //             break;
+        //         }
 
-                let key = db_complete::<ByIdKey>(&key_bytes)?;
-                eprintln!("  {i}: key {key:?}");
-            }
-        }
+        //         let key = db_complete::<ByIdKey>(&key_bytes)?;
+        //         log::trace!("  {i}: key {key:?}");
+        //     }
+        // }
         Ok(items_removed)
     }
 
@@ -476,7 +520,7 @@ impl DBWriter {
 
             let (_, collection, _rkey, found_cursor) = db_complete::<ByIdKey>(&key_bytes)?.into();
             if found_cursor > cursor {
-                eprintln!(
+                log::trace!(
                     "delete account: found (and ignoring) newer records than the delete event??"
                 );
                 continue;
@@ -495,6 +539,7 @@ impl DBWriter {
                 return Ok((items_added, false)); // there might be more records but we've done enough for this batch
             }
         }
+
 
         Ok((items_added, true))
     }
