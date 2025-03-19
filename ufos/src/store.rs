@@ -461,12 +461,16 @@ impl DBWriter {
         rkey: RecordKey,
     ) -> anyhow::Result<usize> {
         let key_prefix_bytes =
-            ByIdKey::record_prefix(did, collection.clone(), rkey).to_db_bytes()?;
+            ByIdKey::record_prefix(did.clone(), collection.clone(), rkey.clone()).to_db_bytes()?;
+
+        // put the cursor of the actual deletion event in to prevent prefix iter from touching newer docs
+        let key_limit =
+            ByIdKey::new(did, collection.clone(), rkey, cursor.clone()).to_db_bytes()?;
 
         let mut items_removed = 0;
 
-        log::trace!("delete_record: iterate over prefix(!)...");
-        for (i, pair) in self.partition.prefix(&key_prefix_bytes).enumerate() {
+        log::trace!("delete_record: iterate over up to current cursor...");
+        for (i, pair) in self.partition.range(key_prefix_bytes..key_limit).enumerate() {
             log::trace!("delete_record iter {i}: found");
             // find all (hopefully 1)
             let (key_bytes, _) = pair?;
@@ -474,8 +478,9 @@ impl DBWriter {
             let found_cursor = key.cursor();
             if found_cursor > cursor {
                 // we are *only* allowed to delete records that came before the record delete event
-                log::trace!("delete_record: found (and ignoring) newer version(s). key: {key:?}");
-                break;
+                // log::trace!("delete_record: found (and ignoring) newer version(s). key: {key:?}");
+                panic!("wtf, found newer version than cursor limit we tried to set.");
+                // break;
             }
 
             // remove the by_id entry
