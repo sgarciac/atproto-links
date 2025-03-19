@@ -19,8 +19,8 @@ use std::time::{Duration, Instant};
 use tokio::time::sleep;
 use tokio::sync::{mpsc::Receiver, Mutex};
 
-/// Commit the RW batch immediately if this nubmer of events have been read off the mod queue
-const MAX_BATCHED_RW_EVENTS: usize = 3;
+/// Commit the RW batch immediately if this number of events have been read off the mod queue
+const MAX_BATCHED_RW_EVENTS: usize = 16;
 
 /// Commit the RW batch immediately if this number of records is reached
 ///
@@ -29,13 +29,26 @@ const MAX_BATCHED_RW_EVENTS: usize = 3;
 ///     - doing more work whenever scheduled means getting more CPU time in general
 ///
 /// this is higher than [MAX_BATCHED_RW_EVENTS] because account-deletes can have lots of items
-const MAX_BATCHED_RW_ITEMS: usize = 36;
+const MAX_BATCHED_RW_ITEMS: usize = 48;
 
 
+#[derive(Clone)]
 struct SerialDb {
     keyspace: Keyspace,
     partition: PartitionHandle,
 }
+
+// struct FakeMutex<T> {
+//     thing: T,
+// }
+// impl<T: Clone> FakeMutex<T> {
+//     pub fn new(thing: T) -> Self {
+//         Self { thing }
+//     }
+//     pub async fn lock(&self) -> T {
+//         self.thing.clone()
+//     }
+// }
 
 /**
  * data format, roughly:
@@ -155,7 +168,7 @@ impl Storage {
     pub async fn rw_loop(&self) -> anyhow::Result<()> {
         // TODO: lock so that only one rw loop can possibly be run. or even better, take a mutable resource thing to enforce at compile time.
         loop {
-            sleep(Duration::from_secs_f64(0.001)).await; // todo: interval rate-limit instead
+            sleep(Duration::from_secs_f64(0.15)).await; // todo: interval rate-limit instead
 
             let db = self.db.lock().await;
             let keyspace = db.keyspace.clone();
