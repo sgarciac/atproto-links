@@ -1,4 +1,4 @@
-// use std::sync::{Arc, Mutex}; // BLOCKING mutex -- only in spawn_blocking tasks!
+use std::sync::Arc;
 use crate::db_types::{db_complete, DbBytes, DbStaticStr, EncodingError, StaticStr};
 use crate::store_types::{
     ByCollectionKey, ByCollectionValue, ByCursorSeenKey, ByCursorSeenValue, ByIdKey, ByIdValue,
@@ -16,7 +16,8 @@ use jetstream::events::Cursor;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
-use tokio::{sync::mpsc::Receiver, time::sleep};
+use tokio::time::sleep;
+use tokio::sync::{mpsc::Receiver, Mutex};
 
 /// Commit the RW batch immediately if this nubmer of events have been read off the mod queue
 const MAX_BATCHED_RW_EVENTS: usize = 3;
@@ -29,6 +30,12 @@ const MAX_BATCHED_RW_EVENTS: usize = 3;
 ///
 /// this is higher than [MAX_BATCHED_RW_EVENTS] because account-deletes can have lots of items
 const MAX_BATCHED_RW_ITEMS: usize = 36;
+
+
+struct SerialDb {
+    keyspace: Keyspace,
+    partition: PartitionHandle,
+}
 
 /**
  * data format, roughly:
@@ -57,9 +64,8 @@ const MAX_BATCHED_RW_ITEMS: usize = 36;
  **/
 #[derive(Clone)]
 pub struct Storage {
-    keyspace: Keyspace,
-    partition: PartitionHandle,
-    // write_lock: Arc<Mutex<()>>,
+    /// horrible: gate all db access behind this to force global serialization to avoid deadlock
+    db: Arc<Mutex<SerialDb>>,
 }
 
 impl Storage {
@@ -70,9 +76,7 @@ impl Storage {
             PartitionCreateOptions::default().compression(CompressionType::None),
         )?;
         Ok(Self {
-            keyspace,
-            partition,
-            // write_lock: Arc::new(Mutex::new(())),
+            db: Arc::new(Mutex::new(SerialDb { keyspace, partition })),
         })
     }
 
@@ -121,9 +125,9 @@ impl Storage {
 
                 let last = event_batch.last_jetstream_cursor.clone(); // TODO: get this from the data. track last in consumer. compute or track first.
 
-                let keyspace = self.keyspace.clone();
-                let partition = self.partition.clone();
-                // let write_lock = self.write_lock.clone();
+                let db = self.db.lock().await;
+                let keyspace = db.keyspace.clone();
+                let partition = db.partition.clone();
 
                 let writer_t0 = Instant::now();
                 log::trace!("spawn_blocking for write batch");
@@ -131,13 +135,13 @@ impl Storage {
                     DBWriter {
                         keyspace,
                         partition,
-                        // write_lock,
                     }
                     .write_batch(event_batch, last)
                 })
                 .await??;
                 log::trace!("write: back from blocking task, successfully wrote batch");
                 let wrote_for = writer_t0.elapsed();
+                drop(db);
 
                 println!("{batch_summary}, slept {slept_for: <12?}, wrote {wrote_for: <11?}, queue: {queue_size}");
             } else {
@@ -152,8 +156,11 @@ impl Storage {
         // TODO: lock so that only one rw loop can possibly be run. or even better, take a mutable resource thing to enforce at compile time.
         loop {
             sleep(Duration::from_secs_f64(0.001)).await; // todo: interval rate-limit instead
-            let keyspace = self.keyspace.clone();
-            let partition = self.partition.clone();
+
+            let db = self.db.lock().await;
+            let keyspace = db.keyspace.clone();
+            let partition = db.partition.clone();
+
             log::trace!("rw: spawn blocking for batch...");
             tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
                 log::trace!("rw: getting rw cursor...");
@@ -222,7 +229,7 @@ impl Storage {
         collection: &Nsid,
         limit: usize,
     ) -> anyhow::Result<Vec<CreateRecord>> {
-        let partition = self.partition.clone();
+        let partition = self.db.lock().await.partition.clone();
         let prefix = ByCollectionKey::prefix_from_collection(collection.clone())?;
         tokio::task::spawn_blocking(move || {
             let mut output = Vec::new();
@@ -243,8 +250,9 @@ impl Storage {
     }
 
     pub async fn get_meta_info(&self) -> anyhow::Result<StorageInfo> {
-        let keyspace = self.keyspace.clone();
-        let partition = self.partition.clone();
+        let db = self.db.lock().await;
+        let keyspace = db.keyspace.clone();
+        let partition = db.partition.clone();
         tokio::task::spawn_blocking(move || {
             Ok(StorageInfo {
                 keyspace_disk_space: keyspace.disk_space(),
@@ -257,13 +265,13 @@ impl Storage {
     }
 
     pub async fn get_collection_total_seen(&self, collection: &Nsid) -> anyhow::Result<u64> {
-        let partition = self.partition.clone();
+        let partition = self.db.lock().await.partition.clone();
         let collection = collection.clone();
         tokio::task::spawn_blocking(move || get_unrolled_asdf(&partition, collection)).await?
     }
 
     pub async fn get_jetstream_endpoint(&self) -> anyhow::Result<Option<JetstreamEndpointValue>> {
-        let partition = self.partition.clone();
+        let partition = self.db.lock().await.partition.clone();
         tokio::task::spawn_blocking(move || {
             get_static::<JetstreamEndpointKey, JetstreamEndpointValue>(&partition)
         })
@@ -271,7 +279,7 @@ impl Storage {
     }
 
     async fn set_jetstream_endpoint(&self, endpoint: &str) -> anyhow::Result<()> {
-        let partition = self.partition.clone();
+        let partition = self.db.lock().await.partition.clone();
         let endpoint = endpoint.to_string();
         tokio::task::spawn_blocking(move || {
             insert_static::<JetstreamEndpointKey>(&partition, JetstreamEndpointValue(endpoint))
@@ -280,7 +288,7 @@ impl Storage {
     }
 
     pub async fn get_jetstream_cursor(&self) -> anyhow::Result<Option<Cursor>> {
-        let partition = self.partition.clone();
+        let partition = self.db.lock().await.partition.clone();
         tokio::task::spawn_blocking(move || {
             get_static::<JetstreamCursorKey, JetstreamCursorValue>(&partition)
         })
@@ -288,7 +296,7 @@ impl Storage {
     }
 
     pub async fn get_mod_cursor(&self) -> anyhow::Result<Option<Cursor>> {
-        let partition = self.partition.clone();
+        let partition = self.db.lock().await.partition.clone();
         tokio::task::spawn_blocking(move || get_static::<ModCursorKey, ModCursorValue>(&partition))
             .await?
     }
