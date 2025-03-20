@@ -28,6 +28,9 @@ struct Args {
     /// Location to store persist data to disk
     #[arg(long)]
     data: PathBuf,
+    /// DEBUG: don't start the jetstream consumer or its write loop
+    #[arg(long, action)]
+    pause_writer: bool,
     /// DEBUG: force the rw loop to fall behind  by pausing it
     #[arg(long, action)]
     pause_rw: bool,
@@ -42,12 +45,6 @@ async fn main() -> anyhow::Result<()> {
     let (storage, cursor) =
         store::Storage::open(args.data, &args.jetstream, args.jetstream_force).await?;
 
-    println!(
-        "starting consumer with cursor: {cursor:?} from {:?} ago",
-        cursor.clone().map(|c| c.elapsed())
-    );
-    let batches = consumer::consume(&args.jetstream, cursor, args.jetstream_no_zstd).await?;
-
     println!("starting server with storage...");
     let serving = server::serve(storage.clone());
 
@@ -56,11 +53,22 @@ async fn main() -> anyhow::Result<()> {
         log::warn!("serving ended with: {r:?}");
     });
 
-    let t2 = tokio::task::spawn({
+    let t2: tokio::task::JoinHandle<anyhow::Result<()>> = tokio::task::spawn({
         let storage = storage.clone();
         async move {
-            let r = storage.receive(batches).await;
-            log::warn!("storage.receive ended with: {r:?}");
+            if !args.pause_writer {
+                println!(
+                    "starting consumer with cursor: {cursor:?} from {:?} ago",
+                    cursor.clone().map(|c| c.elapsed())
+                );
+                let batches =
+                    consumer::consume(&args.jetstream, cursor, args.jetstream_no_zstd).await?;
+                let r = storage.receive(batches).await;
+                log::warn!("storage.receive ended with: {r:?}");
+            } else {
+                log::info!("not starting jetstream or the write loop.");
+            }
+            Ok(())
         }
     });
 
@@ -82,7 +90,7 @@ async fn main() -> anyhow::Result<()> {
     log::trace!("tasks running. waiting.");
     t1.await?;
     log::trace!("serve task ended.");
-    t2.await?;
+    t2.await??;
     log::trace!("storage receive task ended.");
     t3.await?;
     log::trace!("storage rw task ended.");

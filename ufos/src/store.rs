@@ -1,4 +1,3 @@
-use std::sync::Arc;
 use crate::db_types::{db_complete, DbBytes, DbStaticStr, EncodingError, StaticStr};
 use crate::store_types::{
     ByCollectionKey, ByCollectionValue, ByCursorSeenKey, ByCursorSeenValue, ByIdKey, ByIdValue,
@@ -15,9 +14,10 @@ use fjall::{
 use jetstream::events::Cursor;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tokio::sync::mpsc::Receiver;
 use tokio::time::sleep;
-use tokio::sync::{mpsc::Receiver};
 
 /// Commit the RW batch immediately if this number of events have been read off the mod queue
 const MAX_BATCHED_RW_EVENTS: usize = 18;
@@ -30,7 +30,6 @@ const MAX_BATCHED_RW_EVENTS: usize = 18;
 ///
 /// this is higher than [MAX_BATCHED_RW_EVENTS] because account-deletes can have lots of items
 const MAX_BATCHED_RW_ITEMS: usize = 24;
-
 
 #[derive(Clone)]
 struct SerialDb {
@@ -89,7 +88,10 @@ impl Storage {
             PartitionCreateOptions::default().compression(CompressionType::None),
         )?;
         Ok(Self {
-            db: Arc::new(FakeMutex::new(SerialDb { keyspace, partition })),
+            db: Arc::new(FakeMutex::new(SerialDb {
+                keyspace,
+                partition,
+            })),
         })
     }
 
@@ -191,7 +193,7 @@ impl Storage {
                 //// ITER
 
                 {
-                    let iterator = partition.range(range.clone()).enumerate().into_iter();
+                    let iterator = partition.range(range.clone()).enumerate();
 
                     for (i, pair) in iterator {
                         log::trace!("rw: iterating {i}");
@@ -256,7 +258,6 @@ impl Storage {
         tokio::task::spawn_blocking(move || {
             let mut output = Vec::new();
 
-
             ////// ITER
             {
                 for pair in partition.prefix(&prefix).rev().take(limit) {
@@ -294,7 +295,13 @@ impl Storage {
     pub async fn get_collection_total_seen(&self, collection: &Nsid) -> anyhow::Result<u64> {
         let partition = self.db.lock().await.partition.clone();
         let collection = collection.clone();
-        tokio::task::spawn_blocking(move || get_unrolled_asdf(&partition, collection)).await?
+        tokio::task::spawn_blocking(move || get_unrolled_collection_seen(&partition, collection))
+            .await?
+    }
+
+    pub async fn get_top_collections(&self) -> anyhow::Result<HashMap<String, u64>> {
+        let partition = self.db.lock().await.partition.clone();
+        tokio::task::spawn_blocking(move || get_unrolled_top_collections(&partition)).await?
     }
 
     pub async fn get_jetstream_endpoint(&self) -> anyhow::Result<Option<JetstreamEndpointValue>> {
@@ -374,7 +381,10 @@ fn remove_batch<K: DbBytes>(
 }
 
 /// Get stats that haven't been rolled up yet
-fn get_unrolled_asdf(partition: &PartitionHandle, collection: Nsid) -> anyhow::Result<u64> {
+fn get_unrolled_collection_seen(
+    partition: &PartitionHandle,
+    collection: Nsid,
+) -> anyhow::Result<u64> {
     let range =
         if let Some(cursor_value) = get_static::<RollupCursorKey, RollupCursorValue>(partition)? {
             eprintln!("found existing cursor");
@@ -389,7 +399,6 @@ fn get_unrolled_asdf(partition: &PartitionHandle, collection: Nsid) -> anyhow::R
 
     let mut scanned = 0;
     let mut rolled = 0;
-
 
     ////// ITER
 
@@ -411,6 +420,37 @@ fn get_unrolled_asdf(partition: &PartitionHandle, collection: Nsid) -> anyhow::R
     eprintln!("scanned: {scanned}, rolled: {rolled}");
 
     Ok(collection_total)
+}
+
+fn get_unrolled_top_collections(
+    partition: &PartitionHandle,
+) -> anyhow::Result<HashMap<String, u64>> {
+    let range =
+        if let Some(cursor_value) = get_static::<RollupCursorKey, RollupCursorValue>(partition)? {
+            eprintln!("found existing cursor");
+            let key: ByCursorSeenKey = cursor_value.into();
+            key.range_from()?
+        } else {
+            eprintln!("cursor from start.");
+            ByCursorSeenKey::full_range()?
+        };
+
+    let mut res = HashMap::new();
+    let mut scanned = 0;
+
+    for pair in partition.range(range) {
+        let (key_bytes, value_bytes) = pair?;
+        let key = db_complete::<ByCursorSeenKey>(&key_bytes)?;
+        let SeenCounter(n) = db_complete(&value_bytes)?;
+
+        *res.entry(key.collection().to_string()).or_default() += n;
+
+        scanned += 1;
+    }
+
+    eprintln!("scanned: {scanned} seen-counts.");
+
+    Ok(res)
 }
 
 impl DBWriter {
@@ -460,7 +500,8 @@ impl DBWriter {
                 items + 1
             }
             ModQueueItemValue::UpdateRecord(did, collection, rkey, record) => {
-                let items = self.update_record(db_batch, mod_cursor, did, collection, rkey, record)?;
+                let items =
+                    self.update_record(db_batch, mod_cursor, did, collection, rkey, record)?;
                 remove_batch::<ModQueueItemKey>(db_batch, &self.partition, mod_key)?;
                 items + 1
             }
@@ -512,11 +553,14 @@ impl DBWriter {
 
         log::trace!("delete_record: iterate over up to current cursor...");
 
-
         ////////// ITER
 
         {
-            for (i, pair) in self.partition.range(key_prefix_bytes..key_limit).enumerate() {
+            for (i, pair) in self
+                .partition
+                .range(key_prefix_bytes..key_limit)
+                .enumerate()
+            {
                 log::trace!("delete_record iter {i}: found");
                 // find all (hopefully 1)
                 let (key_bytes, _) = pair?;
@@ -568,15 +612,14 @@ impl DBWriter {
 
         let mut items_added = 0;
 
-
-
         ////////// ITER
 
         {
             for pair in self.partition.prefix(&key_prefix_bytes) {
                 let (key_bytes, _) = pair?;
 
-                let (_, collection, _rkey, found_cursor) = db_complete::<ByIdKey>(&key_bytes)?.into();
+                let (_, collection, _rkey, found_cursor) =
+                    db_complete::<ByIdKey>(&key_bytes)?.into();
                 if found_cursor > cursor {
                     log::trace!(
                         "delete account: found (and ignoring) newer records than the delete event??"
@@ -598,7 +641,6 @@ impl DBWriter {
                 }
             }
         }
-
 
         Ok((items_added, true))
     }

@@ -144,7 +144,10 @@ impl Batcher {
     // holds up all consumer progress until it can send to the channel
     // use this when the current batch is too full to add more to it
     async fn send_current_batch_now(&mut self) -> anyhow::Result<()> {
-        log::warn!("attempting to send batch now (capacity: {})", self.batch_sender.capacity());
+        log::warn!(
+            "attempting to send batch now (capacity: {})",
+            self.batch_sender.capacity()
+        );
         self.batch_sender
             .send_timeout(
                 mem::take(&mut self.current_batch),

@@ -382,12 +382,9 @@ impl<R: DeserializeOwned + Send + 'static> JetstreamConnector<R> {
                         websocket_task(dict, ws_stream, send_channel.clone(), &mut last_cursor)
                             .await
                     {
-                        match e {
-                            JetstreamEventError::ReceiverClosedError => {
-                                log::error!("Jetstream receiver channel closed. Exiting consumer.");
-                                return;
-                            }
-                            _ => {}
+                        if let JetstreamEventError::ReceiverClosedError = e {
+                            log::error!("Jetstream receiver channel closed. Exiting consumer.");
+                            return;
                         }
                         log::error!("Jetstream closed after encountering error: {e:?}");
                     } else {

@@ -12,6 +12,7 @@ use dropshot::RequestContext;
 use dropshot::ServerBuilder;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -153,7 +154,7 @@ async fn get_records_by_collection(
     method = GET,
     path = "/records/total-seen"
 }]
-async fn get_asdf(
+async fn get_records_total_seen(
     ctx: RequestContext<Context>,
     collection_query: Query<CollectionQuery>,
 ) -> Result<HttpResponseOk<u64>, HttpError> {
@@ -172,6 +173,23 @@ async fn get_asdf(
     Ok(HttpResponseOk(total))
 }
 
+/// Get top collections
+#[endpoint {
+    method = GET,
+    path = "/collections"
+}]
+async fn get_top_collections(
+    ctx: RequestContext<Context>,
+) -> Result<HttpResponseOk<HashMap<String, u64>>, HttpError> {
+    let Context { storage, .. } = ctx.context();
+    let collections = storage
+        .get_top_collections()
+        .await
+        .map_err(|e| HttpError::for_internal_error(format!("boooo: {e:?}")))?;
+
+    Ok(HttpResponseOk(collections))
+}
+
 pub async fn serve(storage: Storage) -> Result<(), String> {
     let log = ConfigLogging::StderrTerminal {
         level: ConfigLoggingLevel::Info,
@@ -184,7 +202,8 @@ pub async fn serve(storage: Storage) -> Result<(), String> {
     api.register(get_openapi).unwrap();
     api.register(get_meta_info).unwrap();
     api.register(get_records_by_collection).unwrap();
-    api.register(get_asdf).unwrap();
+    api.register(get_records_total_seen).unwrap();
+    api.register(get_top_collections).unwrap();
 
     let context = Context {
         spec: Arc::new(
