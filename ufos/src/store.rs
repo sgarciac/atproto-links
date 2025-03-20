@@ -17,10 +17,10 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use tokio::time::sleep;
-use tokio::sync::{mpsc::Receiver, Mutex};
+use tokio::sync::{mpsc::Receiver};
 
 /// Commit the RW batch immediately if this number of events have been read off the mod queue
-const MAX_BATCHED_RW_EVENTS: usize = 16;
+const MAX_BATCHED_RW_EVENTS: usize = 18;
 
 /// Commit the RW batch immediately if this number of records is reached
 ///
@@ -29,7 +29,7 @@ const MAX_BATCHED_RW_EVENTS: usize = 16;
 ///     - doing more work whenever scheduled means getting more CPU time in general
 ///
 /// this is higher than [MAX_BATCHED_RW_EVENTS] because account-deletes can have lots of items
-const MAX_BATCHED_RW_ITEMS: usize = 48;
+const MAX_BATCHED_RW_ITEMS: usize = 24;
 
 
 #[derive(Clone)]
@@ -38,17 +38,17 @@ struct SerialDb {
     partition: PartitionHandle,
 }
 
-// struct FakeMutex<T> {
-//     thing: T,
-// }
-// impl<T: Clone> FakeMutex<T> {
-//     pub fn new(thing: T) -> Self {
-//         Self { thing }
-//     }
-//     pub async fn lock(&self) -> T {
-//         self.thing.clone()
-//     }
-// }
+struct FakeMutex<T> {
+    thing: T,
+}
+impl<T: Clone> FakeMutex<T> {
+    pub fn new(thing: T) -> Self {
+        Self { thing }
+    }
+    pub async fn lock(&self) -> T {
+        self.thing.clone()
+    }
+}
 
 /**
  * data format, roughly:
@@ -78,7 +78,7 @@ struct SerialDb {
 #[derive(Clone)]
 pub struct Storage {
     /// horrible: gate all db access behind this to force global serialization to avoid deadlock
-    db: Arc<Mutex<SerialDb>>,
+    db: Arc<FakeMutex<SerialDb>>,
 }
 
 impl Storage {
@@ -89,7 +89,7 @@ impl Storage {
             PartitionCreateOptions::default().compression(CompressionType::None),
         )?;
         Ok(Self {
-            db: Arc::new(Mutex::new(SerialDb { keyspace, partition })),
+            db: Arc::new(FakeMutex::new(SerialDb { keyspace, partition })),
         })
     }
 
@@ -168,7 +168,7 @@ impl Storage {
     pub async fn rw_loop(&self) -> anyhow::Result<()> {
         // TODO: lock so that only one rw loop can possibly be run. or even better, take a mutable resource thing to enforce at compile time.
         loop {
-            sleep(Duration::from_secs_f64(0.15)).await; // todo: interval rate-limit instead
+            sleep(Duration::from_secs_f64(0.1)).await; // todo: interval rate-limit instead
 
             let db = self.db.lock().await;
             let keyspace = db.keyspace.clone();
@@ -186,38 +186,47 @@ impl Storage {
                 let mut any_tasks_found = false;
 
                 log::trace!("rw: iterating newer rw items...");
-                for (i, pair) in partition.range(range.clone()).enumerate() {
-                    log::trace!("rw: iterating {i}");
-                    any_tasks_found = true;
 
-                    if i >= MAX_BATCHED_RW_EVENTS {
-                        break;
-                    }
 
-                    let (key_bytes, val_bytes) = pair?;
-                    let mod_key = match db_complete::<ModQueueItemKey>(&key_bytes) {
-                        Ok(k) => k,
-                        Err(EncodingError::WrongStaticPrefix(_, _)) => {
-                            panic!("wsp: mod queue empty.");
+                //// ITER
+
+                {
+                    let iterator = partition.range(range.clone()).enumerate().into_iter();
+
+                    for (i, pair) in iterator {
+                        log::trace!("rw: iterating {i}");
+                        any_tasks_found = true;
+
+                        if i >= MAX_BATCHED_RW_EVENTS {
+                            break;
                         }
-                        otherwise => otherwise?,
-                    };
 
-                    let mod_value: ModQueueItemValue =
-                        db_complete::<ModQueueItemStringValue>(&val_bytes)?.try_into()?;
+                        let (key_bytes, val_bytes) = pair?;
+                        let mod_key = match db_complete::<ModQueueItemKey>(&key_bytes) {
+                            Ok(k) => k,
+                            Err(EncodingError::WrongStaticPrefix(_, _)) => {
+                                panic!("wsp: mod queue empty.");
+                            }
+                            otherwise => otherwise?,
+                        };
 
-                    log::trace!("rw: iterating {i}: sending to batcher {mod_key:?} => {mod_value:?}");
-                    batched_rw_items += DBWriter {
-                        keyspace: keyspace.clone(),
-                        partition: partition.clone(),
+                        let mod_value: ModQueueItemValue =
+                            db_complete::<ModQueueItemStringValue>(&val_bytes)?.try_into()?;
+
+                        log::trace!("rw: iterating {i}: sending to batcher {mod_key:?} => {mod_value:?}");
+                        batched_rw_items += DBWriter {
+                            keyspace: keyspace.clone(),
+                            partition: partition.clone(),
+                        }
+                        .write_rw(&mut db_batch, mod_key, mod_value)?;
+                        log::trace!("rw: iterating {i}: back from batcher.");
+
+                        if batched_rw_items >= MAX_BATCHED_RW_ITEMS {
+                            log::trace!("rw: iterating {i}: batch big enough, breaking out.");
+                            break;
+                        }
                     }
-                    .write_rw(&mut db_batch, mod_key, mod_value)?;
-                    log::trace!("rw: iterating {i}: back from batcher.");
-
-                    if batched_rw_items >= MAX_BATCHED_RW_ITEMS {
-                        log::trace!("rw: iterating {i}: batch big enough, breaking out.");
-                        break;
-                    }
+                    // drop(iterator); // moved -- must be dropped hopefully
                 }
 
                 if !any_tasks_found {
@@ -246,16 +255,21 @@ impl Storage {
         let prefix = ByCollectionKey::prefix_from_collection(collection.clone())?;
         tokio::task::spawn_blocking(move || {
             let mut output = Vec::new();
-            for pair in partition.prefix(&prefix).rev().take(limit) {
-                let (k_bytes, v_bytes) = pair?;
-                let (_, cursor) = db_complete::<ByCollectionKey>(&k_bytes)?.into();
-                let (did, rkey, record) = db_complete::<ByCollectionValue>(&v_bytes)?.into();
-                output.push(CreateRecord {
-                    did,
-                    rkey,
-                    record,
-                    cursor,
-                })
+
+
+            ////// ITER
+            {
+                for pair in partition.prefix(&prefix).rev().take(limit) {
+                    let (k_bytes, v_bytes) = pair?;
+                    let (_, cursor) = db_complete::<ByCollectionKey>(&k_bytes)?.into();
+                    let (did, rkey, record) = db_complete::<ByCollectionValue>(&v_bytes)?.into();
+                    output.push(CreateRecord {
+                        did,
+                        rkey,
+                        record,
+                        cursor,
+                    })
+                }
             }
             Ok(output)
         })
@@ -375,17 +389,23 @@ fn get_unrolled_asdf(partition: &PartitionHandle, collection: Nsid) -> anyhow::R
 
     let mut scanned = 0;
     let mut rolled = 0;
-    for pair in partition.range(range) {
-        let (key_bytes, value_bytes) = pair?;
-        let key = db_complete::<ByCursorSeenKey>(&key_bytes)?;
-        let val = db_complete::<ByCursorSeenValue>(&value_bytes)?;
 
-        if *key.collection() == collection {
-            let SeenCounter(n) = val;
-            collection_total += n;
-            rolled += 1;
+
+    ////// ITER
+
+    {
+        for pair in partition.range(range) {
+            let (key_bytes, value_bytes) = pair?;
+            let key = db_complete::<ByCursorSeenKey>(&key_bytes)?;
+            let val = db_complete::<ByCursorSeenValue>(&value_bytes)?;
+
+            if *key.collection() == collection {
+                let SeenCounter(n) = val;
+                collection_total += n;
+                rolled += 1;
+            }
+            scanned += 1;
         }
-        scanned += 1;
     }
 
     eprintln!("scanned: {scanned}, rolled: {rolled}");
@@ -491,28 +511,34 @@ impl DBWriter {
         let mut items_removed = 0;
 
         log::trace!("delete_record: iterate over up to current cursor...");
-        for (i, pair) in self.partition.range(key_prefix_bytes..key_limit).enumerate() {
-            log::trace!("delete_record iter {i}: found");
-            // find all (hopefully 1)
-            let (key_bytes, _) = pair?;
-            let key = db_complete::<ByIdKey>(&key_bytes)?;
-            let found_cursor = key.cursor();
-            if found_cursor > cursor {
-                // we are *only* allowed to delete records that came before the record delete event
-                // log::trace!("delete_record: found (and ignoring) newer version(s). key: {key:?}");
-                panic!("wtf, found newer version than cursor limit we tried to set.");
-                // break;
+
+
+        ////////// ITER
+
+        {
+            for (i, pair) in self.partition.range(key_prefix_bytes..key_limit).enumerate() {
+                log::trace!("delete_record iter {i}: found");
+                // find all (hopefully 1)
+                let (key_bytes, _) = pair?;
+                let key = db_complete::<ByIdKey>(&key_bytes)?;
+                let found_cursor = key.cursor();
+                if found_cursor > cursor {
+                    // we are *only* allowed to delete records that came before the record delete event
+                    // log::trace!("delete_record: found (and ignoring) newer version(s). key: {key:?}");
+                    panic!("wtf, found newer version than cursor limit we tried to set.");
+                    // break;
+                }
+
+                // remove the by_id entry
+                db_batch.remove(&self.partition, key_bytes);
+
+                // remove its record sample
+                let by_collection_key_bytes =
+                    ByCollectionKey::new(collection.clone(), found_cursor).to_db_bytes()?;
+                db_batch.remove(&self.partition, by_collection_key_bytes);
+
+                items_removed += 1;
             }
-
-            // remove the by_id entry
-            db_batch.remove(&self.partition, key_bytes);
-
-            // remove its record sample
-            let by_collection_key_bytes =
-                ByCollectionKey::new(collection.clone(), found_cursor).to_db_bytes()?;
-            db_batch.remove(&self.partition, by_collection_key_bytes);
-
-            items_removed += 1;
         }
 
         // if items_removed > 1 {
@@ -541,28 +567,35 @@ impl DBWriter {
         let key_prefix_bytes = ByIdKey::did_prefix(did).to_db_bytes()?;
 
         let mut items_added = 0;
-        for pair in self.partition.prefix(&key_prefix_bytes) {
-            let (key_bytes, _) = pair?;
 
-            let (_, collection, _rkey, found_cursor) = db_complete::<ByIdKey>(&key_bytes)?.into();
-            if found_cursor > cursor {
-                log::trace!(
-                    "delete account: found (and ignoring) newer records than the delete event??"
-                );
-                continue;
-            }
 
-            // remove the by_id entry
-            db_batch.remove(&self.partition, key_bytes);
 
-            // remove its record sample
-            let by_collection_key_bytes =
-                ByCollectionKey::new(collection, found_cursor).to_db_bytes()?;
-            db_batch.remove(&self.partition, by_collection_key_bytes);
+        ////////// ITER
 
-            items_added += 1;
-            if items_added >= MAX_BATCHED_RW_ITEMS {
-                return Ok((items_added, false)); // there might be more records but we've done enough for this batch
+        {
+            for pair in self.partition.prefix(&key_prefix_bytes) {
+                let (key_bytes, _) = pair?;
+
+                let (_, collection, _rkey, found_cursor) = db_complete::<ByIdKey>(&key_bytes)?.into();
+                if found_cursor > cursor {
+                    log::trace!(
+                        "delete account: found (and ignoring) newer records than the delete event??"
+                    );
+                    continue;
+                }
+
+                // remove the by_id entry
+                db_batch.remove(&self.partition, key_bytes);
+
+                // remove its record sample
+                let by_collection_key_bytes =
+                    ByCollectionKey::new(collection, found_cursor).to_db_bytes()?;
+                db_batch.remove(&self.partition, by_collection_key_bytes);
+
+                items_added += 1;
+                if items_added >= MAX_BATCHED_RW_ITEMS {
+                    return Ok((items_added, false)); // there might be more records but we've done enough for this batch
+                }
             }
         }
 

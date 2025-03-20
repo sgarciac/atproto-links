@@ -394,7 +394,7 @@ impl<R: DeserializeOwned + Send + 'static> JetstreamConnector<R> {
                         log::error!("Jetstream connection closed cleanly");
                     }
                     if t_connected.elapsed() > Duration::from_secs(success_threshold_s) {
-                        retry_attempt = 1;
+                        retry_attempt = 0;
                     }
                 }
 

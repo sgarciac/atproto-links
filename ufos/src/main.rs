@@ -28,6 +28,9 @@ struct Args {
     /// Location to store persist data to disk
     #[arg(long)]
     data: PathBuf,
+    /// DEBUG: force the rw loop to fall behind  by pausing it
+    #[arg(long, action)]
+    pause_rw: bool,
 }
 
 // #[tokio::main(flavor = "current_thread")] // TODO: move this to config via args
@@ -62,8 +65,12 @@ async fn main() -> anyhow::Result<()> {
     });
 
     let t3 = tokio::task::spawn(async move {
-        let r = storage.rw_loop().await;
-        log::warn!("storage.rw_loop ended with: {r:?}");
+        if !args.pause_rw {
+            let r = storage.rw_loop().await;
+            log::warn!("storage.rw_loop ended with: {r:?}");
+        } else {
+            log::info!("not starting rw loop.");
+        }
     });
 
     // tokio::select! {
