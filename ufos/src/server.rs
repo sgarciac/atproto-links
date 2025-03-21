@@ -6,6 +6,7 @@ use dropshot::ConfigDropshot;
 use dropshot::ConfigLogging;
 use dropshot::ConfigLoggingLevel;
 use dropshot::HttpError;
+use dropshot::HttpResponseHeaders;
 use dropshot::HttpResponseOk;
 use dropshot::Query;
 use dropshot::RequestContext;
@@ -26,11 +27,9 @@ struct Context {
     method = GET,
     path = "/openapi",
 }]
-async fn get_openapi(
-    ctx: RequestContext<Context>,
-) -> Result<HttpResponseOk<serde_json::Value>, HttpError> {
+async fn get_openapi(ctx: RequestContext<Context>) -> OkCorsResponse<serde_json::Value> {
     let spec = (*ctx.context().spec).clone();
-    Ok(HttpResponseOk(spec))
+    ok_cors(spec)
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -45,9 +44,7 @@ struct MetaInfo {
     method = GET,
     path = "/meta"
 }]
-async fn get_meta_info(
-    ctx: RequestContext<Context>,
-) -> Result<HttpResponseOk<MetaInfo>, HttpError> {
+async fn get_meta_info(ctx: RequestContext<Context>) -> OkCorsResponse<MetaInfo> {
     let Context { storage, .. } = ctx.context();
 
     let failed_to_get =
@@ -76,12 +73,12 @@ async fn get_meta_info(
         .map_err(failed_to_get("jetstream cursor"))?
         .map(|c| c.to_raw_u64());
 
-    Ok(HttpResponseOk(MetaInfo {
+    ok_cors(MetaInfo {
         storage_info,
         jetstream_endpoint,
         jetstream_cursor,
         mod_cursor,
-    }))
+    })
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -121,7 +118,7 @@ impl ApiRecord {
 async fn get_records_by_collection(
     ctx: RequestContext<Context>,
     collection_query: Query<CollectionQuery>,
-) -> Result<HttpResponseOk<Vec<ApiRecord>>, HttpError> {
+) -> OkCorsResponse<Vec<ApiRecord>> {
     let Ok(collection) = Nsid::new(collection_query.into_inner().collection) else {
         return Err(HttpError::for_bad_request(
             None,
@@ -146,7 +143,7 @@ async fn get_records_by_collection(
         .map(|r| ApiRecord::from_create_record(r, &collection))
         .collect();
 
-    Ok(HttpResponseOk(api_records))
+    ok_cors(api_records)
 }
 
 /// Get total records seen by collection
@@ -157,7 +154,7 @@ async fn get_records_by_collection(
 async fn get_records_total_seen(
     ctx: RequestContext<Context>,
     collection_query: Query<CollectionQuery>,
-) -> Result<HttpResponseOk<u64>, HttpError> {
+) -> OkCorsResponse<u64> {
     let Ok(collection) = Nsid::new(collection_query.into_inner().collection) else {
         return Err(HttpError::for_bad_request(
             None,
@@ -170,7 +167,7 @@ async fn get_records_total_seen(
         .await
         .map_err(|e| HttpError::for_internal_error(format!("boooo: {e:?}")))?;
 
-    Ok(HttpResponseOk(total))
+    ok_cors(total)
 }
 
 /// Get top collections
@@ -178,16 +175,14 @@ async fn get_records_total_seen(
     method = GET,
     path = "/collections"
 }]
-async fn get_top_collections(
-    ctx: RequestContext<Context>,
-) -> Result<HttpResponseOk<HashMap<String, u64>>, HttpError> {
+async fn get_top_collections(ctx: RequestContext<Context>) -> OkCorsResponse<HashMap<String, u64>> {
     let Context { storage, .. } = ctx.context();
     let collections = storage
         .get_top_collections()
         .await
         .map_err(|e| HttpError::for_internal_error(format!("boooo: {e:?}")))?;
 
-    Ok(HttpResponseOk(collections))
+    ok_cors(collections)
 }
 
 pub async fn serve(storage: Storage) -> Result<(), String> {
@@ -222,4 +217,13 @@ pub async fn serve(storage: Storage) -> Result<(), String> {
         .start()
         .map_err(|error| format!("failed to start server: {}", error))?
         .await
+}
+
+/// awkward helpers
+type OkCorsResponse<T> = Result<HttpResponseHeaders<HttpResponseOk<T>>, HttpError>;
+fn ok_cors<T: Send + Sync + Serialize + JsonSchema>(t: T) -> OkCorsResponse<T> {
+    let mut res = HttpResponseHeaders::new_unnamed(HttpResponseOk(t));
+    res.headers_mut()
+        .insert("access-control-allow-origin", "*".parse().unwrap());
+    Ok(res)
 }
