@@ -82,8 +82,20 @@ async fn get_meta_info(ctx: RequestContext<Context>) -> OkCorsResponse<MetaInfo>
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-struct CollectionQuery {
+struct CollectionsQuery {
     collection: String, // JsonSchema not implemented for Nsid :(
+}
+impl CollectionsQuery {
+    fn to_multiple_nsids(&self) -> Result<Vec<Nsid>, String> {
+        let mut out = Vec::with_capacity(self.collection.len());
+        for collection in self.collection.split(',') {
+            let Ok(nsid) = Nsid::new(collection.to_string()) else {
+                return Err(format!("collection {collection:?} was not a valid NSID"));
+            };
+            out.push(nsid);
+        }
+        Ok(out)
+    }
 }
 #[derive(Debug, Serialize, JsonSchema)]
 struct ApiRecord {
@@ -111,37 +123,38 @@ impl ApiRecord {
     }
 }
 /// Get recent records by collection
+///
+/// Multiple collections are supported. they will be delivered in one big array with no
+/// specified order.
 #[endpoint {
     method = GET,
     path = "/records",
 }]
 async fn get_records_by_collection(
     ctx: RequestContext<Context>,
-    collection_query: Query<CollectionQuery>,
+    collection_query: Query<CollectionsQuery>,
 ) -> OkCorsResponse<Vec<ApiRecord>> {
-    let Ok(collection) = Nsid::new(collection_query.into_inner().collection) else {
-        return Err(HttpError::for_bad_request(
-            None,
-            "collection must be an NSID".to_string(),
-        ));
-    };
     let Context { storage, .. } = ctx.context();
-    let records = storage
-        .get_collection_records(&collection, 100)
-        .await
-        .map_err(|e| HttpError::for_internal_error(e.to_string()))?;
 
-    if records.is_empty() {
-        return Err(HttpError::for_not_found(
-            None,
-            format!("no saved records for collection {collection:?}"),
-        ));
+    let collections = collection_query
+        .into_inner()
+        .to_multiple_nsids()
+        .map_err(|reason| HttpError::for_bad_request(None, reason))?;
+
+    let mut api_records = Vec::new();
+
+    // TODO: set up multiple db iterators and iterate them together with merge sort
+    for collection in &collections {
+        let records = storage
+            .get_collection_records(collection, 100)
+            .await
+            .map_err(|e| HttpError::for_internal_error(e.to_string()))?;
+
+        for record in records {
+            let api_record = ApiRecord::from_create_record(record, collection);
+            api_records.push(api_record);
+        }
     }
-
-    let api_records = records
-        .into_iter()
-        .map(|r| ApiRecord::from_create_record(r, &collection))
-        .collect();
 
     ok_cors(api_records)
 }
@@ -153,21 +166,27 @@ async fn get_records_by_collection(
 }]
 async fn get_records_total_seen(
     ctx: RequestContext<Context>,
-    collection_query: Query<CollectionQuery>,
-) -> OkCorsResponse<u64> {
-    let Ok(collection) = Nsid::new(collection_query.into_inner().collection) else {
-        return Err(HttpError::for_bad_request(
-            None,
-            "collection must be an NSID".to_string(),
-        ));
-    };
+    collection_query: Query<CollectionsQuery>,
+) -> OkCorsResponse<HashMap<String, u64>> {
     let Context { storage, .. } = ctx.context();
-    let total = storage
-        .get_collection_total_seen(&collection)
-        .await
-        .map_err(|e| HttpError::for_internal_error(format!("boooo: {e:?}")))?;
 
-    ok_cors(total)
+    let collections = collection_query
+        .into_inner()
+        .to_multiple_nsids()
+        .map_err(|reason| HttpError::for_bad_request(None, reason))?;
+
+    let mut seen_by_collection = HashMap::with_capacity(collections.len());
+
+    for collection in &collections {
+        let total = storage
+            .get_collection_total_seen(collection)
+            .await
+            .map_err(|e| HttpError::for_internal_error(format!("boooo: {e:?}")))?;
+
+        seen_by_collection.insert(collection.to_string(), total);
+    }
+
+    ok_cors(seen_by_collection)
 }
 
 /// Get top collections
