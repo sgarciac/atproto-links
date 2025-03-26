@@ -334,6 +334,25 @@ etc
 - stop upstreaming requests to older instance in nginx
 
 
+- systemd unit for running: `sudo nano /etc/systemd/system/constellation.service`
+
+    ```toml
+    [Unit]
+    Description=Constellation backlinks index
+    After=network.target
+
+    [Service]
+    User=pi
+    WorkingDirectory=/home/pi/links/constellation
+    ExecStart=/home/pi/links/target/release/main --backend rocks --data /mnt/constellation-index/ --jetstream us-east-2 --backup /home/pi/backup/constellation-index --backup-interval 6 --max-old-backups 20
+    LimitNOFILE=16384
+    Restart=always
+
+    [Install]
+    WantedBy=multi-user.target
+    ```
+
+
 - todo: overlayfs? would need to figure out builds/updates still, also i guess logs are currently written to sd? (oof)
 - todo: cross-compile for raspi?
 
