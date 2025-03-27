@@ -189,46 +189,38 @@ impl Storage {
 
                 log::trace!("rw: iterating newer rw items...");
 
+                for (i, pair) in partition.range(range.clone()).enumerate() {
+                    log::trace!("rw: iterating {i}");
+                    any_tasks_found = true;
 
-                //// ITER
-
-                {
-                    let iterator = partition.range(range.clone()).enumerate();
-
-                    for (i, pair) in iterator {
-                        log::trace!("rw: iterating {i}");
-                        any_tasks_found = true;
-
-                        if i >= MAX_BATCHED_RW_EVENTS {
-                            break;
-                        }
-
-                        let (key_bytes, val_bytes) = pair?;
-                        let mod_key = match db_complete::<ModQueueItemKey>(&key_bytes) {
-                            Ok(k) => k,
-                            Err(EncodingError::WrongStaticPrefix(_, _)) => {
-                                panic!("wsp: mod queue empty.");
-                            }
-                            otherwise => otherwise?,
-                        };
-
-                        let mod_value: ModQueueItemValue =
-                            db_complete::<ModQueueItemStringValue>(&val_bytes)?.try_into()?;
-
-                        log::trace!("rw: iterating {i}: sending to batcher {mod_key:?} => {mod_value:?}");
-                        batched_rw_items += DBWriter {
-                            keyspace: keyspace.clone(),
-                            partition: partition.clone(),
-                        }
-                        .write_rw(&mut db_batch, mod_key, mod_value)?;
-                        log::trace!("rw: iterating {i}: back from batcher.");
-
-                        if batched_rw_items >= MAX_BATCHED_RW_ITEMS {
-                            log::trace!("rw: iterating {i}: batch big enough, breaking out.");
-                            break;
-                        }
+                    if i >= MAX_BATCHED_RW_EVENTS {
+                        break;
                     }
-                    // drop(iterator); // moved -- must be dropped hopefully
+
+                    let (key_bytes, val_bytes) = pair?;
+                    let mod_key = match db_complete::<ModQueueItemKey>(&key_bytes) {
+                        Ok(k) => k,
+                        Err(EncodingError::WrongStaticPrefix(_, _)) => {
+                            panic!("wsp: mod queue empty.");
+                        }
+                        otherwise => otherwise?,
+                    };
+
+                    let mod_value: ModQueueItemValue =
+                        db_complete::<ModQueueItemStringValue>(&val_bytes)?.try_into()?;
+
+                    log::trace!("rw: iterating {i}: sending to batcher {mod_key:?} => {mod_value:?}");
+                    batched_rw_items += DBWriter {
+                        keyspace: keyspace.clone(),
+                        partition: partition.clone(),
+                    }
+                    .write_rw(&mut db_batch, mod_key, mod_value)?;
+                    log::trace!("rw: iterating {i}: back from batcher.");
+
+                    if batched_rw_items >= MAX_BATCHED_RW_ITEMS {
+                        log::trace!("rw: iterating {i}: batch big enough, breaking out.");
+                        break;
+                    }
                 }
 
                 if !any_tasks_found {
@@ -604,8 +596,7 @@ impl DBWriter {
         for pair in self.partition.prefix(&key_prefix_bytes) {
             let (key_bytes, _) = pair?;
 
-            let (_, collection, _rkey, found_cursor) =
-                db_complete::<ByIdKey>(&key_bytes)?.into();
+            let (_, collection, _rkey, found_cursor) = db_complete::<ByIdKey>(&key_bytes)?.into();
             if found_cursor > cursor {
                 log::trace!(
                     "delete account: found (and ignoring) newer records than the delete event??"
