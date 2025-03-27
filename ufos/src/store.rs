@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc::Receiver;
-use tokio::time::sleep;
+use tokio::time::{interval_at, sleep};
 
 /// Commit the RW batch immediately if this number of events have been read off the mod queue
 const MAX_BATCHED_RW_EVENTS: usize = 18;
@@ -155,75 +155,129 @@ impl Storage {
     /// Read-write loop reads from the queue for record-modifying events and does rollups
     pub async fn rw_loop(&self) -> anyhow::Result<()> {
         // TODO: lock so that only one rw loop can possibly be run. or even better, take a mutable resource thing to enforce at compile time.
+
+        let now = tokio::time::Instant::now();
+        let mut time_to_update_events = interval_at(now, Duration::from_secs_f64(0.051));
+        let mut time_to_trim_surplus = interval_at(
+            now + Duration::from_secs_f64(1.0),
+            Duration::from_secs_f64(3.3),
+        );
+        let mut time_to_roll_up = interval_at(
+            now + Duration::from_secs_f64(0.4),
+            Duration::from_secs_f64(0.9),
+        );
+
+        time_to_update_events.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        time_to_trim_surplus.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        time_to_roll_up.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
         loop {
-            sleep(Duration::from_secs_f64(0.1)).await; // todo: interval rate-limit instead
-
-            let db = &self.db;
-            let keyspace = db.keyspace.clone();
-            let partition = db.partition.clone();
-
-            log::trace!("rw: spawn blocking for batch...");
-            tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-                log::trace!("rw: getting rw cursor...");
-                let mod_cursor = get_static::<ModCursorKey, ModCursorValue>(&partition)?
-                    .unwrap_or(Cursor::from_start());
-                let range = ModQueueItemKey::new(mod_cursor.clone()).range_to_prefix_end()?;
-
-                let mut db_batch = keyspace.batch();
-                let mut batched_rw_items = 0;
-                let mut any_tasks_found = false;
-
-                log::trace!("rw: iterating newer rw items...");
-
-                for (i, pair) in partition.range(range.clone()).enumerate() {
-                    log::trace!("rw: iterating {i}");
-                    any_tasks_found = true;
-
-                    if i >= MAX_BATCHED_RW_EVENTS {
-                        break;
-                    }
-
-                    let (key_bytes, val_bytes) = pair?;
-                    let mod_key = match db_complete::<ModQueueItemKey>(&key_bytes) {
-                        Ok(k) => k,
-                        Err(EncodingError::WrongStaticPrefix(_, _)) => {
-                            panic!("wsp: mod queue empty.");
-                        }
-                        otherwise => otherwise?,
-                    };
-
-                    let mod_value: ModQueueItemValue =
-                        db_complete::<ModQueueItemStringValue>(&val_bytes)?.try_into()?;
-
-                    log::trace!("rw: iterating {i}: sending to batcher {mod_key:?} => {mod_value:?}");
-                    batched_rw_items += DBWriter {
-                        keyspace: keyspace.clone(),
-                        partition: partition.clone(),
-                    }
-                    .write_rw(&mut db_batch, mod_key, mod_value)?;
-                    log::trace!("rw: iterating {i}: back from batcher.");
-
-                    if batched_rw_items >= MAX_BATCHED_RW_ITEMS {
-                        log::trace!("rw: iterating {i}: batch big enough, breaking out.");
-                        break;
-                    }
+            let keyspace = self.db.keyspace.clone();
+            let partition = self.db.partition.clone();
+            tokio::select! {
+                _ = time_to_update_events.tick() => {
+                    log::debug!("beginning event update task");
+                    tokio::task::spawn_blocking(move || Self::update_events(keyspace, partition)).await??;
+                    log::debug!("finished event update task");
                 }
-
-                if !any_tasks_found {
-                    log::trace!("rw: skipping batch commit since apparently no items were added (this is normal, skipping is new)");
-                    return Ok(());
+                _ = time_to_trim_surplus.tick() => {
+                    log::debug!("beginning record trim task");
+                    tokio::task::spawn_blocking(move || Self::trim_old_events(keyspace, partition)).await??;
+                    log::debug!("finished record trim task");
                 }
-
-                log::info!("rw: committing rw batch with {batched_rw_items} items (items != total inserts/deletes)...");
-                let r = db_batch.commit();
-                log::info!("rw: commit result: {r:?}");
-                r?;
-                Ok(())
-            })
-            .await??;
-            log::trace!("rw: back from blocking for rw...");
+                _ = time_to_roll_up.tick() => {
+                    log::debug!("beginning rollup task");
+                    tokio::task::spawn_blocking(move || Self::roll_up_counts(keyspace, partition)).await??;
+                    log::debug!("finished rollup task");
+                },
+            }
         }
-        // log::warn!("exited rw loop (rw task)");
+    }
+
+    fn update_events(keyspace: Keyspace, partition: PartitionHandle) -> anyhow::Result<()> {
+        // TODO: lock this to prevent concurrent rw
+
+        log::trace!("rw: getting rw cursor...");
+        let mod_cursor =
+            get_static::<ModCursorKey, ModCursorValue>(&partition)?.unwrap_or(Cursor::from_start());
+        let range = ModQueueItemKey::new(mod_cursor.clone()).range_to_prefix_end()?;
+
+        let mut db_batch = keyspace.batch();
+        let mut batched_rw_items = 0;
+        let mut any_tasks_found = false;
+
+        log::trace!("rw: iterating newer rw items...");
+
+        for (i, pair) in partition.range(range.clone()).enumerate() {
+            log::trace!("rw: iterating {i}");
+            any_tasks_found = true;
+
+            if i >= MAX_BATCHED_RW_EVENTS {
+                break;
+            }
+
+            let (key_bytes, val_bytes) = pair?;
+            let mod_key = match db_complete::<ModQueueItemKey>(&key_bytes) {
+                Ok(k) => k,
+                Err(EncodingError::WrongStaticPrefix(_, _)) => {
+                    panic!("wsp: mod queue empty.");
+                }
+                otherwise => otherwise?,
+            };
+
+            let mod_value: ModQueueItemValue =
+                db_complete::<ModQueueItemStringValue>(&val_bytes)?.try_into()?;
+
+            log::trace!("rw: iterating {i}: sending to batcher {mod_key:?} => {mod_value:?}");
+            batched_rw_items += DBWriter {
+                keyspace: keyspace.clone(),
+                partition: partition.clone(),
+            }
+            .write_rw(&mut db_batch, mod_key, mod_value)?;
+            log::trace!("rw: iterating {i}: back from batcher.");
+
+            if batched_rw_items >= MAX_BATCHED_RW_ITEMS {
+                log::trace!("rw: iterating {i}: batch big enough, breaking out.");
+                break;
+            }
+        }
+
+        if !any_tasks_found {
+            log::trace!("rw: skipping batch commit since apparently no items were added (this is normal, skipping is new)");
+            // TODO: is this missing a chance to update the cursor?
+            return Ok(());
+        }
+
+        log::info!("rw: committing rw batch with {batched_rw_items} items (items != total inserts/deletes)...");
+        let r = db_batch.commit();
+        log::info!("rw: commit result: {r:?}");
+        r?;
+        Ok(())
+    }
+
+    fn trim_old_events(_keyspace: Keyspace, _partition: PartitionHandle) -> anyhow::Result<()> {
+        // we *could* keep a collection dirty list in memory to reduce the amount of searching here
+        // actually can we use seen_by_js_cursor_collection??
+        // *   ["seen_by_js_cursor_collection"|js_cursor|collection] => u64
+        // -> the rollup cursor could handle trims.
+
+        // key structure:
+        // *   ["by_collection"|collection|js_cursor] => [did|rkey|record]
+
+        // *new* strategy:
+        // 1. collect `collection`s seen during rollup
+        // 2. for each collected collection:
+        // 3. set up prefix iterator
+        // 4. reverse and try to walk back MAX_RETAINED steps
+        // 5. if we didn't end iteration yet, start deleting records (and their forward links) until we get to the end
+
+        // ... we can probably do even better with cursor ranges too, since we'll have a cursor range from rollup and it's in the by_collection key
+
+        Ok(())
+    }
+
+    fn roll_up_counts(_keyspace: Keyspace, _partition: PartitionHandle) -> anyhow::Result<()> {
+        Ok(())
     }
 
     pub async fn get_collection_records(
