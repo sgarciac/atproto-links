@@ -65,8 +65,8 @@ impl<T: Clone> FakeMutex<T> {
  *   }
  * Collection and rollup meta:
  *   ["seen_by_js_cursor_collection"|js_cursor|collection] => u64 // batched total, gets cleaned up by rollup
- *   ["total_by_collection"|collection] => [u64, js_cursor] // live total requires scanning seen_by_collection after js_cursor
- *   ["hour_by_collection"|hour(u64)|collection] => u64 // rollup: computed by helper task based on dirty collections
+ *   ["total_by_collection"|collection] => [u64, js_cursor] // rollup; live total requires scanning seen_by_collection after js_cursor
+ *   ["hour_by_collection"|hour(u64)|collection] => u64 // rollup from seen_by_js_cursor_collection
  * Samples:
  *   ["by_collection"|collection|js_cursor] => [did|rkey|record]
  *   ["by_id"|did|collection|rkey|js_cursor] => [] // required to support deletes; did first prefix for account deletes.
@@ -258,19 +258,16 @@ impl Storage {
         tokio::task::spawn_blocking(move || {
             let mut output = Vec::new();
 
-            ////// ITER
-            {
-                for pair in partition.prefix(&prefix).rev().take(limit) {
-                    let (k_bytes, v_bytes) = pair?;
-                    let (_, cursor) = db_complete::<ByCollectionKey>(&k_bytes)?.into();
-                    let (did, rkey, record) = db_complete::<ByCollectionValue>(&v_bytes)?.into();
-                    output.push(CreateRecord {
-                        did,
-                        rkey,
-                        record,
-                        cursor,
-                    })
-                }
+            for pair in partition.prefix(&prefix).rev().take(limit) {
+                let (k_bytes, v_bytes) = pair?;
+                let (_, cursor) = db_complete::<ByCollectionKey>(&k_bytes)?.into();
+                let (did, rkey, record) = db_complete::<ByCollectionValue>(&v_bytes)?.into();
+                output.push(CreateRecord {
+                    did,
+                    rkey,
+                    record,
+                    cursor,
+                })
             }
             Ok(output)
         })
@@ -400,21 +397,17 @@ fn get_unrolled_collection_seen(
     let mut scanned = 0;
     let mut rolled = 0;
 
-    ////// ITER
+    for pair in partition.range(range) {
+        let (key_bytes, value_bytes) = pair?;
+        let key = db_complete::<ByCursorSeenKey>(&key_bytes)?;
+        let val = db_complete::<ByCursorSeenValue>(&value_bytes)?;
 
-    {
-        for pair in partition.range(range) {
-            let (key_bytes, value_bytes) = pair?;
-            let key = db_complete::<ByCursorSeenKey>(&key_bytes)?;
-            let val = db_complete::<ByCursorSeenValue>(&value_bytes)?;
-
-            if *key.collection() == collection {
-                let SeenCounter(n) = val;
-                collection_total += n;
-                rolled += 1;
-            }
-            scanned += 1;
+        if *key.collection() == collection {
+            let SeenCounter(n) = val;
+            collection_total += n;
+            rolled += 1;
         }
+        scanned += 1;
     }
 
     eprintln!("scanned: {scanned}, rolled: {rolled}");
@@ -553,36 +546,32 @@ impl DBWriter {
 
         log::trace!("delete_record: iterate over up to current cursor...");
 
-        ////////// ITER
-
+        for (i, pair) in self
+            .partition
+            .range(key_prefix_bytes..key_limit)
+            .enumerate()
         {
-            for (i, pair) in self
-                .partition
-                .range(key_prefix_bytes..key_limit)
-                .enumerate()
-            {
-                log::trace!("delete_record iter {i}: found");
-                // find all (hopefully 1)
-                let (key_bytes, _) = pair?;
-                let key = db_complete::<ByIdKey>(&key_bytes)?;
-                let found_cursor = key.cursor();
-                if found_cursor > cursor {
-                    // we are *only* allowed to delete records that came before the record delete event
-                    // log::trace!("delete_record: found (and ignoring) newer version(s). key: {key:?}");
-                    panic!("wtf, found newer version than cursor limit we tried to set.");
-                    // break;
-                }
-
-                // remove the by_id entry
-                db_batch.remove(&self.partition, key_bytes);
-
-                // remove its record sample
-                let by_collection_key_bytes =
-                    ByCollectionKey::new(collection.clone(), found_cursor).to_db_bytes()?;
-                db_batch.remove(&self.partition, by_collection_key_bytes);
-
-                items_removed += 1;
+            log::trace!("delete_record iter {i}: found");
+            // find all (hopefully 1)
+            let (key_bytes, _) = pair?;
+            let key = db_complete::<ByIdKey>(&key_bytes)?;
+            let found_cursor = key.cursor();
+            if found_cursor > cursor {
+                // we are *only* allowed to delete records that came before the record delete event
+                // log::trace!("delete_record: found (and ignoring) newer version(s). key: {key:?}");
+                panic!("wtf, found newer version than cursor limit we tried to set.");
+                // break;
             }
+
+            // remove the by_id entry
+            db_batch.remove(&self.partition, key_bytes);
+
+            // remove its record sample
+            let by_collection_key_bytes =
+                ByCollectionKey::new(collection.clone(), found_cursor).to_db_bytes()?;
+            db_batch.remove(&self.partition, by_collection_key_bytes);
+
+            items_removed += 1;
         }
 
         // if items_removed > 1 {
@@ -612,33 +601,29 @@ impl DBWriter {
 
         let mut items_added = 0;
 
-        ////////// ITER
+        for pair in self.partition.prefix(&key_prefix_bytes) {
+            let (key_bytes, _) = pair?;
 
-        {
-            for pair in self.partition.prefix(&key_prefix_bytes) {
-                let (key_bytes, _) = pair?;
+            let (_, collection, _rkey, found_cursor) =
+                db_complete::<ByIdKey>(&key_bytes)?.into();
+            if found_cursor > cursor {
+                log::trace!(
+                    "delete account: found (and ignoring) newer records than the delete event??"
+                );
+                continue;
+            }
 
-                let (_, collection, _rkey, found_cursor) =
-                    db_complete::<ByIdKey>(&key_bytes)?.into();
-                if found_cursor > cursor {
-                    log::trace!(
-                        "delete account: found (and ignoring) newer records than the delete event??"
-                    );
-                    continue;
-                }
+            // remove the by_id entry
+            db_batch.remove(&self.partition, key_bytes);
 
-                // remove the by_id entry
-                db_batch.remove(&self.partition, key_bytes);
+            // remove its record sample
+            let by_collection_key_bytes =
+                ByCollectionKey::new(collection, found_cursor).to_db_bytes()?;
+            db_batch.remove(&self.partition, by_collection_key_bytes);
 
-                // remove its record sample
-                let by_collection_key_bytes =
-                    ByCollectionKey::new(collection, found_cursor).to_db_bytes()?;
-                db_batch.remove(&self.partition, by_collection_key_bytes);
-
-                items_added += 1;
-                if items_added >= MAX_BATCHED_RW_ITEMS {
-                    return Ok((items_added, false)); // there might be more records but we've done enough for this batch
-                }
+            items_added += 1;
+            if items_added >= MAX_BATCHED_RW_ITEMS {
+                return Ok((items_added, false)); // there might be more records but we've done enough for this batch
             }
         }
 
