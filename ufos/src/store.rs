@@ -14,10 +14,12 @@ use fjall::{
 use jetstream::events::Cursor;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::{sync::mpsc::Receiver, time::sleep};
+use tokio::sync::mpsc::Receiver;
+use tokio::time::sleep;
 
-/// Commit the RW batch immediately if this nubmer of events have been read off the mod queue
+/// Commit the RW batch immediately if this number of events have been read off the mod queue
 const MAX_BATCHED_RW_EVENTS: usize = 18;
 
 /// Commit the RW batch immediately if this number of records is reached
@@ -27,7 +29,25 @@ const MAX_BATCHED_RW_EVENTS: usize = 18;
 ///     - doing more work whenever scheduled means getting more CPU time in general
 ///
 /// this is higher than [MAX_BATCHED_RW_EVENTS] because account-deletes can have lots of items
-const MAX_BATCHED_RW_ITEMS: usize = 36;
+const MAX_BATCHED_RW_ITEMS: usize = 24;
+
+#[derive(Clone)]
+struct SerialDb {
+    keyspace: Keyspace,
+    partition: PartitionHandle,
+}
+
+struct FakeMutex<T> {
+    thing: T,
+}
+impl<T: Clone> FakeMutex<T> {
+    pub fn new(thing: T) -> Self {
+        Self { thing }
+    }
+    pub async fn lock(&self) -> T {
+        self.thing.clone()
+    }
+}
 
 /**
  * data format, roughly:
@@ -56,8 +76,8 @@ const MAX_BATCHED_RW_ITEMS: usize = 36;
  **/
 #[derive(Clone)]
 pub struct Storage {
-    keyspace: Keyspace,
-    partition: PartitionHandle,
+    /// horrible: gate all db access behind this to force global serialization to avoid deadlock
+    db: Arc<FakeMutex<SerialDb>>,
 }
 
 impl Storage {
@@ -68,8 +88,10 @@ impl Storage {
             PartitionCreateOptions::default().compression(CompressionType::None),
         )?;
         Ok(Self {
-            keyspace,
-            partition,
+            db: Arc::new(FakeMutex::new(SerialDb {
+                keyspace,
+                partition,
+            })),
         })
     }
 
@@ -108,19 +130,22 @@ impl Storage {
         // TODO: see rw_loop: enforce single-thread.
         loop {
             let t_sleep = Instant::now();
-            sleep(Duration::from_secs_f64(0.3)).await; // TODO: minimize during replay
+            sleep(Duration::from_secs_f64(0.8)).await; // TODO: minimize during replay
             let slept_for = t_sleep.elapsed();
             let queue_size = receiver.len();
 
             if let Some(event_batch) = receiver.recv().await {
+                log::trace!("write: received write batch");
                 let batch_summary = summarize_batch(&event_batch);
 
                 let last = event_batch.last_jetstream_cursor.clone(); // TODO: get this from the data. track last in consumer. compute or track first.
 
-                let keyspace = self.keyspace.clone();
-                let partition = self.partition.clone();
+                let db = self.db.lock().await;
+                let keyspace = db.keyspace.clone();
+                let partition = db.partition.clone();
 
                 let writer_t0 = Instant::now();
+                log::trace!("spawn_blocking for write batch");
                 tokio::task::spawn_blocking(move || {
                     DBWriter {
                         keyspace,
@@ -129,10 +154,13 @@ impl Storage {
                     .write_batch(event_batch, last)
                 })
                 .await??;
+                log::trace!("write: back from blocking task, successfully wrote batch");
                 let wrote_for = writer_t0.elapsed();
+                drop(db);
 
                 println!("{batch_summary}, slept {slept_for: <12?}, wrote {wrote_for: <11?}, queue: {queue_size}");
             } else {
+                log::error!("store consumer: receive channel failed (dropped/closed?)");
                 anyhow::bail!("receive channel closed");
             }
         }
@@ -142,50 +170,82 @@ impl Storage {
     pub async fn rw_loop(&self) -> anyhow::Result<()> {
         // TODO: lock so that only one rw loop can possibly be run. or even better, take a mutable resource thing to enforce at compile time.
         loop {
-            sleep(Duration::from_secs_f64(0.001)).await; // todo: interval rate-limit instead
-            let keyspace = self.keyspace.clone();
-            let partition = self.partition.clone();
+            sleep(Duration::from_secs_f64(0.1)).await; // todo: interval rate-limit instead
+
+            let db = self.db.lock().await;
+            let keyspace = db.keyspace.clone();
+            let partition = db.partition.clone();
+
+            log::trace!("rw: spawn blocking for batch...");
             tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+                log::trace!("rw: getting rw cursor...");
                 let mod_cursor = get_static::<ModCursorKey, ModCursorValue>(&partition)?
                     .unwrap_or(Cursor::from_start());
                 let range = ModQueueItemKey::new(mod_cursor.clone()).range_to_prefix_end()?;
 
                 let mut db_batch = keyspace.batch();
                 let mut batched_rw_items = 0;
+                let mut any_tasks_found = false;
 
-                for (i, pair) in partition.range(range.clone()).enumerate() {
-                    if i >= MAX_BATCHED_RW_EVENTS {
-                        break;
-                    }
+                log::trace!("rw: iterating newer rw items...");
 
-                    let (key_bytes, val_bytes) = pair?;
-                    let mod_key = match db_complete::<ModQueueItemKey>(&key_bytes) {
-                        Ok(k) => k,
-                        Err(EncodingError::WrongStaticPrefix(_, _)) => {
-                            panic!("wsp: mod queue empty.");
+
+                //// ITER
+
+                {
+                    let iterator = partition.range(range.clone()).enumerate();
+
+                    for (i, pair) in iterator {
+                        log::trace!("rw: iterating {i}");
+                        any_tasks_found = true;
+
+                        if i >= MAX_BATCHED_RW_EVENTS {
+                            break;
                         }
-                        otherwise => otherwise?,
-                    };
 
-                    let mod_value: ModQueueItemValue =
-                        db_complete::<ModQueueItemStringValue>(&val_bytes)?.try_into()?;
+                        let (key_bytes, val_bytes) = pair?;
+                        let mod_key = match db_complete::<ModQueueItemKey>(&key_bytes) {
+                            Ok(k) => k,
+                            Err(EncodingError::WrongStaticPrefix(_, _)) => {
+                                panic!("wsp: mod queue empty.");
+                            }
+                            otherwise => otherwise?,
+                        };
 
-                    batched_rw_items += DBWriter {
-                        keyspace: keyspace.clone(),
-                        partition: partition.clone(),
+                        let mod_value: ModQueueItemValue =
+                            db_complete::<ModQueueItemStringValue>(&val_bytes)?.try_into()?;
+
+                        log::trace!("rw: iterating {i}: sending to batcher {mod_key:?} => {mod_value:?}");
+                        batched_rw_items += DBWriter {
+                            keyspace: keyspace.clone(),
+                            partition: partition.clone(),
+                        }
+                        .write_rw(&mut db_batch, mod_key, mod_value)?;
+                        log::trace!("rw: iterating {i}: back from batcher.");
+
+                        if batched_rw_items >= MAX_BATCHED_RW_ITEMS {
+                            log::trace!("rw: iterating {i}: batch big enough, breaking out.");
+                            break;
+                        }
                     }
-                    .write_rw(&mut db_batch, mod_key, mod_value)?;
-
-                    if batched_rw_items >= MAX_BATCHED_RW_ITEMS {
-                        break;
-                    }
+                    // drop(iterator); // moved -- must be dropped hopefully
                 }
 
-                db_batch.commit()?;
+                if !any_tasks_found {
+                    log::trace!("rw: skipping batch commit since apparently no items were added (this is normal, skipping is new)");
+                    return Ok(());
+                }
+
+                log::info!("rw: committing rw batch with {batched_rw_items} items (items != total inserts/deletes)...");
+                let r = db_batch.commit();
+                log::info!("rw: commit result: {r:?}");
+                r?;
                 Ok(())
             })
             .await??;
+            log::trace!("rw: back from blocking for rw...");
         }
+        // log::warn!("exited rw loop (rw task)");
     }
 
     pub async fn get_collection_records(
@@ -193,20 +253,24 @@ impl Storage {
         collection: &Nsid,
         limit: usize,
     ) -> anyhow::Result<Vec<CreateRecord>> {
-        let partition = self.partition.clone();
+        let partition = self.db.lock().await.partition.clone();
         let prefix = ByCollectionKey::prefix_from_collection(collection.clone())?;
         tokio::task::spawn_blocking(move || {
             let mut output = Vec::new();
-            for pair in partition.prefix(&prefix).rev().take(limit) {
-                let (k_bytes, v_bytes) = pair?;
-                let (_, cursor) = db_complete::<ByCollectionKey>(&k_bytes)?.into();
-                let (did, rkey, record) = db_complete::<ByCollectionValue>(&v_bytes)?.into();
-                output.push(CreateRecord {
-                    did,
-                    rkey,
-                    record,
-                    cursor,
-                })
+
+            ////// ITER
+            {
+                for pair in partition.prefix(&prefix).rev().take(limit) {
+                    let (k_bytes, v_bytes) = pair?;
+                    let (_, cursor) = db_complete::<ByCollectionKey>(&k_bytes)?.into();
+                    let (did, rkey, record) = db_complete::<ByCollectionValue>(&v_bytes)?.into();
+                    output.push(CreateRecord {
+                        did,
+                        rkey,
+                        record,
+                        cursor,
+                    })
+                }
             }
             Ok(output)
         })
@@ -214,8 +278,9 @@ impl Storage {
     }
 
     pub async fn get_meta_info(&self) -> anyhow::Result<StorageInfo> {
-        let keyspace = self.keyspace.clone();
-        let partition = self.partition.clone();
+        let db = self.db.lock().await;
+        let keyspace = db.keyspace.clone();
+        let partition = db.partition.clone();
         tokio::task::spawn_blocking(move || {
             Ok(StorageInfo {
                 keyspace_disk_space: keyspace.disk_space(),
@@ -228,13 +293,19 @@ impl Storage {
     }
 
     pub async fn get_collection_total_seen(&self, collection: &Nsid) -> anyhow::Result<u64> {
-        let partition = self.partition.clone();
+        let partition = self.db.lock().await.partition.clone();
         let collection = collection.clone();
-        tokio::task::spawn_blocking(move || get_unrolled_asdf(&partition, collection)).await?
+        tokio::task::spawn_blocking(move || get_unrolled_collection_seen(&partition, collection))
+            .await?
+    }
+
+    pub async fn get_top_collections(&self) -> anyhow::Result<HashMap<String, u64>> {
+        let partition = self.db.lock().await.partition.clone();
+        tokio::task::spawn_blocking(move || get_unrolled_top_collections(&partition)).await?
     }
 
     pub async fn get_jetstream_endpoint(&self) -> anyhow::Result<Option<JetstreamEndpointValue>> {
-        let partition = self.partition.clone();
+        let partition = self.db.lock().await.partition.clone();
         tokio::task::spawn_blocking(move || {
             get_static::<JetstreamEndpointKey, JetstreamEndpointValue>(&partition)
         })
@@ -242,7 +313,7 @@ impl Storage {
     }
 
     async fn set_jetstream_endpoint(&self, endpoint: &str) -> anyhow::Result<()> {
-        let partition = self.partition.clone();
+        let partition = self.db.lock().await.partition.clone();
         let endpoint = endpoint.to_string();
         tokio::task::spawn_blocking(move || {
             insert_static::<JetstreamEndpointKey>(&partition, JetstreamEndpointValue(endpoint))
@@ -251,7 +322,7 @@ impl Storage {
     }
 
     pub async fn get_jetstream_cursor(&self) -> anyhow::Result<Option<Cursor>> {
-        let partition = self.partition.clone();
+        let partition = self.db.lock().await.partition.clone();
         tokio::task::spawn_blocking(move || {
             get_static::<JetstreamCursorKey, JetstreamCursorValue>(&partition)
         })
@@ -259,7 +330,7 @@ impl Storage {
     }
 
     pub async fn get_mod_cursor(&self) -> anyhow::Result<Option<Cursor>> {
-        let partition = self.partition.clone();
+        let partition = self.db.lock().await.partition.clone();
         tokio::task::spawn_blocking(move || get_static::<ModCursorKey, ModCursorValue>(&partition))
             .await?
     }
@@ -310,7 +381,10 @@ fn remove_batch<K: DbBytes>(
 }
 
 /// Get stats that haven't been rolled up yet
-fn get_unrolled_asdf(partition: &PartitionHandle, collection: Nsid) -> anyhow::Result<u64> {
+fn get_unrolled_collection_seen(
+    partition: &PartitionHandle,
+    collection: Nsid,
+) -> anyhow::Result<u64> {
     let range =
         if let Some(cursor_value) = get_static::<RollupCursorKey, RollupCursorValue>(partition)? {
             eprintln!("found existing cursor");
@@ -325,22 +399,58 @@ fn get_unrolled_asdf(partition: &PartitionHandle, collection: Nsid) -> anyhow::R
 
     let mut scanned = 0;
     let mut rolled = 0;
-    for pair in partition.range(range) {
-        let (key_bytes, value_bytes) = pair?;
-        let key = db_complete::<ByCursorSeenKey>(&key_bytes)?;
-        let val = db_complete::<ByCursorSeenValue>(&value_bytes)?;
 
-        if *key.collection() == collection {
-            let SeenCounter(n) = val;
-            collection_total += n;
-            rolled += 1;
+    ////// ITER
+
+    {
+        for pair in partition.range(range) {
+            let (key_bytes, value_bytes) = pair?;
+            let key = db_complete::<ByCursorSeenKey>(&key_bytes)?;
+            let val = db_complete::<ByCursorSeenValue>(&value_bytes)?;
+
+            if *key.collection() == collection {
+                let SeenCounter(n) = val;
+                collection_total += n;
+                rolled += 1;
+            }
+            scanned += 1;
         }
-        scanned += 1;
     }
 
     eprintln!("scanned: {scanned}, rolled: {rolled}");
 
     Ok(collection_total)
+}
+
+fn get_unrolled_top_collections(
+    partition: &PartitionHandle,
+) -> anyhow::Result<HashMap<String, u64>> {
+    let range =
+        if let Some(cursor_value) = get_static::<RollupCursorKey, RollupCursorValue>(partition)? {
+            eprintln!("found existing cursor");
+            let key: ByCursorSeenKey = cursor_value.into();
+            key.range_from()?
+        } else {
+            eprintln!("cursor from start.");
+            ByCursorSeenKey::full_range()?
+        };
+
+    let mut res = HashMap::new();
+    let mut scanned = 0;
+
+    for pair in partition.range(range) {
+        let (key_bytes, value_bytes) = pair?;
+        let key = db_complete::<ByCursorSeenKey>(&key_bytes)?;
+        let SeenCounter(n) = db_complete(&value_bytes)?;
+
+        *res.entry(key.collection().to_string()).or_default() += n;
+
+        scanned += 1;
+    }
+
+    eprintln!("scanned: {scanned} seen-counts.");
+
+    Ok(res)
 }
 
 impl DBWriter {
@@ -352,7 +462,11 @@ impl DBWriter {
         if let Some(cursor) = last {
             insert_batch_static::<JetstreamCursorKey>(&mut db_batch, &self.partition, cursor)?;
         }
-        Ok(db_batch.commit()?)
+        log::info!("write: committing write batch...");
+        let r = db_batch.commit();
+        log::info!("write: commit result: {r:?}");
+        r?;
+        Ok(())
     }
 
     fn write_rw(
@@ -367,20 +481,29 @@ impl DBWriter {
 
         let items_modified = match mod_value {
             ModQueueItemValue::DeleteAccount(did) => {
+                log::trace!("rw: batcher: delete account...");
                 let (items, finished) = self.delete_account(db_batch, mod_cursor, did)?;
+                log::trace!("rw: batcher: back from delete account (finished? {finished})");
                 if finished {
                     // only remove the queued rw task if we have actually completed its account removal work
                     remove_batch::<ModQueueItemKey>(db_batch, &self.partition, mod_key)?;
+                    items + 1
+                } else {
+                    items
                 }
-                items
             }
             ModQueueItemValue::DeleteRecord(did, collection, rkey) => {
+                log::trace!("rw: batcher: delete record...");
+                let items = self.delete_record(db_batch, mod_cursor, did, collection, rkey)?;
+                log::trace!("rw: batcher: back from delete record");
                 remove_batch::<ModQueueItemKey>(db_batch, &self.partition, mod_key)?;
-                self.delete_record(db_batch, mod_cursor, did, collection, rkey)?
+                items + 1
             }
             ModQueueItemValue::UpdateRecord(did, collection, rkey, record) => {
+                let items =
+                    self.update_record(db_batch, mod_cursor, did, collection, rkey, record)?;
                 remove_batch::<ModQueueItemKey>(db_batch, &self.partition, mod_key)?;
-                self.update_record(db_batch, mod_cursor, did, collection, rkey, record)?
+                items + 1
             }
         };
         Ok(items_modified)
@@ -420,45 +543,62 @@ impl DBWriter {
         rkey: RecordKey,
     ) -> anyhow::Result<usize> {
         let key_prefix_bytes =
-            ByIdKey::record_prefix(did, collection.clone(), rkey).to_db_bytes()?;
+            ByIdKey::record_prefix(did.clone(), collection.clone(), rkey.clone()).to_db_bytes()?;
+
+        // put the cursor of the actual deletion event in to prevent prefix iter from touching newer docs
+        let key_limit =
+            ByIdKey::new(did, collection.clone(), rkey, cursor.clone()).to_db_bytes()?;
 
         let mut items_removed = 0;
-        for pair in self.partition.prefix(&key_prefix_bytes) {
-            // find all (hopefully 1)
-            let (key_bytes, _) = pair?;
-            let key = db_complete::<ByIdKey>(&key_bytes)?;
-            let found_cursor = key.cursor();
-            if found_cursor > cursor {
-                // we are *only* allowed to delete records that came before the record delete event
-                eprintln!("delete_record: found (and ignoring) newer version(s). key: {key:?}");
-                break;
-            }
 
-            // remove the by_id entry
-            db_batch.remove(&self.partition, key_bytes);
+        log::trace!("delete_record: iterate over up to current cursor...");
 
-            // remove its record sample
-            let by_collection_key_bytes =
-                ByCollectionKey::new(collection.clone(), found_cursor).to_db_bytes()?;
-            db_batch.remove(&self.partition, by_collection_key_bytes);
+        ////////// ITER
 
-            items_removed += 1;
-        }
-
-        if items_removed > 1 {
-            eprintln!("odd, removed {items_removed} records for one record removal:");
-            for (i, pair) in self.partition.prefix(&key_prefix_bytes).enumerate() {
+        {
+            for (i, pair) in self
+                .partition
+                .range(key_prefix_bytes..key_limit)
+                .enumerate()
+            {
+                log::trace!("delete_record iter {i}: found");
                 // find all (hopefully 1)
                 let (key_bytes, _) = pair?;
-                let found_cursor = db_complete::<ByIdKey>(&key_bytes)?.cursor();
+                let key = db_complete::<ByIdKey>(&key_bytes)?;
+                let found_cursor = key.cursor();
                 if found_cursor > cursor {
-                    break;
+                    // we are *only* allowed to delete records that came before the record delete event
+                    // log::trace!("delete_record: found (and ignoring) newer version(s). key: {key:?}");
+                    panic!("wtf, found newer version than cursor limit we tried to set.");
+                    // break;
                 }
 
-                let key = db_complete::<ByIdKey>(&key_bytes)?;
-                eprintln!("  {i}: key {key:?}");
+                // remove the by_id entry
+                db_batch.remove(&self.partition, key_bytes);
+
+                // remove its record sample
+                let by_collection_key_bytes =
+                    ByCollectionKey::new(collection.clone(), found_cursor).to_db_bytes()?;
+                db_batch.remove(&self.partition, by_collection_key_bytes);
+
+                items_removed += 1;
             }
         }
+
+        // if items_removed > 1 {
+        //     log::trace!("odd, removed {items_removed} records for one record removal:");
+        //     for (i, pair) in self.partition.prefix(&key_prefix_bytes).enumerate() {
+        //         // find all (hopefully 1)
+        //         let (key_bytes, _) = pair?;
+        //         let found_cursor = db_complete::<ByIdKey>(&key_bytes)?.cursor();
+        //         if found_cursor > cursor {
+        //             break;
+        //         }
+
+        //         let key = db_complete::<ByIdKey>(&key_bytes)?;
+        //         log::trace!("  {i}: key {key:?}");
+        //     }
+        // }
         Ok(items_removed)
     }
 
@@ -471,28 +611,34 @@ impl DBWriter {
         let key_prefix_bytes = ByIdKey::did_prefix(did).to_db_bytes()?;
 
         let mut items_added = 0;
-        for pair in self.partition.prefix(&key_prefix_bytes) {
-            let (key_bytes, _) = pair?;
 
-            let (_, collection, _rkey, found_cursor) = db_complete::<ByIdKey>(&key_bytes)?.into();
-            if found_cursor > cursor {
-                eprintln!(
-                    "delete account: found (and ignoring) newer records than the delete event??"
-                );
-                continue;
-            }
+        ////////// ITER
 
-            // remove the by_id entry
-            db_batch.remove(&self.partition, key_bytes);
+        {
+            for pair in self.partition.prefix(&key_prefix_bytes) {
+                let (key_bytes, _) = pair?;
 
-            // remove its record sample
-            let by_collection_key_bytes =
-                ByCollectionKey::new(collection, found_cursor).to_db_bytes()?;
-            db_batch.remove(&self.partition, by_collection_key_bytes);
+                let (_, collection, _rkey, found_cursor) =
+                    db_complete::<ByIdKey>(&key_bytes)?.into();
+                if found_cursor > cursor {
+                    log::trace!(
+                        "delete account: found (and ignoring) newer records than the delete event??"
+                    );
+                    continue;
+                }
 
-            items_added += 1;
-            if items_added >= MAX_BATCHED_RW_ITEMS {
-                return Ok((items_added, false)); // there might be more records but we've done enough for this batch
+                // remove the by_id entry
+                db_batch.remove(&self.partition, key_bytes);
+
+                // remove its record sample
+                let by_collection_key_bytes =
+                    ByCollectionKey::new(collection, found_cursor).to_db_bytes()?;
+                db_batch.remove(&self.partition, by_collection_key_bytes);
+
+                items_added += 1;
+                if items_added >= MAX_BATCHED_RW_ITEMS {
+                    return Ok((items_added, false)); // there might be more records but we've done enough for this batch
+                }
             }
         }
 

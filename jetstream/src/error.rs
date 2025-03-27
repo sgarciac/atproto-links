@@ -46,4 +46,6 @@ pub enum JetstreamEventError {
     WebSocketCloseFailure,
     #[error("failed to send ping or pong: {0}")]
     PingPongError(#[from] tokio_tungstenite::tungstenite::Error),
+    #[error("jetstream event receiver closed")]
+    ReceiverClosedError,
 }

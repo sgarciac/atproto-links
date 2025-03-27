@@ -6,3 +6,6 @@ members = [
     "jetstream",
     "ufos",
 ]
+
+[patch.crates-io]
+lsm-tree = { git = "https://github.com/fjall-rs/lsm-tree.git", branch = "fix/lockless-ranges" }

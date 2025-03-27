@@ -19,12 +19,10 @@ const MAX_BATCHED_MODIFIES: usize = 512; // hard limit, total updates and delete
 const MAX_ACCOUNT_REMOVES: usize = 512; // hard limit, total account deletions. actually the least frequent event, but tiny.
 const MAX_BATCHED_COLLECTIONS: usize = 64; // hard limit, MAX_BATCHED_RECORDS applies per collection
 const MIN_BATCH_SPAN_SECS: f64 = 2.; // try to get a bit of rest a bit.
-const MAX_BATCH_SPAN_SECS: f64 = 10.; // hard limit of duration from oldest to latest event cursor within a batch, in seconds.
+const MAX_BATCH_SPAN_SECS: f64 = 60.; // hard limit of duration from oldest to latest event cursor within a batch, in seconds.
 
-const SEND_TIMEOUT_S: f64 = 6.;
-
-const BATCH_QUEUE_SIZE: usize = 32;
-// const BATCH_QUEUE_SIZE: usize = 4096;
+const SEND_TIMEOUT_S: f64 = 60.;
+const BATCH_QUEUE_SIZE: usize = 1024; // 4096 got OOM'd
 
 #[derive(Debug)]
 struct Batcher {
@@ -38,8 +36,14 @@ pub async fn consume(
     cursor: Option<Cursor>,
     no_compress: bool,
 ) -> anyhow::Result<Receiver<EventBatch>> {
+    let endpoint = DefaultJetstreamEndpoints::endpoint_or_shortcut(jetstream_endpoint);
+    if endpoint == jetstream_endpoint {
+        eprintln!("connecting to jetstream at {endpoint}");
+    } else {
+        eprintln!("connecting to jetstream at {jetstream_endpoint} => {endpoint}");
+    }
     let config: JetstreamConfig<serde_json::Value> = JetstreamConfig {
-        endpoint: DefaultJetstreamEndpoints::endpoint_or_shortcut(jetstream_endpoint),
+        endpoint,
         compression: if no_compress {
             JetstreamCompression::None
         } else {
@@ -124,7 +128,7 @@ impl Batcher {
             if event_cursor.duration_since(earliest)?.as_secs_f64() > MIN_BATCH_SPAN_SECS
                 && self.batch_sender.capacity() == BATCH_QUEUE_SIZE
             {
-                log::warn!("queue empty: immediately sending batch.");
+                log::trace!("queue empty: immediately sending batch.");
                 if let Err(send_err) = self
                     .batch_sender
                     .send(mem::take(&mut self.current_batch))
@@ -140,7 +144,10 @@ impl Batcher {
     // holds up all consumer progress until it can send to the channel
     // use this when the current batch is too full to add more to it
     async fn send_current_batch_now(&mut self) -> anyhow::Result<()> {
-        log::warn!("attempting to send batch now");
+        log::warn!(
+            "attempting to send batch now (capacity: {})",
+            self.batch_sender.capacity()
+        );
         self.batch_sender
             .send_timeout(
                 mem::take(&mut self.current_batch),
