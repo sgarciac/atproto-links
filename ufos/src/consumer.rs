@@ -14,15 +14,15 @@ use tokio::sync::mpsc::{channel, Receiver, Sender};
 
 use crate::{CreateRecord, DeleteAccount, DeleteRecord, EventBatch, ModifyRecord, UpdateRecord};
 
-const MAX_BATCHED_RECORDS: usize = 128; // *non-blocking* limit. drops oldest batched record per collection once reached.
-const MAX_BATCHED_MODIFIES: usize = 512; // hard limit, total updates and deletes across all collections.
-const MAX_ACCOUNT_REMOVES: usize = 512; // hard limit, total account deletions. actually the least frequent event, but tiny.
-const MAX_BATCHED_COLLECTIONS: usize = 64; // hard limit, MAX_BATCHED_RECORDS applies per collection
+const MAX_BATCHED_RECORDS: usize = 64; // *non-blocking* limit. drops oldest batched record per collection once reached.
+const MAX_BATCHED_MODIFIES: usize = 32; // hard limit, total updates and deletes across all collections.
+const MAX_ACCOUNT_REMOVES: usize = 128; // hard limit, total account deletions. actually the least frequent event, but tiny.
+const MAX_BATCHED_COLLECTIONS: usize = 32; // hard limit, MAX_BATCHED_RECORDS applies per collection
 const MIN_BATCH_SPAN_SECS: f64 = 2.; // try to get a bit of rest a bit.
 const MAX_BATCH_SPAN_SECS: f64 = 60.; // hard limit of duration from oldest to latest event cursor within a batch, in seconds.
 
 const SEND_TIMEOUT_S: f64 = 60.;
-const BATCH_QUEUE_SIZE: usize = 512; // 4096 got OOM'd. update: 1024 also got OOM'd during L0 compaction blocking
+const BATCH_QUEUE_SIZE: usize = 64; // 4096 got OOM'd. update: 1024 also got OOM'd during L0 compaction blocking
 
 #[derive(Debug)]
 struct Batcher {

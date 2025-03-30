@@ -271,6 +271,8 @@ impl Storage {
         // 4. reverse and try to walk back MAX_RETAINED steps
         // 5. if we didn't end iteration yet, start deleting records (and their forward links) until we get to the end
 
+        // oh we might be able to walk *forward* instead of reverse from the cursor, which might help avoid iterating over a lot of deletion tombstones
+
         // ... we can probably do even better with cursor ranges too, since we'll have a cursor range from rollup and it's in the by_collection key
 
         Ok(())
