@@ -31,7 +31,7 @@
   {% endfor %}
 
   {% if let Some(c) = cursor %}
-    <form method="get" action="/links">
+    <form method="get" action="/links/distinct-dids">
       <input type="hidden" name="target" value="{{ query.target }}" />
       <input type="hidden" name="collection" value="{{ query.collection }}" />
       <input type="hidden" name="path" value="{{ query.path }}" />
