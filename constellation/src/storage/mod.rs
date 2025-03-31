@@ -11,6 +11,9 @@ pub mod rocks_store;
 #[cfg(feature = "rocks")]
 pub use rocks_store::RocksStorage;
 
+pub mod duck_store;
+pub use duck_store::DuckStorage;
+
 #[derive(Debug, PartialEq)]
 pub struct PagedAppendingCollection<T> {
     pub version: (u64, u64), // (collection length, deleted item count) // TODO: change to (total, active)? since dedups isn't "deleted"

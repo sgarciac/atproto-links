@@ -13,7 +13,7 @@ use constellation::consumer::consume;
 use constellation::server::serve;
 #[cfg(feature = "rocks")]
 use constellation::storage::RocksStorage;
-use constellation::storage::{LinkReader, LinkStorage, MemStorage, StorageStats};
+use constellation::storage::{DuckStorage, LinkReader, LinkStorage, MemStorage, StorageStats};
 
 const MONITOR_INTERVAL: time::Duration = time::Duration::from_secs(15);
 
@@ -51,6 +51,7 @@ struct Args {
 #[derive(Debug, Clone, ValueEnum)]
 enum StorageBackend {
     Memory,
+    Duck,
     #[cfg(feature = "rocks")]
     Rocks,
 }
@@ -82,6 +83,12 @@ fn main() -> Result<()> {
 
     match args.backend {
         StorageBackend::Memory => run(MemStorage::new(), fixture, None, stream, stay_alive),
+        StorageBackend::Duck => {
+            let path = "~/tmp/my_db.db3";
+            let client = duckdb::Connection::open(path)?;
+
+            run(DuckStorage::new(client), fixture, None, stream, stay_alive)
+        }
         #[cfg(feature = "rocks")]
         StorageBackend::Rocks => {
             let storage_dir = args.data.clone().unwrap_or("rocks.test".into());
