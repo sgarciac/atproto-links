@@ -1,9 +1,5 @@
 use jetstream::{
-    events::{
-        account::AccountEvent,
-        commit::{CommitData, CommitEvent, CommitInfo, CommitType},
-        Cursor, EventInfo, JetstreamEvent,
-    },
+    events::{CommitEvent, CommitOp, Cursor, EventKind, JetstreamEvent},
     exports::Did,
     DefaultJetstreamEndpoints, JetstreamCompression, JetstreamConfig, JetstreamConnector,
     JetstreamReceiver,
@@ -26,7 +22,7 @@ const BATCH_QUEUE_SIZE: usize = 64; // 4096 got OOM'd. update: 1024 also got OOM
 
 #[derive(Debug)]
 struct Batcher {
-    jetstream_receiver: JetstreamReceiver<serde_json::Value>,
+    jetstream_receiver: JetstreamReceiver,
     batch_sender: Sender<EventBatch>,
     current_batch: EventBatch,
 }
@@ -42,14 +38,14 @@ pub async fn consume(
     } else {
         eprintln!("connecting to jetstream at {jetstream_endpoint} => {endpoint}");
     }
-    let config: JetstreamConfig<serde_json::Value> = JetstreamConfig {
+    let config: JetstreamConfig = JetstreamConfig {
         endpoint,
         compression: if no_compress {
             JetstreamCompression::None
         } else {
             JetstreamCompression::Zstd
         },
-        channel_size: 64, // small because we'd rather buffer events into batches
+        channel_size: 64, // small because we expect to be fast....?
         ..Default::default()
     };
     let jetstream_receiver = JetstreamConnector::new(config)?
@@ -62,10 +58,7 @@ pub async fn consume(
 }
 
 impl Batcher {
-    fn new(
-        jetstream_receiver: JetstreamReceiver<serde_json::Value>,
-        batch_sender: Sender<EventBatch>,
-    ) -> Self {
+    fn new(jetstream_receiver: JetstreamReceiver, batch_sender: Sender<EventBatch>) -> Self {
         Self {
             jetstream_receiver,
             batch_sender,
@@ -83,11 +76,8 @@ impl Batcher {
         }
     }
 
-    async fn handle_event(
-        &mut self,
-        event: JetstreamEvent<serde_json::Value>,
-    ) -> anyhow::Result<()> {
-        let event_cursor = event.cursor();
+    async fn handle_event(&mut self, event: JetstreamEvent) -> anyhow::Result<()> {
+        let event_cursor = event.cursor;
 
         if let Some(earliest) = &self.current_batch.first_jetstream_cursor {
             if event_cursor.duration_since(earliest)? > Duration::from_secs_f64(MAX_BATCH_SPAN_SECS)
@@ -98,28 +88,40 @@ impl Batcher {
             self.current_batch.first_jetstream_cursor = Some(event_cursor.clone());
         }
 
-        match event {
-            JetstreamEvent::Commit(CommitEvent::CreateOrUpdate { commit, info }) => {
-                match commit.info.operation {
-                    CommitType::Create => self.handle_create_record(commit, info).await?,
-                    CommitType::Update => {
-                        self.handle_modify_record(modify_update(commit, info))
-                            .await?
+        match event.kind {
+            EventKind::Commit if event.commit.is_some() => {
+                let commit = event.commit.unwrap();
+                match commit.operation {
+                    CommitOp::Create => {
+                        self.handle_create_record(event.did, commit, event_cursor.clone())
+                            .await?;
                     }
-                    CommitType::Delete => {
-                        panic!("jetstream Commit::CreateOrUpdate had Delete operation type")
+                    CommitOp::Update => {
+                        self.handle_modify_record(modify_update(
+                            event.did,
+                            commit,
+                            event_cursor.clone(),
+                        ))
+                        .await?;
+                    }
+                    CommitOp::Delete => {
+                        self.handle_modify_record(modify_delete(
+                            event.did,
+                            commit,
+                            event_cursor.clone(),
+                        ))
+                        .await?;
                     }
                 }
             }
-            JetstreamEvent::Commit(CommitEvent::Delete { commit, info }) => {
-                self.handle_modify_record(modify_delete(commit, info))
-                    .await?
+            EventKind::Account if event.account.is_some() => {
+                let account = event.account.unwrap();
+                if !account.active {
+                    self.handle_remove_account(account.did, event_cursor.clone())
+                        .await?;
+                }
             }
-            JetstreamEvent::Account(AccountEvent { info, account }) if !account.active => {
-                self.handle_remove_account(info.did, info.time_us).await?
-            }
-            JetstreamEvent::Account(_) => {} // ignore account *activations*
-            JetstreamEvent::Identity(_) => {} // identity events are noops for us
+            _ => {}
         };
         self.current_batch.last_jetstream_cursor = Some(event_cursor.clone());
 
@@ -159,27 +161,29 @@ impl Batcher {
 
     async fn handle_create_record(
         &mut self,
-        commit: CommitData<serde_json::Value>,
-        info: EventInfo,
+        did: Did,
+        commit: CommitEvent,
+        cursor: Cursor,
     ) -> anyhow::Result<()> {
         if !self
             .current_batch
             .record_creates
-            .contains_key(&commit.info.collection)
+            .contains_key(&commit.collection)
             && self.current_batch.record_creates.len() >= MAX_BATCHED_COLLECTIONS
         {
             self.send_current_batch_now().await?;
         }
+        let record = serde_json::from_str(commit.record.unwrap().get())?;
         let record = CreateRecord {
-            did: info.did,
-            rkey: commit.info.rkey,
-            record: commit.record,
-            cursor: info.time_us,
+            did,
+            rkey: commit.rkey,
+            record,
+            cursor,
         };
         let collection = self
             .current_batch
             .record_creates
-            .entry(commit.info.collection)
+            .entry(commit.collection)
             .or_default();
         collection.total_seen += 1;
         collection.samples.push_front(record);
@@ -206,21 +210,22 @@ impl Batcher {
     }
 }
 
-fn modify_update(commit: CommitData<serde_json::Value>, info: EventInfo) -> ModifyRecord {
+fn modify_update(did: Did, commit: CommitEvent, cursor: Cursor) -> ModifyRecord {
+    let record = serde_json::from_str(commit.record.unwrap().get()).unwrap();
     ModifyRecord::Update(UpdateRecord {
-        did: info.did,
-        collection: commit.info.collection,
-        rkey: commit.info.rkey,
-        record: commit.record,
-        cursor: info.time_us,
+        did,
+        collection: commit.collection,
+        rkey: commit.rkey,
+        record,
+        cursor,
     })
 }
 
-fn modify_delete(commit_info: CommitInfo, info: EventInfo) -> ModifyRecord {
+fn modify_delete(did: Did, commit: CommitEvent, cursor: Cursor) -> ModifyRecord {
     ModifyRecord::Delete(DeleteRecord {
-        did: info.did,
-        collection: commit_info.collection,
-        rkey: commit_info.rkey,
-        cursor: info.time_us,
+        did,
+        collection: commit.collection,
+        rkey: commit.rkey,
+        cursor,
     })
 }

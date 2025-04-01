@@ -1,7 +1,3 @@
-pub mod account;
-pub mod commit;
-pub mod identity;
-
 use std::time::{
     Duration,
     SystemTime,
@@ -9,33 +5,29 @@ use std::time::{
     UNIX_EPOCH,
 };
 
+use chrono::Utc;
 use serde::Deserialize;
+use serde_json::value::RawValue;
 
 use crate::exports;
 
 /// Opaque wrapper for the time_us cursor used by jetstream
-///
-/// Generally, you should use a cursor
 #[derive(Deserialize, Debug, Clone, PartialEq, PartialOrd)]
 pub struct Cursor(u64);
 
-/// Basic data that is included with every event.
-#[derive(Deserialize, Debug)]
-pub struct EventInfo {
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct JetstreamEvent {
+    #[serde(rename = "time_us")]
+    pub cursor: Cursor,
     pub did: exports::Did,
-    pub time_us: Cursor,
     pub kind: EventKind,
+    pub commit: Option<CommitEvent>,
+    pub identity: Option<IdentityEvent>,
+    pub account: Option<AccountEvent>,
 }
 
-#[derive(Deserialize, Debug)]
-#[serde(untagged)]
-pub enum JetstreamEvent<R> {
-    Commit(commit::CommitEvent<R>),
-    Identity(identity::IdentityEvent),
-    Account(account::AccountEvent),
-}
-
-#[derive(Deserialize, Debug)]
+#[derive(Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum EventKind {
     Commit,
@@ -43,19 +35,40 @@ pub enum EventKind {
     Account,
 }
 
-impl<R> JetstreamEvent<R> {
-    pub fn cursor(&self) -> Cursor {
-        match self {
-            JetstreamEvent::Commit(commit::CommitEvent::CreateOrUpdate { info, .. }) => {
-                info.time_us.clone()
-            }
-            JetstreamEvent::Commit(commit::CommitEvent::Delete { info, .. }) => {
-                info.time_us.clone()
-            }
-            JetstreamEvent::Identity(e) => e.info.time_us.clone(),
-            JetstreamEvent::Account(e) => e.info.time_us.clone(),
-        }
-    }
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct CommitEvent {
+    pub collection: exports::Nsid,
+    pub rkey: exports::RecordKey,
+    pub rev: String,
+    pub operation: CommitOp,
+    pub record: Option<Box<RawValue>>,
+    pub cid: Option<exports::Cid>,
+}
+
+#[derive(Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum CommitOp {
+    Create,
+    Update,
+    Delete,
+}
+
+#[derive(Debug, Deserialize, PartialEq)]
+pub struct IdentityEvent {
+    pub did: exports::Did,
+    pub handle: Option<exports::Handle>,
+    pub seq: u64,
+    pub time: chrono::DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, PartialEq)]
+pub struct AccountEvent {
+    pub active: bool,
+    pub did: exports::Did,
+    pub seq: u64,
+    pub time: chrono::DateTime<Utc>,
+    pub status: Option<String>,
 }
 
 impl Cursor {
@@ -134,5 +147,50 @@ impl From<&Cursor> for SystemTime {
     /// being ~microsecond timestamps.
     fn from(c: &Cursor) -> Self {
         UNIX_EPOCH + Duration::from_micros(c.0)
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_parse_commit_event() -> anyhow::Result<()> {
+        let json = r#"{
+            "rev":"3llrdsginou2i",
+            "operation":"create",
+            "collection":"app.bsky.feed.post",
+            "rkey":"3llrdsglqdc2s",
+            "cid": "bafyreidofvwoqvd2cnzbun6dkzgfucxh57tirf3ohhde7lsvh4fu3jehgy",
+            "record": {"$type":"app.bsky.feed.post","createdAt":"2025-04-01T16:58:06.154Z","langs":["en"],"text":"I wish apirl 1st would stop existing lol"}
+        }"#;
+        let commit: CommitEvent = serde_json::from_str(json)?;
+        assert_eq!(
+            commit.cid.unwrap(),
+            "bafyreidofvwoqvd2cnzbun6dkzgfucxh57tirf3ohhde7lsvh4fu3jehgy".parse()?
+        );
+        assert_eq!(
+            commit.record.unwrap().get(),
+            r#"{"$type":"app.bsky.feed.post","createdAt":"2025-04-01T16:58:06.154Z","langs":["en"],"text":"I wish apirl 1st would stop existing lol"}"#
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_whole_event() -> anyhow::Result<()> {
+        let json = r#"{"did":"did:plc:ai3dzf35cth7s3st7n7jsd7r","time_us":1743526687419798,"kind":"commit","commit":{"rev":"3llrdsginou2i","operation":"create","collection":"app.bsky.feed.post","rkey":"3llrdsglqdc2s","record":{"$type":"app.bsky.feed.post","createdAt":"2025-04-01T16:58:06.154Z","langs":["en"],"text":"I wish apirl 1st would stop existing lol"},"cid":"bafyreidofvwoqvd2cnzbun6dkzgfucxh57tirf3ohhde7lsvh4fu3jehgy"}}"#;
+        let event: JetstreamEvent = serde_json::from_str(json)?;
+        assert_eq!(event.kind, EventKind::Commit);
+        assert!(event.commit.is_some());
+        let commit = event.commit.unwrap();
+        assert_eq!(
+            commit.cid.unwrap(),
+            "bafyreidofvwoqvd2cnzbun6dkzgfucxh57tirf3ohhde7lsvh4fu3jehgy".parse()?
+        );
+        assert_eq!(
+            commit.record.unwrap().get(),
+            r#"{"$type":"app.bsky.feed.post","createdAt":"2025-04-01T16:58:06.154Z","langs":["en"],"text":"I wish apirl 1st would stop existing lol"}"#
+        );
+        Ok(())
     }
 }

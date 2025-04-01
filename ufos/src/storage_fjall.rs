@@ -117,7 +117,7 @@ impl Storage {
         // TODO: see rw_loop: enforce single-thread.
         loop {
             let t_sleep = Instant::now();
-            sleep(Duration::from_secs_f64(0.8)).await; // TODO: minimize during replay
+            sleep(Duration::from_secs_f64(0.08)).await; // TODO: minimize during replay
             let slept_for = t_sleep.elapsed();
             let queue_size = receiver.len();
 

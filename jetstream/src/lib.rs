@@ -7,19 +7,16 @@ use std::{
         Cursor as IoCursor,
         Read,
     },
-    marker::PhantomData,
     time::{
         Duration,
         Instant,
     },
 };
 
-use atrium_api::record::KnownRecord;
 use futures_util::{
     stream::StreamExt,
     SinkExt,
 };
-use serde::de::DeserializeOwned;
 use tokio::{
     net::TcpStream,
     sync::mpsc::{
@@ -124,16 +121,16 @@ const MAX_WANTED_DIDS: usize = 10_000;
 const JETSTREAM_ZSTD_DICTIONARY: &[u8] = include_bytes!("../zstd/dictionary");
 
 /// A receiver channel for consuming Jetstream events.
-pub type JetstreamReceiver<R> = Receiver<JetstreamEvent<R>>;
+pub type JetstreamReceiver = Receiver<JetstreamEvent>;
 
 /// An internal sender channel for sending Jetstream events to [JetstreamReceiver]'s.
-type JetstreamSender<R> = Sender<JetstreamEvent<R>>;
+type JetstreamSender = Sender<JetstreamEvent>;
 
 /// A wrapper connector type for working with a WebSocket connection to a Jetstream instance to
 /// receive and consume events. See [JetstreamConnector::connect] for more info.
-pub struct JetstreamConnector<R: DeserializeOwned> {
+pub struct JetstreamConnector {
     /// The configuration for the Jetstream connection.
-    config: JetstreamConfig<R>,
+    config: JetstreamConfig,
 }
 
 pub enum JetstreamCompression {
@@ -163,7 +160,7 @@ impl From<bool> for JetstreamCompression {
     }
 }
 
-pub struct JetstreamConfig<R: DeserializeOwned = KnownRecord> {
+pub struct JetstreamConfig {
     /// A Jetstream endpoint to connect to with a WebSocket Scheme i.e.
     /// `wss://jetstream1.us-east.bsky.network/subscribe`.
     pub endpoint: String,
@@ -200,16 +197,9 @@ pub struct JetstreamConfig<R: DeserializeOwned = KnownRecord> {
     /// can help prevent that if your consumer sometimes pauses, at a cost of higher memory
     /// usage while events are buffered.
     pub channel_size: usize,
-    /// Marker for record deserializable type.
-    ///
-    /// See examples/arbitrary_record.rs for an example using serde_json::Value
-    ///
-    /// You can omit this if you construct `JetstreamConfig { a: b, ..Default::default() }.
-    /// If you have to specify it, use `std::marker::PhantomData` with no type parameters.
-    pub record_type: PhantomData<R>,
 }
 
-impl<R: DeserializeOwned> Default for JetstreamConfig<R> {
+impl Default for JetstreamConfig {
     fn default() -> Self {
         JetstreamConfig {
             endpoint: DefaultJetstreamEndpoints::USEastOne.into(),
@@ -220,12 +210,11 @@ impl<R: DeserializeOwned> Default for JetstreamConfig<R> {
             omit_user_agent_jetstream_info: false,
             replay_on_reconnect: false,
             channel_size: 4096, // a few seconds of firehose buffer
-            record_type: PhantomData,
         }
     }
 }
 
-impl<R: DeserializeOwned> JetstreamConfig<R> {
+impl JetstreamConfig {
     /// Constructs a new endpoint URL with the given [JetstreamConfig] applied.
     pub fn get_request_builder(
         &self,
@@ -313,11 +302,11 @@ impl<R: DeserializeOwned> JetstreamConfig<R> {
     }
 }
 
-impl<R: DeserializeOwned + Send + 'static> JetstreamConnector<R> {
+impl JetstreamConnector {
     /// Create a Jetstream connector with a valid [JetstreamConfig].
     ///
     /// After creation, you can call [connect] to connect to the provided Jetstream instance.
-    pub fn new(config: JetstreamConfig<R>) -> Result<Self, ConfigValidationError> {
+    pub fn new(config: JetstreamConfig) -> Result<Self, ConfigValidationError> {
         // We validate the configuration here so any issues are caught early.
         config.validate()?;
         Ok(JetstreamConnector { config })
@@ -327,7 +316,7 @@ impl<R: DeserializeOwned + Send + 'static> JetstreamConnector<R> {
     ///
     /// A [JetstreamReceiver] is returned which can be used to respond to events. When all instances
     /// of this receiver are dropped, the connection and task are automatically closed.
-    pub async fn connect(&self) -> Result<JetstreamReceiver<R>, ConnectionError> {
+    pub async fn connect(&self) -> Result<JetstreamReceiver, ConnectionError> {
         self.connect_cursor(None).await
     }
 
@@ -343,7 +332,7 @@ impl<R: DeserializeOwned + Send + 'static> JetstreamConnector<R> {
     pub async fn connect_cursor(
         &self,
         cursor: Option<Cursor>,
-    ) -> Result<JetstreamReceiver<R>, ConnectionError> {
+    ) -> Result<JetstreamReceiver, ConnectionError> {
         // We validate the config again for good measure. Probably not necessary but it can't hurt.
         self.config
             .validate()
@@ -424,10 +413,10 @@ impl<R: DeserializeOwned + Send + 'static> JetstreamConnector<R> {
 
 /// The main task that handles the WebSocket connection and sends [JetstreamEvent]'s to any
 /// receivers that are listening for them.
-async fn websocket_task<R: DeserializeOwned>(
+async fn websocket_task(
     dictionary: DecoderDictionary<'_>,
     ws: WebSocketStream<MaybeTlsStream<TcpStream>>,
-    send_channel: JetstreamSender<R>,
+    send_channel: JetstreamSender,
     last_cursor: &mut Option<Cursor>,
 ) -> Result<(), JetstreamEventError> {
     // TODO: Use the write half to allow the user to change configuration settings on the fly.
@@ -439,9 +428,9 @@ async fn websocket_task<R: DeserializeOwned>(
             Some(Ok(message)) => {
                 match message {
                     Message::Text(json) => {
-                        let event: JetstreamEvent<R> = serde_json::from_str(&json)
+                        let event: JetstreamEvent = serde_json::from_str(&json)
                             .map_err(JetstreamEventError::ReceivedMalformedJSON)?;
-                        let event_cursor = event.cursor();
+                        let event_cursor = event.cursor.clone();
 
                         if let Some(last) = last_cursor {
                             if event_cursor <= *last {
@@ -475,9 +464,11 @@ async fn websocket_task<R: DeserializeOwned>(
                             .read_to_string(&mut json)
                             .map_err(JetstreamEventError::CompressionDecoderError)?;
 
-                        let event: JetstreamEvent<R> = serde_json::from_str(&json)
-                            .map_err(JetstreamEventError::ReceivedMalformedJSON)?;
-                        let event_cursor = event.cursor();
+                        let event: JetstreamEvent = serde_json::from_str(&json).map_err(|e| {
+                            eprintln!("lkasjdflkajsd {e:?} {json}");
+                            JetstreamEventError::ReceivedMalformedJSON(e)
+                        })?;
+                        let event_cursor = event.cursor.clone();
 
                         if let Some(last) = last_cursor {
                             if event_cursor <= *last {

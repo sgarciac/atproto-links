@@ -1,6 +1,6 @@
 use clap::Parser;
 use std::path::PathBuf;
-use ufos::{consumer, server, store};
+use ufos::{consumer, server, storage_fjall};
 
 #[cfg(not(target_env = "msvc"))]
 use tikv_jemallocator::Jemalloc;
@@ -43,7 +43,7 @@ async fn main() -> anyhow::Result<()> {
 
     let args = Args::parse();
     let (storage, cursor) =
-        store::Storage::open(args.data, &args.jetstream, args.jetstream_force).await?;
+        storage_fjall::Storage::open(args.data, &args.jetstream, args.jetstream_force).await?;
 
     println!("starting server with storage...");
     let serving = server::serve(storage.clone());

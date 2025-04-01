@@ -1,4 +1,4 @@
-use crate::store::{Storage, StorageInfo};
+use crate::storage_fjall::{Storage, StorageInfo};
 use crate::{CreateRecord, Nsid};
 use dropshot::endpoint;
 use dropshot::ApiDescription;
