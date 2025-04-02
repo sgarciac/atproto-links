@@ -45,6 +45,7 @@ pub async fn consume(
         } else {
             JetstreamCompression::Zstd
         },
+        replay_on_reconnect: true,
         channel_size: 64, // small because we expect to be fast....?
         ..Default::default()
     };
