@@ -3,10 +3,7 @@ pub mod events;
 pub mod exports;
 
 use std::{
-    io::{
-        Cursor as IoCursor,
-        Read,
-    },
+    io::Cursor as IoCursor,
     time::{
         Duration,
         Instant,
@@ -453,21 +450,14 @@ async fn websocket_task(
                     }
                     Message::Binary(zstd_json) => {
                         let mut cursor = IoCursor::new(zstd_json);
-                        let mut decoder = zstd::stream::Decoder::with_prepared_dictionary(
+                        let decoder = zstd::stream::Decoder::with_prepared_dictionary(
                             &mut cursor,
                             &dictionary,
                         )
                         .map_err(JetstreamEventError::CompressionDictionaryError)?;
 
-                        let mut json = String::new();
-                        decoder
-                            .read_to_string(&mut json)
-                            .map_err(JetstreamEventError::CompressionDecoderError)?;
-
-                        let event: JetstreamEvent = serde_json::from_str(&json).map_err(|e| {
-                            eprintln!("lkasjdflkajsd {e:?} {json}");
-                            JetstreamEventError::ReceivedMalformedJSON(e)
-                        })?;
+                        let event: JetstreamEvent = serde_json::from_reader(decoder)
+                            .map_err(JetstreamEventError::ReceivedMalformedJSON)?;
                         let event_cursor = event.cursor.clone();
 
                         if let Some(last) = last_cursor {
