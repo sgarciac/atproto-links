@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0.97"
 bincode = { version = "2.0.1", features = ["serde"] }
+cardinality-estimator = { version = "1.0.2", features = ["with_serde"] }
 clap = { version = "4.5.31", features = ["derive"] }
 dropshot = "0.16.0"
 env_logger = "0.11.7"

@@ -54,7 +54,7 @@ async fn main() -> anyhow::Result<()> {
     });
 
     let t2: tokio::task::JoinHandle<anyhow::Result<()>> = tokio::task::spawn({
-        let storage = storage.clone();
+        let _storage = storage.clone();
         async move {
             if !args.pause_writer {
                 println!(
@@ -72,14 +72,14 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    let t3 = tokio::task::spawn(async move {
-        if !args.pause_rw {
-            let r = storage.rw_loop().await;
-            log::warn!("storage.rw_loop ended with: {r:?}");
-        } else {
-            log::info!("not starting rw loop.");
-        }
-    });
+    // let t3 = tokio::task::spawn(async move {
+    //     if !args.pause_rw {
+    //         let r = storage.rw_loop().await;
+    //         log::warn!("storage.rw_loop ended with: {r:?}");
+    //     } else {
+    //         log::info!("not starting rw loop.");
+    //     }
+    // });
 
     // tokio::select! {
     //     // v = serving => eprintln!("serving ended: {v:?}"),
@@ -92,8 +92,8 @@ async fn main() -> anyhow::Result<()> {
     log::trace!("serve task ended.");
     t2.await??;
     log::trace!("storage receive task ended.");
-    t3.await?;
-    log::trace!("storage rw task ended.");
+    // t3.await?;
+    // log::trace!("storage rw task ended.");
 
     println!("bye!");
 

@@ -1,5 +1,5 @@
 use crate::storage_fjall::{Storage, StorageInfo};
-use crate::{CreateRecord, Nsid};
+use crate::{Nsid};
 use dropshot::endpoint;
 use dropshot::ApiDescription;
 use dropshot::ConfigDropshot;
@@ -97,67 +97,67 @@ impl CollectionsQuery {
         Ok(out)
     }
 }
-#[derive(Debug, Serialize, JsonSchema)]
-struct ApiRecord {
-    did: String,
-    collection: String,
-    rkey: String,
-    record: serde_json::Value,
-    time_us: u64,
-}
-impl ApiRecord {
-    fn from_create_record(create_record: CreateRecord, collection: &Nsid) -> Self {
-        let CreateRecord {
-            did,
-            rkey,
-            record,
-            cursor,
-        } = create_record;
-        Self {
-            did: did.to_string(),
-            collection: collection.to_string(),
-            rkey: rkey.to_string(),
-            record,
-            time_us: cursor.to_raw_u64(),
-        }
-    }
-}
-/// Get recent records by collection
-///
-/// Multiple collections are supported. they will be delivered in one big array with no
-/// specified order.
-#[endpoint {
-    method = GET,
-    path = "/records",
-}]
-async fn get_records_by_collection(
-    ctx: RequestContext<Context>,
-    collection_query: Query<CollectionsQuery>,
-) -> OkCorsResponse<Vec<ApiRecord>> {
-    let Context { storage, .. } = ctx.context();
+// #[derive(Debug, Serialize, JsonSchema)]
+// struct ApiRecord {
+//     did: String,
+//     collection: String,
+//     rkey: String,
+//     record: serde_json::Value,
+//     time_us: u64,
+// }
+// impl ApiRecord {
+//     fn from_create_record(create_record: CreateRecord, collection: &Nsid) -> Self {
+//         let CreateRecord {
+//             did,
+//             rkey,
+//             record,
+//             cursor,
+//         } = create_record;
+//         Self {
+//             did: did.to_string(),
+//             collection: collection.to_string(),
+//             rkey: rkey.to_string(),
+//             record,
+//             time_us: cursor.to_raw_u64(),
+//         }
+//     }
+// }
+// /// Get recent records by collection
+// ///
+// /// Multiple collections are supported. they will be delivered in one big array with no
+// /// specified order.
+// #[endpoint {
+//     method = GET,
+//     path = "/records",
+// }]
+// async fn get_records_by_collection(
+//     ctx: RequestContext<Context>,
+//     collection_query: Query<CollectionsQuery>,
+// ) -> OkCorsResponse<Vec<ApiRecord>> {
+//     let Context { storage, .. } = ctx.context();
 
-    let collections = collection_query
-        .into_inner()
-        .to_multiple_nsids()
-        .map_err(|reason| HttpError::for_bad_request(None, reason))?;
+//     let collections = collection_query
+//         .into_inner()
+//         .to_multiple_nsids()
+//         .map_err(|reason| HttpError::for_bad_request(None, reason))?;
 
-    let mut api_records = Vec::new();
+//     let mut api_records = Vec::new();
 
-    // TODO: set up multiple db iterators and iterate them together with merge sort
-    for collection in &collections {
-        let records = storage
-            .get_collection_records(collection, 100)
-            .await
-            .map_err(|e| HttpError::for_internal_error(e.to_string()))?;
+//     // TODO: set up multiple db iterators and iterate them together with merge sort
+//     for collection in &collections {
+//         let records = storage
+//             .get_collection_records(collection, 100)
+//             .await
+//             .map_err(|e| HttpError::for_internal_error(e.to_string()))?;
 
-        for record in records {
-            let api_record = ApiRecord::from_create_record(record, collection);
-            api_records.push(api_record);
-        }
-    }
+//         for record in records {
+//             let api_record = ApiRecord::from_create_record(record, collection);
+//             api_records.push(api_record);
+//         }
+//     }
 
-    ok_cors(api_records)
-}
+//     ok_cors(api_records)
+// }
 
 /// Get total records seen by collection
 #[endpoint {
@@ -215,7 +215,7 @@ pub async fn serve(storage: Storage) -> Result<(), String> {
 
     api.register(get_openapi).unwrap();
     api.register(get_meta_info).unwrap();
-    api.register(get_records_by_collection).unwrap();
+    // api.register(get_records_by_collection).unwrap();
     api.register(get_records_total_seen).unwrap();
     api.register(get_top_collections).unwrap();
 

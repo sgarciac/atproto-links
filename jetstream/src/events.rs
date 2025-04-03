@@ -12,7 +12,7 @@ use serde_json::value::RawValue;
 use crate::exports;
 
 /// Opaque wrapper for the time_us cursor used by jetstream
-#[derive(Deserialize, Debug, Clone, PartialEq, PartialOrd)]
+#[derive(Deserialize, Debug, Copy, Clone, PartialEq, PartialOrd)]
 pub struct Cursor(u64);
 
 #[derive(Debug, Deserialize)]

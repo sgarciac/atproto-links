@@ -6,7 +6,7 @@ use crate::store_types::{
     RollupCursorKey, RollupCursorValue, SeenCounter,
 };
 use crate::{
-    CollectionSamples, CreateRecord, DeleteAccount, Did, EventBatch, ModifyRecord, Nsid, RecordKey,
+    DeleteAccount, Did, EventBatch, Nsid, RecordKey,
 };
 use fjall::{
     Batch as FjallBatch, CompressionType, Config, Keyspace, PartitionCreateOptions, PartitionHandle,
@@ -118,33 +118,35 @@ impl Storage {
         loop {
             let t_sleep = Instant::now();
             sleep(Duration::from_secs_f64(0.08)).await; // TODO: minimize during replay
-            let slept_for = t_sleep.elapsed();
-            let queue_size = receiver.len();
+            let _slept_for = t_sleep.elapsed();
+            let _queue_size = receiver.len();
 
             if let Some(event_batch) = receiver.recv().await {
-                log::trace!("write: received write batch");
+                log::info!("write: received write batch");
                 let batch_summary = summarize_batch(&event_batch);
+                log::info!("{}", batch_summary);
 
-                let last = event_batch.last_jetstream_cursor.clone(); // TODO: get this from the data. track last in consumer. compute or track first.
+                // todo!();
+                // let last = event_batch.last_jetstream_cursor.clone(); // TODO: get this from the data. track last in consumer. compute or track first.
 
-                let db = &self.db;
-                let keyspace = db.keyspace.clone();
-                let partition = db.partition.clone();
+                // let db = &self.db;
+                // let keyspace = db.keyspace.clone();
+                // let partition = db.partition.clone();
 
-                let writer_t0 = Instant::now();
-                log::trace!("spawn_blocking for write batch");
-                tokio::task::spawn_blocking(move || {
-                    DBWriter {
-                        keyspace,
-                        partition,
-                    }
-                    .write_batch(event_batch, last)
-                })
-                .await??;
-                log::trace!("write: back from blocking task, successfully wrote batch");
-                let wrote_for = writer_t0.elapsed();
+                // let writer_t0 = Instant::now();
+                // log::trace!("spawn_blocking for write batch");
+                // tokio::task::spawn_blocking(move || {
+                //     DBWriter {
+                //         keyspace,
+                //         partition,
+                //     }
+                //     .write_batch(event_batch, last)
+                // })
+                // .await??;
+                // log::trace!("write: back from blocking task, successfully wrote batch");
+                // let wrote_for = writer_t0.elapsed();
 
-                println!("{batch_summary}, slept {slept_for: <12?}, wrote {wrote_for: <11?}, queue: {queue_size}");
+                // println!("{batch_summary}, slept {slept_for: <12?}, wrote {wrote_for: <11?}, queue: {queue_size}");
             } else {
                 log::error!("store consumer: receive channel failed (dropped/closed?)");
                 anyhow::bail!("receive channel closed");
@@ -284,28 +286,29 @@ impl Storage {
 
     pub async fn get_collection_records(
         &self,
-        collection: &Nsid,
-        limit: usize,
-    ) -> anyhow::Result<Vec<CreateRecord>> {
-        let partition = self.db.partition.clone();
-        let prefix = ByCollectionKey::prefix_from_collection(collection.clone())?;
-        tokio::task::spawn_blocking(move || {
-            let mut output = Vec::new();
+        _collection: &Nsid,
+        _limit: usize,
+    ) -> anyhow::Result<Vec<()>> {
+        todo!();
+        // let partition = self.db.partition.clone();
+        // let prefix = ByCollectionKey::prefix_from_collection(collection.clone())?;
+        // tokio::task::spawn_blocking(move || {
+        //     let mut output = Vec::new();
 
-            for pair in partition.prefix(&prefix).rev().take(limit) {
-                let (k_bytes, v_bytes) = pair?;
-                let (_, cursor) = db_complete::<ByCollectionKey>(&k_bytes)?.into();
-                let (did, rkey, record) = db_complete::<ByCollectionValue>(&v_bytes)?.into();
-                output.push(CreateRecord {
-                    did,
-                    rkey,
-                    record,
-                    cursor,
-                })
-            }
-            Ok(output)
-        })
-        .await?
+        //     for pair in partition.prefix(&prefix).rev().take(limit) {
+        //         let (k_bytes, v_bytes) = pair?;
+        //         let (_, cursor) = db_complete::<ByCollectionKey>(&k_bytes)?.into();
+        //         let (did, rkey, record) = db_complete::<ByCollectionValue>(&v_bytes)?.into();
+        //         output.push(CreateRecord {
+        //             did,
+        //             rkey,
+        //             record,
+        //             cursor,
+        //         })
+        //     }
+        //     Ok(output)
+        // })
+        // .await?
     }
 
     pub async fn get_meta_info(&self) -> anyhow::Result<StorageInfo> {
@@ -481,19 +484,20 @@ fn get_unrolled_top_collections(
 }
 
 impl DBWriter {
-    fn write_batch(self, event_batch: EventBatch, last: Option<Cursor>) -> anyhow::Result<()> {
-        let mut db_batch = self.keyspace.batch();
-        self.add_record_creates(&mut db_batch, event_batch.record_creates)?;
-        self.add_record_modifies(&mut db_batch, event_batch.record_modifies)?;
-        self.add_account_removes(&mut db_batch, event_batch.account_removes)?;
-        if let Some(cursor) = last {
-            insert_batch_static::<JetstreamCursorKey>(&mut db_batch, &self.partition, cursor)?;
-        }
-        log::info!("write: committing write batch...");
-        let r = db_batch.commit();
-        log::info!("write: commit result: {r:?}");
-        r?;
-        Ok(())
+    fn write_batch(self, _event_batch: EventBatch, _last: Option<Cursor>) -> anyhow::Result<()> {
+        todo!();
+        // let mut db_batch = self.keyspace.batch();
+        // self.add_record_creates(&mut db_batch, event_batch.record_creates)?;
+        // self.add_record_modifies(&mut db_batch, event_batch.record_modifies)?;
+        // self.add_account_removes(&mut db_batch, event_batch.account_removes)?;
+        // if let Some(cursor) = last {
+        //     insert_batch_static::<JetstreamCursorKey>(&mut db_batch, &self.partition, cursor)?;
+        // }
+        // log::info!("write: committing write batch...");
+        // let r = db_batch.commit();
+        // log::info!("write: commit result: {r:?}");
+        // r?;
+        // Ok(())
     }
 
     fn write_rw(
@@ -665,41 +669,42 @@ impl DBWriter {
 
     fn add_record_creates(
         &self,
-        db_batch: &mut FjallBatch,
-        record_creates: HashMap<Nsid, CollectionSamples>,
+        _db_batch: &mut FjallBatch,
+        _record_creates: HashMap<Nsid, ()>,
     ) -> anyhow::Result<()> {
-        for (
-            collection,
-            CollectionSamples {
-                total_seen,
-                samples,
-            },
-        ) in record_creates.into_iter()
-        {
-            if let Some(last_record) = &samples.back() {
-                db_batch.insert(
-                    &self.partition,
-                    ByCursorSeenKey::new(last_record.cursor.clone(), collection.clone())
-                        .to_db_bytes()?,
-                    ByCursorSeenValue::new(total_seen as u64).to_db_bytes()?,
-                );
-            } else {
-                log::error!(
-                    "collection samples should only exist when at least one sample has been added"
-                );
-            }
+        todo!();
+        // for (
+        //     collection,
+        //     CollectionSamples {
+        //         total_seen,
+        //         samples,
+        //     },
+        // ) in record_creates.into_iter()
+        // {
+        //     if let Some(last_record) = &samples.back() {
+        //         db_batch.insert(
+        //             &self.partition,
+        //             ByCursorSeenKey::new(last_record.cursor.clone(), collection.clone())
+        //                 .to_db_bytes()?,
+        //             ByCursorSeenValue::new(total_seen as u64).to_db_bytes()?,
+        //         );
+        //     } else {
+        //         log::error!(
+        //             "collection samples should only exist when at least one sample has been added"
+        //         );
+        //     }
 
-            for CreateRecord {
-                did,
-                rkey,
-                cursor,
-                record,
-            } in samples.into_iter().rev()
-            {
-                self.add_record(db_batch, cursor, did, collection.clone(), rkey, record)?;
-            }
-        }
-        Ok(())
+        //     for CreateRecord {
+        //         did,
+        //         rkey,
+        //         cursor,
+        //         record,
+        //     } in samples.into_iter().rev()
+        //     {
+        //         self.add_record(db_batch, cursor, did, collection.clone(), rkey, record)?;
+        //     }
+        // }
+        // Ok(())
     }
 
     fn add_record(
@@ -730,27 +735,28 @@ impl DBWriter {
 
     fn add_record_modifies(
         &self,
-        db_batch: &mut FjallBatch,
-        record_modifies: Vec<ModifyRecord>,
+        _db_batch: &mut FjallBatch,
+        _record_modifies: Vec<()>,
     ) -> anyhow::Result<()> {
-        for modification in record_modifies {
-            let (cursor, db_val) = match modification {
-                ModifyRecord::Update(u) => (
-                    u.cursor,
-                    ModQueueItemValue::UpdateRecord(u.did, u.collection, u.rkey, u.record),
-                ),
-                ModifyRecord::Delete(d) => (
-                    d.cursor,
-                    ModQueueItemValue::DeleteRecord(d.did, d.collection, d.rkey),
-                ),
-            };
-            db_batch.insert(
-                &self.partition,
-                ModQueueItemKey::new(cursor).to_db_bytes()?,
-                db_val.to_db_bytes()?,
-            );
-        }
-        Ok(())
+        todo!();
+        // for modification in record_modifies {
+        //     let (cursor, db_val) = match modification {
+        //         ModifyRecord::Update(u) => (
+        //             u.cursor,
+        //             ModQueueItemValue::UpdateRecord(u.did, u.collection, u.rkey, u.record),
+        //         ),
+        //         ModifyRecord::Delete(d) => (
+        //             d.cursor,
+        //             ModQueueItemValue::DeleteRecord(d.did, d.collection, d.rkey),
+        //         ),
+        //     };
+        //     db_batch.insert(
+        //         &self.partition,
+        //         ModQueueItemKey::new(cursor).to_db_bytes()?,
+        //         db_val.to_db_bytes()?,
+        //     );
+        // }
+        // Ok(())
     }
 
     fn add_account_removes(
@@ -785,20 +791,13 @@ struct DBWriter {
 ////////// temp stuff to remove:
 
 fn summarize_batch(batch: &EventBatch) -> String {
-    let EventBatch {
-        record_creates,
-        record_modifies,
-        account_removes,
-        last_jetstream_cursor,
-        ..
-    } = batch;
-    let total_records: usize = record_creates.values().map(|v| v.total_seen).sum();
-    let total_samples: usize = record_creates.values().map(|v| v.samples.len()).sum();
     format!(
-        "batch of {total_samples: >3} samples from {total_records: >4} records in {: >2} collections, {: >3} modifies, {} acct removes, cursor {: <12?}",
-        record_creates.len(),
-        record_modifies.len(),
-        account_removes.len(),
-        last_jetstream_cursor.clone().map(|c| c.elapsed())
+        "batch of {: >3} samples from {: >4} records in {: >2} collections from ~{: >4} DIDs, {} acct removes, cursor {: <12?}",
+        batch.total_records(),
+        batch.total_seen(),
+        batch.total_collections(),
+        batch.estimate_dids(),
+        batch.account_removes(),
+        batch.latest_cursor().map(|c| c.elapsed()),
     )
 }

@@ -555,6 +555,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "cardinality-estimator"
+version = "1.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6ae5e12c435064f9e8ec53c5a782ca9a362702a4863fe1b6448f524ecede8fe3"
+dependencies = [
+ "enum_dispatch",
+ "serde",
+ "wyhash",
+]
+
+[[package]]
 name = "cc"
 version = "1.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3752,6 +3763,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bincode 2.0.1",
+ "cardinality-estimator",
  "clap",
  "dropshot",
  "env_logger",
@@ -4225,6 +4237,15 @@ name = "writeable"
 version = "0.5.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1e9df38ee2d2c3c5948ea468a8406ff0db0b29ae1ffde1bcf20ef305bcc95c51"
+
+[[package]]
+name = "wyhash"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "baf6e163c25e3fac820b4b453185ea2dea3b6a3e0a721d4d23d75bd33734c295"
+dependencies = [
+ "rand_core 0.6.4",
+]
 
 [[package]]
 name = "xxhash-rust"
