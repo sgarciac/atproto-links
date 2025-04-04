@@ -8,6 +8,7 @@ use crate::store_types::{
 use crate::{
     DeleteAccount, Did, EventBatch, Nsid, RecordKey,
 };
+use crate::error::StorageError;
 use fjall::{
     Batch as FjallBatch, CompressionType, Config, Keyspace, PartitionCreateOptions, PartitionHandle,
 };
@@ -33,34 +34,164 @@ const MAX_BATCHED_RW_ITEMS: usize = 24;
 #[derive(Clone)]
 struct Db {
     keyspace: Keyspace,
-    partition: PartitionHandle,
+    global: PartitionHandle,
+
 }
 
 /**
- * data format, roughly:
+ * new data format, roughly:
  *
- * Global Meta:
- *   ["js_cursor"] => js_cursor(u64), // used as global sequence
- *   ["js_endpoint"] => &str, // checked on startup because jetstream instance cursors are not interchangeable
- *   ["mod_cursor"] => js_cursor(u64);
- *   ["rollup_cursor"] => [js_cursor|collection]; // how far the rollup helper has progressed
- * Mod queue
- *   ["mod_queue"|js_cursor] => one of {
- *      DeleteAccount(did) // delete all account content older than cursor
- *      DeleteRecord(did, collection, rkey) // delete record older than cursor
- *      UpdateRecord(did, collection, rkey, new_record) // delete + put, but don't delete if cursor is newer
- *   }
- * Collection and rollup meta:
- *   ["seen_by_js_cursor_collection"|js_cursor|collection] => u64 // batched total, gets cleaned up by rollup
- *   ["total_by_collection"|collection] => [u64, js_cursor] // rollup; live total requires scanning seen_by_collection after js_cursor
- *   ["hour_by_collection"|hour(u64)|collection] => u64 // rollup from seen_by_js_cursor_collection
- * Samples:
- *   ["by_collection"|collection|js_cursor] => [did|rkey|record]
- *   ["by_id"|did|collection|rkey|js_cursor] => [] // required to support deletes; did first prefix for account deletes.
+ * Partion: 'global'
  *
- * TODO: account privacy preferences. Might wait for the protocol-level (PDS-level?) stuff to land. Will probably do lazy
- * fetching + caching on read.
+ *  - Global sequence counter (is the jetstream cursor -- monotonic with many gaps)
+ *      key: "js_cursor" (literal)
+ *      val: u64
+ *
+ *  - Jetstream server endpoint (persisted because the cursor can't be used on another instance without data loss)
+ *      key: "js_endpoint" (literal)
+ *      val: string (URL of the instance)
+ *
+ *  - Rollup cursor (bg work: roll stats into hourlies, delete accounts, old record deletes)
+ *      key: "rollup_cursor" (literal)
+ *      val: u64 (tracks behind js_cursor)
+ *
+ *
+ * Partition: 'feed'
+ *
+ *  - Per-collection list of record references ordered by jetstream cursor
+ *      key: nullstr || u64 (collection nsid null-terminated, jetstream cursor)
+ *      val: nullstr || nullstr || nullstr (did, rkey, rev. rev is mostly a sanity-check for now.)
+ *
+ *
+ * Partition: 'records'
+ *
+ *  - Actual records by their atproto location
+ *      key: nullstr || nullstr || nullstr (did, collection, rkey)
+ *      val: u64 || bool || nullstr || rawval (js_cursor, is_update, rev, actual record)
+ *
+ *
+ * Partition: 'rollups'
+ *
+ * - Live (batched) records per collection
+ *      key: "live_records" || u64 || nullstr (js_cursor, nsid)
+ *      val: u64
+ *
+ * - Live (batched) DIDs estimate per collections
+ *      key: "live_dids" || u64 || nullstr
+ *      val: HLL (estimator)
+ *
+ * - Hourly total records per collection
+ *      key: "hourly_records" || u64 || nullstr (hour, nsid)
+ *      val: u64 (total count, not jetstream cursor)
+ *
+ * - Hourly unique DIDs estimate per collection
+ *      key: "hourly_dids" || u64 || nullstr (hour, nsid)
+ *      val: HLL (estimator)
+ *
+ * - All-time total records per collection
+ *      key: "ever_records" || u64 || nullstr (total, nsid. yeah, total is in the *key*, and acts as a sorter. every update requires a delete+put)
+ *      val: (empty)
+ *
+ * - All-time total DIDs estimate per collection
+ *      key: "ever_dids" || u64 || nullstr (estimated cardinality, nsid. like ever_records)
+ *      val: HLL (estimator)
+ *
+ * TODO: moderation actions
+ * TODO: account privacy preferences. Might wait for the protocol-level (PDS-level?) stuff to land. Will probably do lazy fetching + caching on read.
  **/
+pub trait StorageWhatever { // TODO: extract this
+    fn init(
+        path: impl AsRef<Path>,
+        endpoint: &str,
+        force_endpoint: bool,
+    ) -> Result<(impl StoreReader, impl StoreWriter, bool), StorageError> where Self: Sized;
+}
+
+pub trait StoreWriter {
+    fn insert_batch(batch: EventBatch) -> Result<(), StorageError>;
+}
+
+pub trait StoreReader: Clone {}
+
+pub struct FjallStorage {}
+impl StorageWhatever for FjallStorage {
+    fn init(
+        path: impl AsRef<Path>,
+        endpoint: &str,
+        force_endpoint: bool,
+    ) -> Result<(impl StoreReader, impl StoreWriter, bool), StorageError> {
+        let mut fresh = true;
+        let keyspace = Config::new(path).fsync_ms(Some(4_000)).open()?;
+
+        let global = keyspace.open_partition("global", PartitionCreateOptions::default())?;
+        let feeds = keyspace.open_partition("feeds", PartitionCreateOptions::default())?;
+        let records = keyspace.open_partition("records", PartitionCreateOptions::default())?;
+        let rollups = keyspace.open_partition("rollups", PartitionCreateOptions::default())?;
+
+        let js_cursor = get_static_neu::<JetstreamCursorKey, JetstreamCursorValue>(&global)?;
+
+        if js_cursor.is_some() {
+            fresh = false;
+            let stored_endpoint = get_static_neu::<JetstreamEndpointKey, JetstreamEndpointValue>(&global)?;
+
+            let JetstreamEndpointValue(stored) = stored_endpoint
+                .ok_or(StorageError::InitError("found cursor but missing js_endpoint, refusing to start.".to_string()))?;
+
+            if stored != endpoint {
+                if force_endpoint {
+                    log::warn!("forcing a jetstream switch from {stored:?} to {endpoint:?}");
+                    insert_static_neu::<JetstreamEndpointKey>(
+                        &global,
+                        JetstreamEndpointValue(endpoint.to_string()),
+                    )?;
+                } else {
+                    return Err(StorageError::InitError(format!(
+                        "stored js_endpoint {stored:?} differs from provided {endpoint:?}, refusing to start.")));
+                }
+            }
+        } else {
+            insert_static_neu::<JetstreamEndpointKey>(
+                &global,
+                JetstreamEndpointValue(endpoint.to_string()),
+            )?;
+        }
+
+        let reader = FjallReader {
+            global: global.clone(),
+            feeds: feeds.clone(),
+            records: records.clone(),
+            rollups: rollups.clone(),
+        };
+        let writer = FjallWriter { keyspace, global, feeds, records, rollups };
+        Ok((reader, writer, fresh))
+    }
+}
+
+#[derive(Clone)]
+pub struct FjallReader {
+    global: PartitionHandle,
+    feeds: PartitionHandle,
+    records: PartitionHandle,
+    rollups: PartitionHandle,
+}
+
+impl StoreReader for FjallReader {}
+
+pub struct FjallWriter {
+    keyspace: Keyspace,
+    global: PartitionHandle,
+    feeds: PartitionHandle,
+    records: PartitionHandle,
+    rollups: PartitionHandle,
+}
+
+impl StoreWriter for FjallWriter {
+    fn insert_batch(_batch: EventBatch) -> Result<(), StorageError> {
+        Ok(())
+    }
+}
+
+
 #[derive(Clone)]
 pub struct Storage {
     /// horrible: gate all db access behind this to force global serialization to avoid deadlock
@@ -70,14 +201,14 @@ pub struct Storage {
 impl Storage {
     fn init_self(path: impl AsRef<Path>) -> anyhow::Result<Self> {
         let keyspace = Config::new(path).fsync_ms(Some(4_000)).open()?;
-        let partition = keyspace.open_partition(
+        let global = keyspace.open_partition(
             "default",
             PartitionCreateOptions::default().compression(CompressionType::None),
         )?;
         Ok(Self {
             db: Db {
                 keyspace,
-                partition,
+                global,
             },
         })
     }
@@ -131,14 +262,14 @@ impl Storage {
 
                 // let db = &self.db;
                 // let keyspace = db.keyspace.clone();
-                // let partition = db.partition.clone();
+                // let global = db.global.clone();
 
                 // let writer_t0 = Instant::now();
                 // log::trace!("spawn_blocking for write batch");
                 // tokio::task::spawn_blocking(move || {
                 //     DBWriter {
                 //         keyspace,
-                //         partition,
+                //         global,
                 //     }
                 //     .write_batch(event_batch, last)
                 // })
@@ -175,33 +306,33 @@ impl Storage {
 
         loop {
             let keyspace = self.db.keyspace.clone();
-            let partition = self.db.partition.clone();
+            let global = self.db.global.clone();
             tokio::select! {
                 _ = time_to_update_events.tick() => {
                     log::debug!("beginning event update task");
-                    tokio::task::spawn_blocking(move || Self::update_events(keyspace, partition)).await??;
+                    tokio::task::spawn_blocking(move || Self::update_events(keyspace, global)).await??;
                     log::debug!("finished event update task");
                 }
                 _ = time_to_trim_surplus.tick() => {
                     log::debug!("beginning record trim task");
-                    tokio::task::spawn_blocking(move || Self::trim_old_events(keyspace, partition)).await??;
+                    tokio::task::spawn_blocking(move || Self::trim_old_events(keyspace, global)).await??;
                     log::debug!("finished record trim task");
                 }
                 _ = time_to_roll_up.tick() => {
                     log::debug!("beginning rollup task");
-                    tokio::task::spawn_blocking(move || Self::roll_up_counts(keyspace, partition)).await??;
+                    tokio::task::spawn_blocking(move || Self::roll_up_counts(keyspace, global)).await??;
                     log::debug!("finished rollup task");
                 },
             }
         }
     }
 
-    fn update_events(keyspace: Keyspace, partition: PartitionHandle) -> anyhow::Result<()> {
+    fn update_events(keyspace: Keyspace, global: PartitionHandle) -> anyhow::Result<()> {
         // TODO: lock this to prevent concurrent rw
 
         log::trace!("rw: getting rw cursor...");
         let mod_cursor =
-            get_static::<ModCursorKey, ModCursorValue>(&partition)?.unwrap_or(Cursor::from_start());
+            get_static::<ModCursorKey, ModCursorValue>(&global)?.unwrap_or(Cursor::from_start());
         let range = ModQueueItemKey::new(mod_cursor.clone()).range_to_prefix_end()?;
 
         let mut db_batch = keyspace.batch();
@@ -210,7 +341,7 @@ impl Storage {
 
         log::trace!("rw: iterating newer rw items...");
 
-        for (i, pair) in partition.range(range.clone()).enumerate() {
+        for (i, pair) in global.range(range.clone()).enumerate() {
             log::trace!("rw: iterating {i}");
             any_tasks_found = true;
 
@@ -233,7 +364,7 @@ impl Storage {
             log::trace!("rw: iterating {i}: sending to batcher {mod_key:?} => {mod_value:?}");
             batched_rw_items += DBWriter {
                 keyspace: keyspace.clone(),
-                partition: partition.clone(),
+                global: global.clone(),
             }
             .write_rw(&mut db_batch, mod_key, mod_value)?;
             log::trace!("rw: iterating {i}: back from batcher.");
@@ -257,7 +388,7 @@ impl Storage {
         Ok(())
     }
 
-    fn trim_old_events(_keyspace: Keyspace, _partition: PartitionHandle) -> anyhow::Result<()> {
+    fn trim_old_events(_keyspace: Keyspace, _global: PartitionHandle) -> anyhow::Result<()> {
         // we *could* keep a collection dirty list in memory to reduce the amount of searching here
         // actually can we use seen_by_js_cursor_collection??
         // *   ["seen_by_js_cursor_collection"|js_cursor|collection] => u64
@@ -280,7 +411,7 @@ impl Storage {
         Ok(())
     }
 
-    fn roll_up_counts(_keyspace: Keyspace, _partition: PartitionHandle) -> anyhow::Result<()> {
+    fn roll_up_counts(_keyspace: Keyspace, _global: PartitionHandle) -> anyhow::Result<()> {
         Ok(())
     }
 
@@ -290,12 +421,12 @@ impl Storage {
         _limit: usize,
     ) -> anyhow::Result<Vec<()>> {
         todo!();
-        // let partition = self.db.partition.clone();
+        // let global = self.db.global.clone();
         // let prefix = ByCollectionKey::prefix_from_collection(collection.clone())?;
         // tokio::task::spawn_blocking(move || {
         //     let mut output = Vec::new();
 
-        //     for pair in partition.prefix(&prefix).rev().take(limit) {
+        //     for pair in global.prefix(&prefix).rev().take(limit) {
         //         let (k_bytes, v_bytes) = pair?;
         //         let (_, cursor) = db_complete::<ByCollectionKey>(&k_bytes)?.into();
         //         let (did, rkey, record) = db_complete::<ByCollectionValue>(&v_bytes)?.into();
@@ -314,66 +445,76 @@ impl Storage {
     pub async fn get_meta_info(&self) -> anyhow::Result<StorageInfo> {
         let db = &self.db;
         let keyspace = db.keyspace.clone();
-        let partition = db.partition.clone();
+        let global = db.global.clone();
         tokio::task::spawn_blocking(move || {
             Ok(StorageInfo {
                 keyspace_disk_space: keyspace.disk_space(),
                 keyspace_journal_count: keyspace.journal_count(),
                 keyspace_sequence: keyspace.instant(),
-                partition_approximate_len: partition.approximate_len(),
+                global_approximate_len: global.approximate_len(),
             })
         })
         .await?
     }
 
     pub async fn get_collection_total_seen(&self, collection: &Nsid) -> anyhow::Result<u64> {
-        let partition = self.db.partition.clone();
+        let global = self.db.global.clone();
         let collection = collection.clone();
-        tokio::task::spawn_blocking(move || get_unrolled_collection_seen(&partition, collection))
+        tokio::task::spawn_blocking(move || get_unrolled_collection_seen(&global, collection))
             .await?
     }
 
     pub async fn get_top_collections(&self) -> anyhow::Result<HashMap<String, u64>> {
-        let partition = self.db.partition.clone();
-        tokio::task::spawn_blocking(move || get_unrolled_top_collections(&partition)).await?
+        let global = self.db.global.clone();
+        tokio::task::spawn_blocking(move || get_unrolled_top_collections(&global)).await?
     }
 
     pub async fn get_jetstream_endpoint(&self) -> anyhow::Result<Option<JetstreamEndpointValue>> {
-        let partition = self.db.partition.clone();
+        let global = self.db.global.clone();
         tokio::task::spawn_blocking(move || {
-            get_static::<JetstreamEndpointKey, JetstreamEndpointValue>(&partition)
+            get_static::<JetstreamEndpointKey, JetstreamEndpointValue>(&global)
         })
         .await?
     }
 
     async fn set_jetstream_endpoint(&self, endpoint: &str) -> anyhow::Result<()> {
-        let partition = self.db.partition.clone();
+        let global = self.db.global.clone();
         let endpoint = endpoint.to_string();
         tokio::task::spawn_blocking(move || {
-            insert_static::<JetstreamEndpointKey>(&partition, JetstreamEndpointValue(endpoint))
+            insert_static::<JetstreamEndpointKey>(&global, JetstreamEndpointValue(endpoint))
         })
         .await?
     }
 
     pub async fn get_jetstream_cursor(&self) -> anyhow::Result<Option<Cursor>> {
-        let partition = self.db.partition.clone();
+        let global = self.db.global.clone();
         tokio::task::spawn_blocking(move || {
-            get_static::<JetstreamCursorKey, JetstreamCursorValue>(&partition)
+            get_static::<JetstreamCursorKey, JetstreamCursorValue>(&global)
         })
         .await?
     }
 
     pub async fn get_mod_cursor(&self) -> anyhow::Result<Option<Cursor>> {
-        let partition = self.db.partition.clone();
-        tokio::task::spawn_blocking(move || get_static::<ModCursorKey, ModCursorValue>(&partition))
+        let global = self.db.global.clone();
+        tokio::task::spawn_blocking(move || get_static::<ModCursorKey, ModCursorValue>(&global))
             .await?
     }
 }
 
 /// Get a value from a fixed key
-fn get_static<K: StaticStr, V: DbBytes>(partition: &PartitionHandle) -> anyhow::Result<Option<V>> {
+fn get_static<K: StaticStr, V: DbBytes>(global: &PartitionHandle) -> anyhow::Result<Option<V>> {
     let key_bytes = DbStaticStr::<K>::default().to_db_bytes()?;
-    let value = partition
+    let value = global
+        .get(&key_bytes)?
+        .map(|value_bytes| db_complete(&value_bytes))
+        .transpose()?;
+    Ok(value)
+}
+
+/// Get a value from a fixed key
+fn get_static_neu<K: StaticStr, V: DbBytes>(global: &PartitionHandle) -> Result<Option<V>, StorageError> {
+    let key_bytes = DbStaticStr::<K>::default().to_db_bytes()?;
+    let value = global
         .get(&key_bytes)?
         .map(|value_bytes| db_complete(&value_bytes))
         .transpose()?;
@@ -382,45 +523,56 @@ fn get_static<K: StaticStr, V: DbBytes>(partition: &PartitionHandle) -> anyhow::
 
 /// Set a value to a fixed key
 fn insert_static<K: StaticStr>(
-    partition: &PartitionHandle,
+    global: &PartitionHandle,
     value: impl DbBytes,
 ) -> anyhow::Result<()> {
     let key_bytes = DbStaticStr::<K>::default().to_db_bytes()?;
     let value_bytes = value.to_db_bytes()?;
-    partition.insert(&key_bytes, &value_bytes)?;
+    global.insert(&key_bytes, &value_bytes)?;
+    Ok(())
+}
+
+/// Set a value to a fixed key
+fn insert_static_neu<K: StaticStr>(
+    global: &PartitionHandle,
+    value: impl DbBytes,
+) -> Result<(), StorageError> {
+    let key_bytes = DbStaticStr::<K>::default().to_db_bytes()?;
+    let value_bytes = value.to_db_bytes()?;
+    global.insert(&key_bytes, &value_bytes)?;
     Ok(())
 }
 
 /// Set a value to a fixed key
 fn insert_batch_static<K: StaticStr>(
     batch: &mut FjallBatch,
-    partition: &PartitionHandle,
+    global: &PartitionHandle,
     value: impl DbBytes,
 ) -> anyhow::Result<()> {
     let key_bytes = DbStaticStr::<K>::default().to_db_bytes()?;
     let value_bytes = value.to_db_bytes()?;
-    batch.insert(partition, &key_bytes, &value_bytes);
+    batch.insert(global, &key_bytes, &value_bytes);
     Ok(())
 }
 
 /// Remove a key
 fn remove_batch<K: DbBytes>(
     batch: &mut FjallBatch,
-    partition: &PartitionHandle,
+    global: &PartitionHandle,
     key: K,
 ) -> Result<(), EncodingError> {
     let key_bytes = key.to_db_bytes()?;
-    batch.remove(partition, &key_bytes);
+    batch.remove(global, &key_bytes);
     Ok(())
 }
 
 /// Get stats that haven't been rolled up yet
 fn get_unrolled_collection_seen(
-    partition: &PartitionHandle,
+    global: &PartitionHandle,
     collection: Nsid,
 ) -> anyhow::Result<u64> {
     let range =
-        if let Some(cursor_value) = get_static::<RollupCursorKey, RollupCursorValue>(partition)? {
+        if let Some(cursor_value) = get_static::<RollupCursorKey, RollupCursorValue>(global)? {
             eprintln!("found existing cursor");
             let key: ByCursorSeenKey = cursor_value.into();
             key.range_from()?
@@ -434,7 +586,7 @@ fn get_unrolled_collection_seen(
     let mut scanned = 0;
     let mut rolled = 0;
 
-    for pair in partition.range(range) {
+    for pair in global.range(range) {
         let (key_bytes, value_bytes) = pair?;
         let key = db_complete::<ByCursorSeenKey>(&key_bytes)?;
         let val = db_complete::<ByCursorSeenValue>(&value_bytes)?;
@@ -453,10 +605,10 @@ fn get_unrolled_collection_seen(
 }
 
 fn get_unrolled_top_collections(
-    partition: &PartitionHandle,
+    global: &PartitionHandle,
 ) -> anyhow::Result<HashMap<String, u64>> {
     let range =
-        if let Some(cursor_value) = get_static::<RollupCursorKey, RollupCursorValue>(partition)? {
+        if let Some(cursor_value) = get_static::<RollupCursorKey, RollupCursorValue>(global)? {
             eprintln!("found existing cursor");
             let key: ByCursorSeenKey = cursor_value.into();
             key.range_from()?
@@ -468,7 +620,7 @@ fn get_unrolled_top_collections(
     let mut res = HashMap::new();
     let mut scanned = 0;
 
-    for pair in partition.range(range) {
+    for pair in global.range(range) {
         let (key_bytes, value_bytes) = pair?;
         let key = db_complete::<ByCursorSeenKey>(&key_bytes)?;
         let SeenCounter(n) = db_complete(&value_bytes)?;
@@ -491,7 +643,7 @@ impl DBWriter {
         // self.add_record_modifies(&mut db_batch, event_batch.record_modifies)?;
         // self.add_account_removes(&mut db_batch, event_batch.account_removes)?;
         // if let Some(cursor) = last {
-        //     insert_batch_static::<JetstreamCursorKey>(&mut db_batch, &self.partition, cursor)?;
+        //     insert_batch_static::<JetstreamCursorKey>(&mut db_batch, &self.global, cursor)?;
         // }
         // log::info!("write: committing write batch...");
         // let r = db_batch.commit();
@@ -508,7 +660,7 @@ impl DBWriter {
     ) -> anyhow::Result<usize> {
         // update the current rw cursor to this item (atomically with the batch if it succeeds)
         let mod_cursor: Cursor = (&mod_key).into();
-        insert_batch_static::<ModCursorKey>(db_batch, &self.partition, mod_cursor.clone())?;
+        insert_batch_static::<ModCursorKey>(db_batch, &self.global, mod_cursor.clone())?;
 
         let items_modified = match mod_value {
             ModQueueItemValue::DeleteAccount(did) => {
@@ -517,7 +669,7 @@ impl DBWriter {
                 log::trace!("rw: batcher: back from delete account (finished? {finished})");
                 if finished {
                     // only remove the queued rw task if we have actually completed its account removal work
-                    remove_batch::<ModQueueItemKey>(db_batch, &self.partition, mod_key)?;
+                    remove_batch::<ModQueueItemKey>(db_batch, &self.global, mod_key)?;
                     items + 1
                 } else {
                     items
@@ -527,13 +679,13 @@ impl DBWriter {
                 log::trace!("rw: batcher: delete record...");
                 let items = self.delete_record(db_batch, mod_cursor, did, collection, rkey)?;
                 log::trace!("rw: batcher: back from delete record");
-                remove_batch::<ModQueueItemKey>(db_batch, &self.partition, mod_key)?;
+                remove_batch::<ModQueueItemKey>(db_batch, &self.global, mod_key)?;
                 items + 1
             }
             ModQueueItemValue::UpdateRecord(did, collection, rkey, record) => {
                 let items =
                     self.update_record(db_batch, mod_cursor, did, collection, rkey, record)?;
-                remove_batch::<ModQueueItemKey>(db_batch, &self.partition, mod_key)?;
+                remove_batch::<ModQueueItemKey>(db_batch, &self.global, mod_key)?;
                 items + 1
             }
         };
@@ -585,7 +737,7 @@ impl DBWriter {
         log::trace!("delete_record: iterate over up to current cursor...");
 
         for (i, pair) in self
-            .partition
+            .global
             .range(key_prefix_bytes..key_limit)
             .enumerate()
         {
@@ -602,19 +754,19 @@ impl DBWriter {
             }
 
             // remove the by_id entry
-            db_batch.remove(&self.partition, key_bytes);
+            db_batch.remove(&self.global, key_bytes);
 
             // remove its record sample
             let by_collection_key_bytes =
                 ByCollectionKey::new(collection.clone(), found_cursor).to_db_bytes()?;
-            db_batch.remove(&self.partition, by_collection_key_bytes);
+            db_batch.remove(&self.global, by_collection_key_bytes);
 
             items_removed += 1;
         }
 
         // if items_removed > 1 {
         //     log::trace!("odd, removed {items_removed} records for one record removal:");
-        //     for (i, pair) in self.partition.prefix(&key_prefix_bytes).enumerate() {
+        //     for (i, pair) in self.global.prefix(&key_prefix_bytes).enumerate() {
         //         // find all (hopefully 1)
         //         let (key_bytes, _) = pair?;
         //         let found_cursor = db_complete::<ByIdKey>(&key_bytes)?.cursor();
@@ -639,7 +791,7 @@ impl DBWriter {
 
         let mut items_added = 0;
 
-        for pair in self.partition.prefix(&key_prefix_bytes) {
+        for pair in self.global.prefix(&key_prefix_bytes) {
             let (key_bytes, _) = pair?;
 
             let (_, collection, _rkey, found_cursor) = db_complete::<ByIdKey>(&key_bytes)?.into();
@@ -651,12 +803,12 @@ impl DBWriter {
             }
 
             // remove the by_id entry
-            db_batch.remove(&self.partition, key_bytes);
+            db_batch.remove(&self.global, key_bytes);
 
             // remove its record sample
             let by_collection_key_bytes =
                 ByCollectionKey::new(collection, found_cursor).to_db_bytes()?;
-            db_batch.remove(&self.partition, by_collection_key_bytes);
+            db_batch.remove(&self.global, by_collection_key_bytes);
 
             items_added += 1;
             if items_added >= MAX_BATCHED_RW_ITEMS {
@@ -683,7 +835,7 @@ impl DBWriter {
         // {
         //     if let Some(last_record) = &samples.back() {
         //         db_batch.insert(
-        //             &self.partition,
+        //             &self.global,
         //             ByCursorSeenKey::new(last_record.cursor.clone(), collection.clone())
         //                 .to_db_bytes()?,
         //             ByCursorSeenValue::new(total_seen as u64).to_db_bytes()?,
@@ -718,14 +870,14 @@ impl DBWriter {
     ) -> anyhow::Result<()> {
         // ["by_collection"|collection|js_cursor] => [did|rkey|record]
         db_batch.insert(
-            &self.partition,
+            &self.global,
             ByCollectionKey::new(collection.clone(), cursor.clone()).to_db_bytes()?,
             ByCollectionValue::new(did.clone(), rkey.clone(), record).to_db_bytes()?,
         );
 
         // ["by_id"|did|collection|rkey|js_cursor] => [] // required to support deletes; did first prefix for account deletes.
         db_batch.insert(
-            &self.partition,
+            &self.global,
             ByIdKey::new(did, collection.clone(), rkey, cursor).to_db_bytes()?,
             ByIdValue::default().to_db_bytes()?,
         );
@@ -751,7 +903,7 @@ impl DBWriter {
         //         ),
         //     };
         //     db_batch.insert(
-        //         &self.partition,
+        //         &self.global,
         //         ModQueueItemKey::new(cursor).to_db_bytes()?,
         //         db_val.to_db_bytes()?,
         //     );
@@ -766,7 +918,7 @@ impl DBWriter {
     ) -> anyhow::Result<()> {
         for deletion in account_removes {
             db_batch.insert(
-                &self.partition,
+                &self.global,
                 ModQueueItemKey::new(deletion.cursor).to_db_bytes()?,
                 ModQueueItemValue::DeleteAccount(deletion.did).to_db_bytes()?,
             );
@@ -780,12 +932,12 @@ pub struct StorageInfo {
     pub keyspace_disk_space: u64,
     pub keyspace_journal_count: usize,
     pub keyspace_sequence: u64,
-    pub partition_approximate_len: usize,
+    pub global_approximate_len: usize,
 }
 
 struct DBWriter {
     keyspace: Keyspace,
-    partition: PartitionHandle,
+    global: PartitionHandle,
 }
 
 ////////// temp stuff to remove:
