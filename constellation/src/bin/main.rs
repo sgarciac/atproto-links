@@ -84,7 +84,8 @@ fn main() -> Result<()> {
     match args.backend {
         StorageBackend::Memory => run(MemStorage::new(), fixture, None, stream, stay_alive),
         StorageBackend::Duck => {
-            let path = "~/tmp/my_db.db3";
+            let mut path = args.data.clone().unwrap_or("duckdb.test".into());
+            path.push("links.db");
             let client = duckdb::Connection::open(path)?;
 
             run(DuckStorage::new(client), fixture, None, stream, stay_alive)
