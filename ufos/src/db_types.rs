@@ -75,12 +75,15 @@ impl<P: DbBytes + PartialEq + std::fmt::Debug, S: DbBytes + PartialEq + std::fmt
     pub fn to_prefix_db_bytes(&self) -> Result<Vec<u8>, EncodingError> {
         self.prefix.to_db_bytes()
     }
-    pub fn range_end(&self) -> Result<Vec<u8>, EncodingError> {
-        let prefix_bytes = self.prefix.to_db_bytes()?;
+    pub fn prefix_range_end(prefix: &P) -> Result<Vec<u8>, EncodingError> {
+        let prefix_bytes = prefix.to_db_bytes()?;
         let (_, Bound::Excluded(range_end)) = prefix_to_range(&prefix_bytes) else {
             return Err(EncodingError::BadRangeBound);
         };
         Ok(range_end.to_vec())
+    }
+    pub fn range_end(&self) -> Result<Vec<u8>, EncodingError> {
+        Self::prefix_range_end(&self.prefix)
     }
     pub fn range(&self) -> Result<Range<Vec<u8>>, EncodingError> {
         let prefix_bytes = self.prefix.to_db_bytes()?;

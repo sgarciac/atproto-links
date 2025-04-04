@@ -7,6 +7,8 @@ use crate::store_types::{
     NsidRecordFeedKey, NsidRecordFeedVal, RecordLocationKey, RecordLocationVal,
     LiveRecordsKey, LiveRecordsValue, LiveDidsKey, LiveDidsValue,
     DeleteAccountQueueKey, DeleteAccountQueueVal,
+    NewRollupCursorKey, NewRollupCursorValue,
+    TakeoffKey, TakeoffValue,
 };
 use crate::{
     DeleteAccount, Did, EventBatch, Nsid, RecordKey, CommitAction,
@@ -18,7 +20,7 @@ use fjall::{
 use jetstream::events::Cursor;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 use tokio::sync::mpsc::Receiver;
 use tokio::time::{interval_at, sleep};
 
@@ -53,6 +55,10 @@ struct Db {
  *  - Jetstream server endpoint (persisted because the cursor can't be used on another instance without data loss)
  *      key: "js_endpoint" (literal)
  *      val: string (URL of the instance)
+ *
+ *  - Launch date
+ *      key: "takeoff" (literal)
+ *      val: u64 (micros timestamp, not from jetstream for now so not precise)
  *
  *  - Rollup cursor (bg work: roll stats into hourlies, delete accounts, old record deletes)
  *      key: "rollup_cursor" (literal)
@@ -163,6 +169,14 @@ impl StorageWhatever for FjallStorage {
                 &global,
                 JetstreamEndpointValue(endpoint.to_string()),
             )?;
+            insert_static_neu::<TakeoffKey>(
+                &global,
+                Cursor::at(SystemTime::now()),
+            )?;
+            insert_static_neu::<NewRollupCursorKey>(
+                &global,
+                Cursor::from_start(),
+            )?;
         }
 
         let reader = FjallReader {
@@ -197,13 +211,55 @@ pub struct FjallWriter {
 
 impl FjallWriter {
     pub fn step_rollup(&mut self) -> Result<(), StorageError> {
-        let mut batch = self.keyspace.batch();
+        // let mut batch = self.keyspace.batch();
+
+        let rollup_cursor = get_static_neu::<NewRollupCursorKey, NewRollupCursorValue>(&self.global)?
+            .ok_or(StorageError::BadStateError("Could not find current rollup cursor".to_string()))?;
 
         // timelies
-        // trim records
-        // delete accounts
+        let live_records_range = LiveRecordsKey::range_from_cursor(rollup_cursor)?;
+        // let live_dids_range = LiveDidsKey::range_from_cursor(rollup_cursor)?; // shoudl be in sync with live records range. we could keep both value under same key?
+        let mut timely_iter = self.rollups.range(live_records_range);
 
-        batch.commit()?;
+        let next_timely = timely_iter
+            .next()
+            .transpose()?
+            .map(|(key_bytes, val_bytes)|
+                db_complete::<LiveRecordsKey>(&key_bytes)
+                    .map(|k| (k, val_bytes)))
+            .transpose()?;
+
+        // delete accounts
+        let delete_accounts_range = DeleteAccountQueueKey::new(rollup_cursor).range_to_prefix_end()?;
+
+        let next_delete = self.queues.range(delete_accounts_range)
+            .next()
+            .transpose()?
+            .map(|(key_bytes, val_bytes)|
+                db_complete::<DeleteAccountQueueKey>(&key_bytes)
+                    .map(|k| (k.suffix, val_bytes)))
+            .transpose()?;
+
+        match (next_timely, next_delete) {
+            (Some((k, timely_val_bytes)), Some((cursor, delete_val_bytes))) => {
+                if k.cursor() < cursor {
+                    eprintln!("rollup until delete cursor");
+                } else {
+                    eprintln!("delete then come back for rollups");
+                }
+            }
+            (Some((k, timely_val_bytes)), None) => {
+                eprintln!("do as much rollup as we want");
+            }
+            (None, Some((cursor, delete_val_bytes))) => {
+                eprintln!("just delete an account");
+            }
+            (None, None) => {
+                eprintln!("do nothing.");
+            }
+        }
+
+        // batch.commit()?;
         Ok(())
     }
 }
@@ -275,6 +331,9 @@ impl StoreWriter for FjallWriter {
         );
 
         batch.commit()?;
+
+        eprintln!("ok stepping rollup now...");
+        self.step_rollup()?;
         Ok(())
     }
 }

@@ -37,6 +37,31 @@ impl StaticStr for RollupCursorKey {
 /// value format: [rollup_cursor(Cursor)|collection(Nsid)]
 pub type RollupCursorValue = DbConcat<Cursor, Nsid>;
 
+
+/// key format: ["rollup_cursor"]
+#[derive(Debug, PartialEq)]
+pub struct NewRollupCursorKey {}
+impl StaticStr for NewRollupCursorKey {
+    fn static_str() -> &'static str {
+        "rollup_cursor"
+    }
+}
+// pub type NewRollupCursorKey = DbStaticStr<_NewRollupCursorKey>;
+/// value format: [rollup_cursor(Cursor)|collection(Nsid)]
+pub type NewRollupCursorValue = Cursor;
+
+
+/// key format: ["js_endpoint"]
+#[derive(Debug, PartialEq)]
+pub struct TakeoffKey {}
+impl StaticStr for TakeoffKey {
+    fn static_str() -> &'static str {
+        "takeoff"
+    }
+}
+pub type TakeoffValue = Cursor;
+
+
 /// key format: ["js_endpoint"]
 #[derive(Debug, PartialEq)]
 pub struct JetstreamEndpointKey {}
@@ -114,12 +139,23 @@ impl StaticStr for _LiveRecordsStaticStr {
     }
 }
 type LiveRecordsStaticPrefix = DbStaticStr<_LiveRecordsStaticStr>;
-pub type LiveRecordsKey = DbConcat<LiveRecordsStaticPrefix, DbConcat<Cursor, Nsid>>;
+type LiveRecordsCursorPrefix = DbConcat<LiveRecordsStaticPrefix, Cursor>;
+pub type LiveRecordsKey = DbConcat<LiveRecordsCursorPrefix, Nsid>;
+impl LiveRecordsKey {
+    pub fn range_from_cursor(cursor: Cursor) -> Result<Range<Vec<u8>>, EncodingError> {
+        let prefix = LiveRecordsCursorPrefix::from_pair(Default::default(), cursor);
+        let end = Self::prefix_range_end(&prefix)?;
+        Ok(prefix.to_db_bytes()?..end.to_db_bytes()?)
+    }
+    pub fn cursor(&self) -> Cursor {
+        self.prefix.suffix
+    }
+}
 impl From<(Cursor, &Nsid)> for LiveRecordsKey {
     fn from((cursor, collection): (Cursor, &Nsid)) -> Self {
         Self::from_pair(
-            Default::default(),
-            DbConcat::from_pair(cursor, collection.clone()),
+            LiveRecordsCursorPrefix::from_pair(Default::default(), cursor),
+            collection.clone(),
         )
     }
 }
@@ -135,12 +171,20 @@ impl StaticStr for _LiveDidsStaticStr {
     }
 }
 pub type LiveDidsStaticPrefix = DbStaticStr<_LiveDidsStaticStr>;
-pub type LiveDidsKey = DbConcat<LiveDidsStaticPrefix, DbConcat<Cursor, Nsid>>;
+pub type LiveDidsCursorPrefix = DbConcat<LiveDidsStaticPrefix, Cursor>;
+pub type LiveDidsKey = DbConcat<LiveDidsCursorPrefix, Nsid>;
+impl LiveDidsKey {
+    pub fn range_from_cursor(cursor: Cursor) -> Result<Range<Vec<u8>>, EncodingError> {
+        let prefix = LiveDidsCursorPrefix::from_pair(Default::default(), cursor);
+        let end = Self::prefix_range_end(&prefix)?;
+        Ok(prefix.to_db_bytes()?..end.to_db_bytes()?)
+    }
+}
 impl From<(Cursor, &Nsid)> for LiveDidsKey {
     fn from((cursor, collection): (Cursor, &Nsid)) -> Self {
         Self::from_pair(
-            Default::default(),
-            DbConcat::from_pair(cursor, collection.clone()),
+            LiveDidsCursorPrefix::from_pair(Default::default(), cursor),
+            collection.clone(),
         )
     }
 }
