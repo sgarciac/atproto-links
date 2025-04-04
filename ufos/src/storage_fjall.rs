@@ -4,9 +4,12 @@ use crate::store_types::{
     JetstreamCursorKey, JetstreamCursorValue, JetstreamEndpointKey, JetstreamEndpointValue,
     ModCursorKey, ModCursorValue, ModQueueItemKey, ModQueueItemStringValue, ModQueueItemValue,
     RollupCursorKey, RollupCursorValue, SeenCounter,
+    NsidRecordFeedKey, NsidRecordFeedVal, RecordLocationKey, RecordLocationVal,
+    LiveRecordsKey, LiveRecordsValue, LiveDidsKey, LiveDidsValue,
+    DeleteAccountQueueKey, DeleteAccountQueueVal,
 };
 use crate::{
-    DeleteAccount, Did, EventBatch, Nsid, RecordKey,
+    DeleteAccount, Did, EventBatch, Nsid, RecordKey, CommitAction,
 };
 use crate::error::StorageError;
 use fjall::{
@@ -69,7 +72,6 @@ struct Db {
  *      key: nullstr || nullstr || nullstr (did, collection, rkey)
  *      val: u64 || bool || nullstr || rawval (js_cursor, is_update, rev, actual record)
  *
- *
  * Partition: 'rollups'
  *
  * - Live (batched) records per collection
@@ -96,19 +98,27 @@ struct Db {
  *      key: "ever_dids" || u64 || nullstr (estimated cardinality, nsid. like ever_records)
  *      val: HLL (estimator)
  *
+ *
+ * Partition: 'queues'
+ *
+ *  - Delete account queue
+ *      key: "delete_acount" || u64 (js_cursor)
+ *      val: nullstr (did)
+ *
+ *
  * TODO: moderation actions
  * TODO: account privacy preferences. Might wait for the protocol-level (PDS-level?) stuff to land. Will probably do lazy fetching + caching on read.
  **/
 pub trait StorageWhatever { // TODO: extract this
     fn init(
         path: impl AsRef<Path>,
-        endpoint: &str,
+        endpoint: String,
         force_endpoint: bool,
-    ) -> Result<(impl StoreReader, impl StoreWriter, bool), StorageError> where Self: Sized;
+    ) -> Result<(impl StoreReader, impl StoreWriter, Option<Cursor>), StorageError> where Self: Sized;
 }
 
 pub trait StoreWriter {
-    fn insert_batch(batch: EventBatch) -> Result<(), StorageError>;
+    fn insert_batch(&mut self, event_batch: EventBatch) -> Result<(), StorageError>;
 }
 
 pub trait StoreReader: Clone {}
@@ -117,21 +127,20 @@ pub struct FjallStorage {}
 impl StorageWhatever for FjallStorage {
     fn init(
         path: impl AsRef<Path>,
-        endpoint: &str,
+        endpoint: String,
         force_endpoint: bool,
-    ) -> Result<(impl StoreReader, impl StoreWriter, bool), StorageError> {
-        let mut fresh = true;
+    ) -> Result<(impl StoreReader, impl StoreWriter, Option<Cursor>), StorageError> {
         let keyspace = Config::new(path).fsync_ms(Some(4_000)).open()?;
 
         let global = keyspace.open_partition("global", PartitionCreateOptions::default())?;
         let feeds = keyspace.open_partition("feeds", PartitionCreateOptions::default())?;
         let records = keyspace.open_partition("records", PartitionCreateOptions::default())?;
         let rollups = keyspace.open_partition("rollups", PartitionCreateOptions::default())?;
+        let queues = keyspace.open_partition("queues", PartitionCreateOptions::default())?;
 
         let js_cursor = get_static_neu::<JetstreamCursorKey, JetstreamCursorValue>(&global)?;
 
         if js_cursor.is_some() {
-            fresh = false;
             let stored_endpoint = get_static_neu::<JetstreamEndpointKey, JetstreamEndpointValue>(&global)?;
 
             let JetstreamEndpointValue(stored) = stored_endpoint
@@ -162,8 +171,8 @@ impl StorageWhatever for FjallStorage {
             records: records.clone(),
             rollups: rollups.clone(),
         };
-        let writer = FjallWriter { keyspace, global, feeds, records, rollups };
-        Ok((reader, writer, fresh))
+        let writer = FjallWriter { keyspace, global, feeds, records, rollups, queues };
+        Ok((reader, writer, js_cursor))
     }
 }
 
@@ -183,10 +192,76 @@ pub struct FjallWriter {
     feeds: PartitionHandle,
     records: PartitionHandle,
     rollups: PartitionHandle,
+    queues: PartitionHandle,
 }
 
 impl StoreWriter for FjallWriter {
-    fn insert_batch(_batch: EventBatch) -> Result<(), StorageError> {
+    fn insert_batch(&mut self, event_batch: EventBatch) -> Result<(), StorageError> {
+        let mut batch = self.keyspace.batch();
+
+        // would be nice not to have to iterate everything at once here
+        let latest = event_batch.latest_cursor().unwrap();
+
+        for (nsid, commits) in event_batch.commits_by_nsid {
+            for commit in commits.commits {
+                let location_key: RecordLocationKey = (&commit, &nsid).into();
+
+                match commit.action {
+                    CommitAction::Cut => {
+                        batch.remove(&self.records, &location_key.to_db_bytes()?);
+                    }
+                    CommitAction::Put(put_action) => {
+                        let feed_key = NsidRecordFeedKey::from_pair(nsid.clone(), commit.cursor);
+                        let feed_val: NsidRecordFeedVal = (&commit.did, &commit.rkey, commit.rev.as_str()).into();
+                        batch.insert(
+                            &self.feeds,
+                            feed_key.to_db_bytes()?,
+                            feed_val.to_db_bytes()?,
+                        );
+
+                        let location_val: RecordLocationVal = (commit.cursor, commit.rev.as_str(), put_action).into();
+                        batch.insert(
+                            &self.records,
+                            &location_key.to_db_bytes()?,
+                            &location_val.to_db_bytes()?,
+                        );
+                    }
+                }
+            }
+            let live_records_key: LiveRecordsKey = (latest, &nsid).into();
+            let live_records_value = LiveRecordsValue(commits.total_seen as u64);
+            batch.insert(
+                &self.rollups,
+                &live_records_key.to_db_bytes()?,
+                &live_records_value.to_db_bytes()?,
+            );
+
+            let live_dids_key: LiveDidsKey = (latest, &nsid).into();
+            let live_dids_value = LiveDidsValue(commits.dids_estimate);
+            batch.insert(
+                &self.rollups,
+                &live_dids_key.to_db_bytes()?,
+                &live_dids_value.to_db_bytes()?,
+            );
+        }
+
+        for remove in event_batch.account_removes {
+            let queue_key = DeleteAccountQueueKey::new(remove.cursor);
+            let queue_val: DeleteAccountQueueVal = remove.did;
+            batch.insert(
+                &self.queues,
+                &queue_key.to_db_bytes()?,
+                &queue_val.to_db_bytes()?,
+            );
+        }
+
+        batch.insert(
+            &self.global,
+            DbStaticStr::<JetstreamCursorKey>::default().to_db_bytes()?,
+            latest.to_db_bytes()?,
+        );
+
+        batch.commit()?;
         Ok(())
     }
 }

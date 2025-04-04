@@ -184,6 +184,16 @@ where
     }
 }
 
+/// helper trait: impl on a type to get helpers to implement DbBytes
+pub trait SerdeBytes: serde::Serialize + for<'a> serde::Deserialize<'a> {
+    fn to_bytes(&self) -> Result<Vec<u8>, EncodingError> {
+        Ok(bincode::serde::encode_to_vec(self, bincode_conf())?)
+    }
+    fn from_bytes(bytes: &[u8]) -> Result<(Self, usize), EncodingError> {
+        Ok(bincode::serde::decode_from_slice(bytes, bincode_conf())?)
+    }
+}
+
 //////
 
 /// Lexicographic-sort-friendly null-terminating serialization for String

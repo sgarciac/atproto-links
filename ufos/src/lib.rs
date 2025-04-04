@@ -36,9 +36,12 @@ pub struct DeleteAccount {
 
 #[derive(Debug, Clone)]
 pub enum CommitAction {
-    Put { record: Box<RawValue>, is_update: bool },
+    Put(PutAction),
     Cut,
 }
+
+#[derive(Debug, Clone)]
+pub struct PutAction { record: Box<RawValue>, is_update: bool }
 
 #[derive(Debug, Clone)]
 pub struct UFOsCommit {
@@ -57,10 +60,10 @@ impl UFOsCommit {
     ) -> Result<(Self, Nsid), FirehoseEventError> {
         let action = match commit.operation {
             CommitOp::Delete => CommitAction::Cut,
-            cru @ _ => CommitAction::Put {
+            cru @ _ => CommitAction::Put(PutAction {
                 record: commit.record.ok_or(FirehoseEventError::CruMissingRecord)?,
                 is_update: cru == CommitOp::Update,
-            }
+            })
         };
         let batched = Self {
             cursor,

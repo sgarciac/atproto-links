@@ -1,6 +1,9 @@
+use ufos::error::StorageError;
+use ufos::storage_fjall::StoreWriter;
+use ufos::storage_fjall::StorageWhatever;
 use clap::Parser;
 use std::path::PathBuf;
-use ufos::{consumer, server, storage_fjall};
+use ufos::{consumer, storage_fjall};
 
 #[cfg(not(target_env = "msvc"))]
 use tikv_jemallocator::Jemalloc;
@@ -42,29 +45,37 @@ async fn main() -> anyhow::Result<()> {
     env_logger::init();
 
     let args = Args::parse();
-    let (storage, cursor) =
-        storage_fjall::Storage::open(args.data, &args.jetstream, args.jetstream_force).await?;
+    let jetstream = args.jetstream.clone();
+    let (_read_store, mut write_store, cursor) =
+        storage_fjall::FjallStorage::init(args.data, jetstream, args.jetstream_force)?;
 
-    println!("starting server with storage...");
-    let serving = server::serve(storage.clone());
+    // println!("starting server with storage...");
+    // let serving = server::serve(storage.clone());
 
-    let t1 = tokio::task::spawn(async {
-        let r = serving.await;
-        log::warn!("serving ended with: {r:?}");
-    });
+    // let t1 = tokio::task::spawn(async {
+    //     let r = serving.await;
+    //     log::warn!("serving ended with: {r:?}");
+    // });
 
     let t2: tokio::task::JoinHandle<anyhow::Result<()>> = tokio::task::spawn({
-        let _storage = storage.clone();
         async move {
             if !args.pause_writer {
                 println!(
                     "starting consumer with cursor: {cursor:?} from {:?} ago",
                     cursor.clone().map(|c| c.elapsed())
                 );
-                let batches =
+                let mut batches =
                     consumer::consume(&args.jetstream, cursor, args.jetstream_no_zstd).await?;
-                let r = storage.receive(batches).await;
-                log::warn!("storage.receive ended with: {r:?}");
+
+                tokio::task::spawn_blocking(move || {
+                    while let Some(event_batch) = batches.blocking_recv() {
+                        write_store.insert_batch(event_batch)?
+                    }
+                    Ok::<(), StorageError>(())
+                }).await??;
+
+                // let r = storage.receive(batches).await;
+                log::warn!("storage.receive ended with");
             } else {
                 log::info!("not starting jetstream or the write loop.");
             }
@@ -87,9 +98,9 @@ async fn main() -> anyhow::Result<()> {
     //     v = storage.rw_loop() => eprintln!("storage rw-loop ended: {v:?}"),
     // };
 
-    log::trace!("tasks running. waiting.");
-    t1.await?;
-    log::trace!("serve task ended.");
+    // log::trace!("tasks running. waiting.");
+    // t1.await?;
+    // log::trace!("serve task ended.");
     t2.await??;
     log::trace!("storage receive task ended.");
     // t3.await?;

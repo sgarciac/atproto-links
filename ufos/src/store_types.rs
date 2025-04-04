@@ -1,7 +1,8 @@
+use cardinality_estimator::CardinalityEstimator;
 use crate::db_types::{
-    DbBytes, DbConcat, DbEmpty, DbStaticStr, EncodingError, StaticStr, UseBincodePlz,
+    DbBytes, DbConcat, DbEmpty, DbStaticStr, EncodingError, StaticStr, UseBincodePlz, SerdeBytes,
 };
-use crate::{Cursor, Did, Nsid, RecordKey};
+use crate::{Cursor, Did, Nsid, RecordKey, UFOsCommit, PutAction};
 use bincode::{Decode, Encode};
 use std::ops::Range;
 
@@ -59,6 +60,118 @@ impl DbBytes for JetstreamEndpointValue {
         Ok((Self(s), bytes.len()))
     }
 }
+
+pub type NsidRecordFeedKey = DbConcat<Nsid, Cursor>;
+pub type NsidRecordFeedVal = DbConcat<Did, DbConcat<RecordKey, String>>;
+impl From<(&Did, &RecordKey, &str)> for NsidRecordFeedVal {
+    fn from((did, rkey, rev): (&Did, &RecordKey, &str)) -> Self {
+        Self::from_pair(
+            did.clone(),
+            DbConcat::from_pair(rkey.clone(), rev.to_string()))
+    }
+}
+
+pub type RecordLocationKey = DbConcat<Did, DbConcat<Nsid, RecordKey>>;
+impl From<(&UFOsCommit, &Nsid)> for RecordLocationKey {
+    fn from((commit, collection): (&UFOsCommit, &Nsid)) -> Self {
+        Self::from_pair(commit.did.clone(), DbConcat::from_pair(collection.clone(), commit.rkey.clone()))
+    }
+}
+#[derive(Debug, PartialEq, Encode, Decode)]
+pub struct RecordLocationMeta {
+    pub cursor: u64, // ugh no bincode impl
+    pub is_update: bool,
+    pub rev: String,
+}
+impl UseBincodePlz for RecordLocationMeta {}
+
+impl DbBytes for Vec<u8> {
+    fn to_db_bytes(&self) -> Result<Vec<u8>, EncodingError> {
+        Ok(self.to_vec())
+    }
+    fn from_db_bytes(bytes: &[u8]) -> Result<(Self, usize), EncodingError> {
+        Ok((bytes.to_owned(), bytes.len()))
+    }
+}
+
+pub type RecordLocationVal = DbConcat<RecordLocationMeta, Vec<u8>>;
+impl From<(Cursor, &str, PutAction)> for RecordLocationVal {
+    fn from((cursor, rev, put): (Cursor, &str, PutAction)) -> Self {
+        let meta = RecordLocationMeta {
+            cursor: cursor.to_raw_u64(),
+            is_update: put.is_update,
+            rev: rev.to_string(),
+        };
+        Self::from_pair(meta, put.record.get().into())
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub struct _LiveRecordsStaticStr {}
+impl StaticStr for _LiveRecordsStaticStr {
+    fn static_str() -> &'static str {
+        "live_records"
+    }
+}
+type LiveRecordsStaticPrefix = DbStaticStr<_LiveRecordsStaticStr>;
+pub type LiveRecordsKey = DbConcat<LiveRecordsStaticPrefix, DbConcat<Cursor, Nsid>>;
+impl From<(Cursor, &Nsid)> for LiveRecordsKey {
+    fn from((cursor, collection): (Cursor, &Nsid)) -> Self {
+        Self::from_pair(
+            Default::default(),
+            DbConcat::from_pair(cursor, collection.clone()),
+        )
+    }
+}
+#[derive(Debug, PartialEq, Decode, Encode)]
+pub struct LiveRecordsValue(pub u64);
+impl UseBincodePlz for LiveRecordsValue {}
+
+#[derive(Debug, PartialEq)]
+pub struct _LiveDidsStaticStr {}
+impl StaticStr for _LiveDidsStaticStr {
+    fn static_str() -> &'static str {
+        "live_dids"
+    }
+}
+pub type LiveDidsStaticPrefix = DbStaticStr<_LiveDidsStaticStr>;
+pub type LiveDidsKey = DbConcat<LiveDidsStaticPrefix, DbConcat<Cursor, Nsid>>;
+impl From<(Cursor, &Nsid)> for LiveDidsKey {
+    fn from((cursor, collection): (Cursor, &Nsid)) -> Self {
+        Self::from_pair(
+            Default::default(),
+            DbConcat::from_pair(cursor, collection.clone()),
+        )
+    }
+}
+#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct LiveDidsValue(pub CardinalityEstimator::<Did>);
+impl SerdeBytes for LiveDidsValue {}
+impl DbBytes for LiveDidsValue {
+    fn to_db_bytes(&self) -> Result<Vec<u8>, EncodingError> {
+        SerdeBytes::to_bytes(self)
+    }
+    fn from_db_bytes(bytes: &[u8]) -> Result<(Self, usize), EncodingError> {
+        SerdeBytes::from_bytes(bytes)
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub struct _DeleteAccountStaticStr {}
+impl StaticStr for _DeleteAccountStaticStr {
+    fn static_str() -> &'static str {
+        "delete_acount"
+    }
+}
+pub type DeleteAccountStaticPrefix = DbStaticStr<_DeleteAccountStaticStr>;
+pub type DeleteAccountQueueKey = DbConcat<DeleteAccountStaticPrefix, Cursor>;
+impl DeleteAccountQueueKey {
+    pub fn new(cursor: Cursor) -> Self {
+        Self::from_pair(Default::default(), cursor)
+    }
+}
+pub type DeleteAccountQueueVal = Did;
+
 
 #[derive(Debug, Clone, Encode, Decode)]
 pub struct SeenCounter(pub u64);
@@ -303,7 +416,7 @@ impl TryFrom<ModQueueItemStringValue> for ModQueueItemValue {
     }
 }
 impl DbBytes for ModQueueItemValue {
-    fn to_db_bytes(&self) -> Result<std::vec::Vec<u8>, EncodingError> {
+    fn to_db_bytes(&self) -> Result<Vec<u8>, EncodingError> {
         Into::<ModQueueItemStringValue>::into(self.clone()).to_db_bytes()
     }
     fn from_db_bytes(bytes: &[u8]) -> Result<(Self, usize), EncodingError> {
