@@ -426,9 +426,39 @@ impl DbBytes for ModQueueItemValue {
     }
 }
 
+
+const HOUR_IN_MICROS: u64 = 1_000_000 * 3600;
+#[derive(Debug, Copy, Clone, PartialEq, PartialOrd)]
+pub struct HourTrucatedCursor(u64);
+impl HourTrucatedCursor {
+    fn truncate(raw: u64) -> u64 {
+        let hours_ts = raw / HOUR_IN_MICROS;
+        let truncated = hours_ts * HOUR_IN_MICROS;
+        truncated
+    }
+    pub fn try_from_raw_u64(time_us: u64) -> Result<Self, EncodingError> {
+        let rem = time_us % HOUR_IN_MICROS;
+        if rem != 0 {
+            return Err(EncodingError::InvalidHourlyTruncated(rem))
+        }
+        Ok(Self(time_us))
+    }
+    pub fn truncate_cursor(cursor: Cursor) -> Self {
+        let raw = cursor.to_raw_u64();
+        let truncated = Self::truncate(raw);
+        Self(truncated)
+    }
+}
+impl From<HourTrucatedCursor> for Cursor {
+    fn from(hour_truncated: HourTrucatedCursor) -> Self {
+        Cursor::from_raw_u64(hour_truncated.0)
+    }
+}
+
+
 #[cfg(test)]
 mod test {
-    use super::{ByCollectionKey, ByCollectionValue, Cursor, Did, EncodingError, Nsid, RecordKey};
+    use super::{ByCollectionKey, ByCollectionValue, Cursor, Did, EncodingError, Nsid, RecordKey, HourTrucatedCursor, HOUR_IN_MICROS};
     use crate::db_types::DbBytes;
 
     #[test]
@@ -462,5 +492,25 @@ mod test {
         assert_eq!(bytes_consumed, serialized.len());
 
         Ok(())
+    }
+
+    #[test]
+    fn test_hour_truncated_cursor() {
+        let us = Cursor::from_raw_u64(1_743_778_483_483_895);
+        let hr = HourTrucatedCursor::truncate_cursor(us);
+        let back: Cursor = hr.into();
+        assert!(back < us);
+        let diff = us.to_raw_u64() - back.to_raw_u64();
+        assert!(diff < HOUR_IN_MICROS);
+    }
+
+    #[test]
+    fn test_hour_truncated_cursor_already_truncated() {
+        let us = Cursor::from_raw_u64(1_743_775_200_000_000);
+        let hr = HourTrucatedCursor::truncate_cursor(us);
+        let back: Cursor = hr.into();
+        assert_eq!(back, us);
+        let diff = us.to_raw_u64() - back.to_raw_u64();
+        assert_eq!(diff, 0);
     }
 }

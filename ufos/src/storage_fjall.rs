@@ -195,6 +195,19 @@ pub struct FjallWriter {
     queues: PartitionHandle,
 }
 
+impl FjallWriter {
+    pub fn step_rollup(&mut self) -> Result<(), StorageError> {
+        let mut batch = self.keyspace.batch();
+
+        // timelies
+        // trim records
+        // delete accounts
+
+        batch.commit()?;
+        Ok(())
+    }
+}
+
 impl StoreWriter for FjallWriter {
     fn insert_batch(&mut self, event_batch: EventBatch) -> Result<(), StorageError> {
         let mut batch = self.keyspace.batch();

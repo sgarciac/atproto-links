@@ -42,6 +42,8 @@ pub enum EncodingError {
     DecodeTooManyBytes(usize),
     #[error("expected exclusive bound from lsm_tree (likely bug)")]
     BadRangeBound,
+    #[error("expected an hourly-truncated u64, found remainder: {0}")]
+    InvalidHourlyTruncated(u64)
 }
 
 fn bincode_conf() -> impl Config {
