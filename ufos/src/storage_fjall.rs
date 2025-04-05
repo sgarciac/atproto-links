@@ -1,3 +1,4 @@
+use crate::storage::{StorageWhatever, StoreReader, StoreWriter};
 use crate::db_types::{db_complete, DbBytes, DbStaticStr, EncodingError, StaticStr};
 use crate::store_types::{
     ByCollectionKey, ByCollectionValue, ByCursorSeenKey, ByCursorSeenValue, ByIdKey, ByIdValue,
@@ -115,28 +116,33 @@ struct Db {
  * TODO: moderation actions
  * TODO: account privacy preferences. Might wait for the protocol-level (PDS-level?) stuff to land. Will probably do lazy fetching + caching on read.
  **/
-pub trait StorageWhatever { // TODO: extract this
-    fn init(
-        path: impl AsRef<Path>,
-        endpoint: String,
-        force_endpoint: bool,
-    ) -> Result<(impl StoreReader, impl StoreWriter, Option<Cursor>), StorageError> where Self: Sized;
-}
-
-pub trait StoreWriter {
-    fn insert_batch(&mut self, event_batch: EventBatch) -> Result<(), StorageError>;
-}
-
-pub trait StoreReader: Clone {}
-
+#[derive(Debug)]
 pub struct FjallStorage {}
-impl StorageWhatever for FjallStorage {
+
+#[derive(Debug, Default)]
+pub struct FjallConfig {
+    /// drop the db when the storage is dropped
+    ///
+    /// this is only meant for tests
+    #[cfg(test)]
+    pub temp: bool,
+}
+
+impl StorageWhatever<FjallReader, FjallWriter, FjallConfig> for FjallStorage {
     fn init(
         path: impl AsRef<Path>,
         endpoint: String,
         force_endpoint: bool,
-    ) -> Result<(impl StoreReader, impl StoreWriter, Option<Cursor>), StorageError> {
-        let keyspace = Config::new(path).fsync_ms(Some(4_000)).open()?;
+        _config: FjallConfig,
+    ) -> Result<(FjallReader, FjallWriter, Option<Cursor>), StorageError> {
+        let keyspace = {
+            let config = Config::new(path);
+
+            #[cfg(not(test))]
+            let config = config.fsync_ms(Some(4_000));
+
+            config.open()?
+        };
 
         let global = keyspace.open_partition("global", PartitionCreateOptions::default())?;
         let feeds = keyspace.open_partition("feeds", PartitionCreateOptions::default())?;
@@ -266,6 +272,10 @@ impl FjallWriter {
 
 impl StoreWriter for FjallWriter {
     fn insert_batch(&mut self, event_batch: EventBatch) -> Result<(), StorageError> {
+        if event_batch.is_empty() {
+            return Ok(())
+        }
+
         let mut batch = self.keyspace.batch();
 
         // would be nice not to have to iterate everything at once here
@@ -331,9 +341,6 @@ impl StoreWriter for FjallWriter {
         );
 
         batch.commit()?;
-
-        eprintln!("ok stepping rollup now...");
-        self.step_rollup()?;
         Ok(())
     }
 }
@@ -1099,4 +1106,28 @@ fn summarize_batch(batch: &EventBatch) -> String {
         batch.account_removes(),
         batch.latest_cursor().map(|c| c.elapsed()),
     )
+}
+
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_hello() -> anyhow::Result<()> {
+        // let db_path = tempfile::tempdir()?;
+        let (_read, mut write, _) = FjallStorage::init(
+            tempfile::tempdir()?,
+            "offline test (no real jetstream endpoint)".to_string(),
+            false,
+            FjallConfig { temp: true },
+        )?;
+
+        write.insert_batch(EventBatch {
+            ..Default::default()
+        })?;
+
+        Ok(())
+    }
 }

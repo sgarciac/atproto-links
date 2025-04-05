@@ -2,6 +2,7 @@ pub mod consumer;
 pub mod db_types;
 pub mod error;
 pub mod server;
+pub mod storage;
 pub mod storage_fjall;
 pub mod store_types;
 
@@ -121,5 +122,8 @@ impl EventBatch {
         } else {
             None
         }
+    }
+    pub fn is_empty(&self) -> bool {
+        self.commits_by_nsid.is_empty() && self.account_removes.is_empty()
     }
 }

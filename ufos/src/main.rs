@@ -1,8 +1,8 @@
-use ufos::error::StorageError;
-use ufos::storage_fjall::StoreWriter;
-use ufos::storage_fjall::StorageWhatever;
 use clap::Parser;
 use std::path::PathBuf;
+use ufos::error::StorageError;
+use ufos::storage::{StorageWhatever, StoreWriter};
+use ufos::storage_fjall::FjallStorage;
 use ufos::{consumer, storage_fjall};
 
 #[cfg(not(target_env = "msvc"))]
@@ -47,7 +47,7 @@ async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let jetstream = args.jetstream.clone();
     let (_read_store, mut write_store, cursor) =
-        storage_fjall::FjallStorage::init(args.data, jetstream, args.jetstream_force)?;
+        FjallStorage::init(args.data, jetstream, args.jetstream_force, Default::default())?;
 
     // println!("starting server with storage...");
     // let serving = server::serve(storage.clone());
@@ -69,7 +69,8 @@ async fn main() -> anyhow::Result<()> {
 
                 tokio::task::spawn_blocking(move || {
                     while let Some(event_batch) = batches.blocking_recv() {
-                        write_store.insert_batch(event_batch)?
+                        write_store.insert_batch(event_batch)?;
+                        write_store.step_rollup()?;
                     }
                     Ok::<(), StorageError>(())
                 }).await??;
