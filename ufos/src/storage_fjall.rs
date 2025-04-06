@@ -1112,6 +1112,10 @@ fn summarize_batch(batch: &EventBatch) -> String {
 
 #[cfg(test)]
 mod tests {
+    use jetstream::exports::Cid;
+    use jetstream::events::{CommitEvent, CommitOp};
+    use serde_json::value::RawValue;
+    use crate::{UFOsCommit, CollectionCommits};
     use super::*;
 
     #[test]
@@ -1125,6 +1129,43 @@ mod tests {
         )?;
 
         write.insert_batch(EventBatch {
+            ..Default::default()
+        })?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_insert_one() -> anyhow::Result<()> {
+        // let db_path = tempfile::tempdir()?;
+        let (_read, mut write, _) = FjallStorage::init(
+            tempfile::tempdir()?,
+            "offline test (no real jetstream endpoint)".to_string(),
+            false,
+            FjallConfig { temp: true },
+        )?;
+
+        let did = Did::new("did:plc:inze6wrmsm7pjl7yta3oig77".to_string()).unwrap();
+        let event = CommitEvent {
+            collection: Nsid::new("a.b.c".to_string()).unwrap(),
+            rkey: RecordKey::new("asdf".to_string()).unwrap(),
+            rev: "asdf".to_string(),
+            operation: CommitOp::Create,
+            record: Some(*Box::new(RawValue::from_string("{}".to_string()).unwrap())),
+            cid: Some("bafyreidofvwoqvd2cnzbun6dkzgfucxh57tirf3ohhde7lsvh4fu3jehgy".parse().unwrap()),
+        };
+        let (commit, collection) = UFOsCommit::from_commit_info(event, did.clone(), Cursor::from_raw_u64(100))?;
+
+        let mut commits = CollectionCommits::default();
+        commits.total_seen += 1;
+        commits.dids_estimate.insert(&did);
+        commits.truncating_insert(commit, 1);
+
+        let mut commits_by_nsid = HashMap::new();
+        commits_by_nsid.insert(collection, commits);
+
+        write.insert_batch(EventBatch {
+            commits_by_nsid,
             ..Default::default()
         })?;
 
