@@ -32,6 +32,8 @@ pub enum EncodingError {
     UnterminatedString,
     #[error("could not convert from utf8: {0}")]
     NotUtf8(#[from] std::str::Utf8Error),
+    #[error("could not convert from utf8: {0}")]
+    NotUtf8String(#[from] std::string::FromUtf8Error),
     #[error("could not get array from slice: {0}")]
     BadSlice(#[from] std::array::TryFromSliceError),
     #[error("wrong static prefix. expected {1:?}, found {0:?}")]
@@ -200,6 +202,15 @@ pub trait SerdeBytes: serde::Serialize + for<'a> serde::Deserialize<'a> {
 }
 
 //////
+
+impl DbBytes for Vec<u8> {
+    fn to_db_bytes(&self) -> Result<Vec<u8>, EncodingError> {
+        Ok(self.to_vec())
+    }
+    fn from_db_bytes(bytes: &[u8]) -> Result<(Self, usize), EncodingError> {
+        Ok((bytes.to_owned(), bytes.len()))
+    }
+}
 
 /// Lexicographic-sort-friendly null-terminating serialization for String
 ///

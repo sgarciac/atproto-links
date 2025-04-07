@@ -84,7 +84,26 @@ impl DbBytes for JetstreamEndpointValue {
 }
 
 pub type NsidRecordFeedKey = DbConcat<Nsid, Cursor>;
+impl NsidRecordFeedKey {
+    pub fn collection(&self) -> &Nsid {
+        &self.prefix
+    }
+    pub fn cursor(&self) -> Cursor {
+        self.suffix
+    }
+}
 pub type NsidRecordFeedVal = DbConcat<Did, DbConcat<RecordKey, String>>;
+impl NsidRecordFeedVal {
+    pub fn did(&self) -> &Did {
+        &self.prefix
+    }
+    pub fn rkey(&self) -> &RecordKey {
+        &self.suffix.prefix
+    }
+    pub fn rev(&self) -> &str {
+        &self.suffix.suffix
+    }
+}
 impl From<(&Did, &RecordKey, &str)> for NsidRecordFeedVal {
     fn from((did, rkey, rev): (&Did, &RecordKey, &str)) -> Self {
         Self::from_pair(
@@ -95,6 +114,17 @@ impl From<(&Did, &RecordKey, &str)> for NsidRecordFeedVal {
 }
 
 pub type RecordLocationKey = DbConcat<Did, DbConcat<Nsid, RecordKey>>;
+impl RecordLocationKey {
+    pub fn did(&self) -> &Did {
+        &self.prefix
+    }
+    pub fn collection(&self) -> &Nsid {
+        &self.suffix.prefix
+    }
+    pub fn rkey(&self) -> &RecordKey {
+        &self.suffix.suffix
+    }
+}
 impl From<(&UFOsCommit, &Nsid)> for RecordLocationKey {
     fn from((commit, collection): (&UFOsCommit, &Nsid)) -> Self {
         Self::from_pair(
@@ -103,24 +133,54 @@ impl From<(&UFOsCommit, &Nsid)> for RecordLocationKey {
         )
     }
 }
+impl From<(&NsidRecordFeedKey, &NsidRecordFeedVal)> for RecordLocationKey {
+    fn from((key, val): (&NsidRecordFeedKey, &NsidRecordFeedVal)) -> Self {
+        Self::from_pair(
+            val.did().clone(),
+            DbConcat::from_pair(key.collection().clone(), val.rkey().clone()),
+        )
+    }
+}
+
 #[derive(Debug, PartialEq, Encode, Decode)]
 pub struct RecordLocationMeta {
-    pub cursor: u64, // ugh no bincode impl
+    cursor: u64, // ugh no bincode impl
     pub is_update: bool,
     pub rev: String,
 }
+impl RecordLocationMeta {
+    pub fn cursor(&self) -> Cursor {
+        Cursor::from_raw_u64(self.cursor)
+    }
+}
 impl UseBincodePlz for RecordLocationMeta {}
 
-impl DbBytes for Vec<u8> {
-    fn to_db_bytes(&self) -> Result<Vec<u8>, EncodingError> {
-        Ok(self.to_vec())
+#[derive(Debug, Clone, PartialEq)]
+pub struct RecordRawValue(Vec<u8>);
+impl DbBytes for RecordRawValue {
+    fn to_db_bytes(&self) -> Result<std::vec::Vec<u8>, EncodingError> {
+        self.0.to_db_bytes()
     }
     fn from_db_bytes(bytes: &[u8]) -> Result<(Self, usize), EncodingError> {
-        Ok((bytes.to_owned(), bytes.len()))
+        let (v, n) = DbBytes::from_db_bytes(bytes)?;
+        Ok((Self(v), n))
+    }
+}
+impl From<Box<serde_json::value::RawValue>> for RecordRawValue {
+    fn from(v: Box<serde_json::value::RawValue>) -> Self {
+        Self(v.get().into())
+    }
+}
+impl TryFrom<RecordRawValue> for Box<serde_json::value::RawValue> {
+    type Error = EncodingError;
+    fn try_from(rrv: RecordRawValue) -> Result<Self, Self::Error> {
+        let s = String::from_utf8(rrv.0)?;
+        let rv = serde_json::value::RawValue::from_string(s)?;
+        Ok(rv)
     }
 }
 
-pub type RecordLocationVal = DbConcat<RecordLocationMeta, Vec<u8>>;
+pub type RecordLocationVal = DbConcat<RecordLocationMeta, RecordRawValue>;
 impl From<(Cursor, &str, PutAction)> for RecordLocationVal {
     fn from((cursor, rev, put): (Cursor, &str, PutAction)) -> Self {
         let meta = RecordLocationMeta {
@@ -128,7 +188,7 @@ impl From<(Cursor, &str, PutAction)> for RecordLocationVal {
             is_update: put.is_update,
             rev: rev.to_string(),
         };
-        Self::from_pair(meta, put.record.get().into())
+        Self::from_pair(meta, put.record.into())
     }
 }
 

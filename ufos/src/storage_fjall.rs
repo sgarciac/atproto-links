@@ -1,16 +1,16 @@
 use crate::db_types::{db_complete, DbBytes, DbStaticStr, EncodingError, StaticStr};
 use crate::error::StorageError;
-use crate::storage::{StorageWhatever, StoreReader, StoreWriter};
+use crate::storage::{StorageResult, StorageWhatever, StoreReader, StoreWriter};
 use crate::store_types::{
     ByCollectionKey, ByCollectionValue, ByCursorSeenKey, ByCursorSeenValue, ByIdKey, ByIdValue,
     CountsValue, DeleteAccountQueueKey, DeleteAccountQueueVal, JetstreamCursorKey,
     JetstreamCursorValue, JetstreamEndpointKey, JetstreamEndpointValue, LiveCountsKey,
     ModCursorKey, ModCursorValue, ModQueueItemKey, ModQueueItemStringValue, ModQueueItemValue,
     NewRollupCursorKey, NewRollupCursorValue, NsidRecordFeedKey, NsidRecordFeedVal,
-    RecordLocationKey, RecordLocationVal, RollupCursorKey, RollupCursorValue, SeenCounter,
-    TakeoffKey, TakeoffValue,
+    RecordLocationKey, RecordLocationMeta, RecordLocationVal, RecordRawValue, RollupCursorKey,
+    RollupCursorValue, SeenCounter, TakeoffKey,
 };
-use crate::{CommitAction, DeleteAccount, Did, EventBatch, Nsid, RecordKey};
+use crate::{CommitAction, DeleteAccount, Did, EventBatch, Nsid, RecordKey, UFOsRecord};
 use cardinality_estimator::CardinalityEstimator;
 use fjall::{
     Batch as FjallBatch, CompressionType, Config, Keyspace, PartitionCreateOptions, PartitionHandle,
@@ -123,7 +123,7 @@ impl StorageWhatever<FjallReader, FjallWriter, FjallConfig> for FjallStorage {
         endpoint: String,
         force_endpoint: bool,
         _config: FjallConfig,
-    ) -> Result<(FjallReader, FjallWriter, Option<Cursor>), StorageError> {
+    ) -> StorageResult<(FjallReader, FjallWriter, Option<Cursor>)> {
         let keyspace = {
             let config = Config::new(path);
 
@@ -197,7 +197,7 @@ pub struct FjallReader {
 }
 
 impl StoreReader for FjallReader {
-    fn get_counts_by_collection(&self, collection: &Nsid) -> Result<(u64, u64), StorageError> {
+    fn get_counts_by_collection(&self, collection: &Nsid) -> StorageResult<(u64, u64)> {
         // TODO: start from rollup
         let full_range = LiveCountsKey::range_from_cursor(Cursor::from_start())?;
         let mut total = 0;
@@ -213,6 +213,69 @@ impl StoreReader for FjallReader {
         }
         Ok((total, dids.estimate() as u64))
     }
+
+    fn get_records_by_collections(
+        &self,
+        collections: &[&Nsid],
+        limit: usize,
+    ) -> StorageResult<Vec<UFOsRecord>> {
+        if collections.is_empty() {
+            return Ok(vec![]);
+        } else if collections.len() > 1 {
+            todo!()
+        }
+
+        let collection = collections[0];
+
+        let prefix = NsidRecordFeedKey::from_prefix_to_db_bytes(collection)?;
+        let collected = 0;
+        let mut out = vec![];
+        for kv in self.feeds.prefix(prefix).rev() {
+            let (key_bytes, val_bytes) = kv?;
+            let feed_key = db_complete::<NsidRecordFeedKey>(&key_bytes)?;
+            let feed_val = db_complete::<NsidRecordFeedVal>(&val_bytes)?;
+            let location_key: RecordLocationKey = (&feed_key, &feed_val).into();
+
+            let Some(location_val_bytes) = self.records.get(location_key.to_db_bytes()?)? else {
+                // record was deleted (hopefully)
+                continue;
+            };
+
+            let (meta, n) = RecordLocationMeta::from_db_bytes(&location_val_bytes)?;
+
+            if meta.cursor() != feed_key.cursor() {
+                // older/different version
+                continue;
+            }
+            if meta.rev != feed_val.rev() {
+                // weird...
+                log::warn!("record lookup: cursor match but rev did not...? excluding.");
+                continue;
+            }
+            let Some(raw_value_bytes) = location_val_bytes.get(n..) else {
+                log::warn!(
+                    "record lookup: found record but could not get bytes to decode the record??"
+                );
+                continue;
+            };
+            let rawval = db_complete::<RecordRawValue>(raw_value_bytes)?;
+            out.push(UFOsRecord {
+                collection: feed_key.collection().clone(),
+                cursor: feed_key.cursor(),
+                did: feed_val.did().clone(),
+                rkey: feed_val.rkey().clone(),
+                rev: meta.rev.to_string(),
+                record: rawval.try_into()?,
+                is_update: meta.is_update,
+            });
+
+            if collected >= limit {
+                break;
+            }
+        }
+
+        Ok(out)
+    }
 }
 
 pub struct FjallWriter {
@@ -225,7 +288,7 @@ pub struct FjallWriter {
 }
 
 impl FjallWriter {
-    pub fn step_rollup(&mut self) -> Result<(), StorageError> {
+    pub fn step_rollup(&mut self) -> StorageResult<()> {
         // let mut batch = self.keyspace.batch();
 
         let rollup_cursor =
@@ -284,7 +347,7 @@ impl FjallWriter {
 }
 
 impl StoreWriter for FjallWriter {
-    fn insert_batch(&mut self, event_batch: EventBatch) -> Result<(), StorageError> {
+    fn insert_batch(&mut self, event_batch: EventBatch) -> StorageResult<()> {
         if event_batch.is_empty() {
             return Ok(());
         }
@@ -669,9 +732,7 @@ fn get_static<K: StaticStr, V: DbBytes>(global: &PartitionHandle) -> anyhow::Res
 }
 
 /// Get a value from a fixed key
-fn get_static_neu<K: StaticStr, V: DbBytes>(
-    global: &PartitionHandle,
-) -> Result<Option<V>, StorageError> {
+fn get_static_neu<K: StaticStr, V: DbBytes>(global: &PartitionHandle) -> StorageResult<Option<V>> {
     let key_bytes = DbStaticStr::<K>::default().to_db_bytes()?;
     let value = global
         .get(&key_bytes)?
@@ -695,7 +756,7 @@ fn insert_static<K: StaticStr>(
 fn insert_static_neu<K: StaticStr>(
     global: &PartitionHandle,
     value: impl DbBytes,
-) -> Result<(), StorageError> {
+) -> StorageResult<()> {
     let key_bytes = DbStaticStr::<K>::default().to_db_bytes()?;
     let value_bytes = value.to_db_bytes()?;
     global.insert(&key_bytes, &value_bytes)?;
@@ -1206,11 +1267,15 @@ mod tests {
         assert_eq!(records, 0);
         assert_eq!(dids, 0);
 
-        // let records = read.get_records_by_collections(&vec![collection], 2);
-        // assert_eq!(records.len, 1);
+        let records = read.get_records_by_collections(&vec![&collection], 2)?;
+        assert_eq!(records.len(), 1);
+        let rec = &records[0];
+        assert_eq!(rec.record.get(), "{}");
+        assert_eq!(rec.is_update, false);
 
-        // let records = read.get_records_by_collections(&vec![&Nsid::new("d.e.f".to_string()).unwrap()], 2);
-        // assert_eq!(records.len, 0);
+        let records =
+            read.get_records_by_collections(&vec![&Nsid::new("d.e.f".to_string()).unwrap()], 2)?;
+        assert_eq!(records.len(), 0);
 
         Ok(())
     }

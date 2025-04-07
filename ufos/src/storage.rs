@@ -1,6 +1,8 @@
-use crate::{error::StorageError, Cursor, EventBatch};
+use crate::{error::StorageError, Cursor, EventBatch, UFOsRecord};
 use jetstream::exports::Nsid;
 use std::path::Path;
+
+pub type StorageResult<T> = Result<T, StorageError>;
 
 pub trait StorageWhatever<R: StoreReader, W: StoreWriter, C> {
     // TODO: extract this
@@ -9,16 +11,20 @@ pub trait StorageWhatever<R: StoreReader, W: StoreWriter, C> {
         endpoint: String,
         force_endpoint: bool,
         config: C,
-    ) -> Result<(R, W, Option<Cursor>), StorageError>
+    ) -> StorageResult<(R, W, Option<Cursor>)>
     where
         Self: Sized;
 }
 
 pub trait StoreWriter {
-    fn insert_batch(&mut self, event_batch: EventBatch) -> Result<(), StorageError>;
+    fn insert_batch(&mut self, event_batch: EventBatch) -> StorageResult<()>;
 }
 
 pub trait StoreReader: Clone {
-    fn get_counts_by_collection(&self, collection: &Nsid) -> Result<(u64, u64), StorageError>;
-    // fn get_records_by_collections(&self, collections: &)
+    fn get_counts_by_collection(&self, collection: &Nsid) -> StorageResult<(u64, u64)>;
+    fn get_records_by_collections(
+        &self,
+        collections: &[&Nsid],
+        limit: usize,
+    ) -> StorageResult<Vec<UFOsRecord>>;
 }

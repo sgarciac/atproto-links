@@ -6,13 +6,16 @@ use std::time::{
 };
 
 use chrono::Utc;
-use serde::Deserialize;
+use serde::{
+    Deserialize,
+    Serialize,
+};
 use serde_json::value::RawValue;
 
 use crate::exports;
 
 /// Opaque wrapper for the time_us cursor used by jetstream
-#[derive(Deserialize, Debug, Copy, Clone, PartialEq, PartialOrd)]
+#[derive(Debug, Serialize, Deserialize, Copy, Clone, PartialEq, PartialOrd)]
 pub struct Cursor(u64);
 
 #[derive(Debug, Deserialize)]

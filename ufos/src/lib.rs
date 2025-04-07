@@ -10,6 +10,7 @@ use cardinality_estimator::CardinalityEstimator;
 use error::FirehoseEventError;
 use jetstream::events::{CommitEvent, CommitOp, Cursor};
 use jetstream::exports::{Did, Nsid, RecordKey};
+use serde::Serialize;
 use serde_json::value::RawValue;
 use std::collections::{HashMap, VecDeque};
 
@@ -54,6 +55,18 @@ pub struct UFOsCommit {
     rkey: RecordKey,
     rev: String,
     action: CommitAction,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct UFOsRecord {
+    pub cursor: Cursor,
+    pub did: Did,
+    pub collection: Nsid,
+    pub rkey: RecordKey,
+    pub rev: String,
+    // TODO: cid?
+    pub record: Box<RawValue>,
+    pub is_update: bool,
 }
 
 impl UFOsCommit {
