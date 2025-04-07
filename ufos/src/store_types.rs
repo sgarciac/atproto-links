@@ -1,7 +1,7 @@
 use crate::db_types::{
     DbBytes, DbConcat, DbEmpty, DbStaticStr, EncodingError, SerdeBytes, StaticStr, UseBincodePlz,
 };
-use crate::{Cursor, Did, Nsid, PutAction, RecordKey, UFOsCommit};
+use crate::{CollectionCommits, Cursor, Did, Nsid, PutAction, RecordKey, UFOsCommit};
 use bincode::{Decode, Encode};
 use cardinality_estimator::CardinalityEstimator;
 use std::ops::Range;
@@ -136,16 +136,16 @@ impl From<(Cursor, &str, PutAction)> for RecordLocationVal {
 pub struct _LiveRecordsStaticStr {}
 impl StaticStr for _LiveRecordsStaticStr {
     fn static_str() -> &'static str {
-        "live_records"
+        "live_counts"
     }
 }
-// TODO: merge counts with hlls
-type LiveRecordsStaticPrefix = DbStaticStr<_LiveRecordsStaticStr>;
-type LiveRecordsCursorPrefix = DbConcat<LiveRecordsStaticPrefix, Cursor>;
-pub type LiveRecordsKey = DbConcat<LiveRecordsCursorPrefix, Nsid>;
-impl LiveRecordsKey {
+
+type LiveCountsStaticPrefix = DbStaticStr<_LiveRecordsStaticStr>;
+type LiveCountsCursorPrefix = DbConcat<LiveCountsStaticPrefix, Cursor>;
+pub type LiveCountsKey = DbConcat<LiveCountsCursorPrefix, Nsid>;
+impl LiveCountsKey {
     pub fn range_from_cursor(cursor: Cursor) -> Result<Range<Vec<u8>>, EncodingError> {
-        let prefix = LiveRecordsCursorPrefix::from_pair(Default::default(), cursor);
+        let prefix = LiveCountsCursorPrefix::from_pair(Default::default(), cursor);
         Ok(prefix.range_to_prefix_end()?)
     }
     pub fn cursor(&self) -> Cursor {
@@ -155,54 +155,43 @@ impl LiveRecordsKey {
         &self.suffix
     }
 }
-impl From<(Cursor, &Nsid)> for LiveRecordsKey {
+impl From<(Cursor, &Nsid)> for LiveCountsKey {
     fn from((cursor, collection): (Cursor, &Nsid)) -> Self {
         Self::from_pair(
-            LiveRecordsCursorPrefix::from_pair(Default::default(), cursor),
+            LiveCountsCursorPrefix::from_pair(Default::default(), cursor),
             collection.clone(),
         )
     }
 }
 #[derive(Debug, PartialEq, Decode, Encode)]
-pub struct LiveRecordsValue(pub u64);
-impl UseBincodePlz for LiveRecordsValue {}
+pub struct TotalRecordsValue(pub u64);
+impl UseBincodePlz for TotalRecordsValue {}
 
-#[derive(Debug, PartialEq)]
-pub struct _LiveDidsStaticStr {}
-impl StaticStr for _LiveDidsStaticStr {
-    fn static_str() -> &'static str {
-        "live_dids"
-    }
-}
-pub type LiveDidsStaticPrefix = DbStaticStr<_LiveDidsStaticStr>;
-pub type LiveDidsCursorPrefix = DbConcat<LiveDidsStaticPrefix, Cursor>;
-pub type LiveDidsKey = DbConcat<LiveDidsCursorPrefix, Nsid>;
-impl LiveDidsKey {
-    pub fn range_from_cursor(cursor: Cursor) -> Result<Range<Vec<u8>>, EncodingError> {
-        let prefix = LiveDidsCursorPrefix::from_pair(Default::default(), cursor);
-        Ok(prefix.range_to_prefix_end()?)
-    }
-    pub fn collection(&self) -> &Nsid {
-        &self.suffix
-    }
-}
-impl From<(Cursor, &Nsid)> for LiveDidsKey {
-    fn from((cursor, collection): (Cursor, &Nsid)) -> Self {
-        Self::from_pair(
-            LiveDidsCursorPrefix::from_pair(Default::default(), cursor),
-            collection.clone(),
-        )
-    }
-}
 #[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct LiveDidsValue(pub CardinalityEstimator<Did>);
-impl SerdeBytes for LiveDidsValue {}
-impl DbBytes for LiveDidsValue {
+pub struct EstimatedDidsValue(pub CardinalityEstimator<Did>);
+impl SerdeBytes for EstimatedDidsValue {}
+impl DbBytes for EstimatedDidsValue {
     fn to_db_bytes(&self) -> Result<Vec<u8>, EncodingError> {
         SerdeBytes::to_bytes(self)
     }
     fn from_db_bytes(bytes: &[u8]) -> Result<(Self, usize), EncodingError> {
         SerdeBytes::from_bytes(bytes)
+    }
+}
+
+pub type CountsValue = DbConcat<TotalRecordsValue, EstimatedDidsValue>;
+impl CountsValue {
+    pub fn new(total: u64, dids: CardinalityEstimator<Did>) -> Self {
+        Self {
+            prefix: TotalRecordsValue(total),
+            suffix: EstimatedDidsValue(dids),
+        }
+    }
+    pub fn records(&self) -> u64 {
+        self.prefix.0
+    }
+    pub fn dids(&self) -> &CardinalityEstimator<Did> {
+        &self.suffix.0
     }
 }
 

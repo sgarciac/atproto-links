@@ -3,14 +3,15 @@ use crate::error::StorageError;
 use crate::storage::{StorageWhatever, StoreReader, StoreWriter};
 use crate::store_types::{
     ByCollectionKey, ByCollectionValue, ByCursorSeenKey, ByCursorSeenValue, ByIdKey, ByIdValue,
-    DeleteAccountQueueKey, DeleteAccountQueueVal, JetstreamCursorKey, JetstreamCursorValue,
-    JetstreamEndpointKey, JetstreamEndpointValue, LiveDidsKey, LiveDidsValue, LiveRecordsKey,
-    LiveRecordsValue, ModCursorKey, ModCursorValue, ModQueueItemKey, ModQueueItemStringValue,
-    ModQueueItemValue, NewRollupCursorKey, NewRollupCursorValue, NsidRecordFeedKey,
-    NsidRecordFeedVal, RecordLocationKey, RecordLocationVal, RollupCursorKey, RollupCursorValue,
-    SeenCounter, TakeoffKey, TakeoffValue,
+    CountsValue, DeleteAccountQueueKey, DeleteAccountQueueVal, JetstreamCursorKey,
+    JetstreamCursorValue, JetstreamEndpointKey, JetstreamEndpointValue, LiveCountsKey,
+    ModCursorKey, ModCursorValue, ModQueueItemKey, ModQueueItemStringValue, ModQueueItemValue,
+    NewRollupCursorKey, NewRollupCursorValue, NsidRecordFeedKey, NsidRecordFeedVal,
+    RecordLocationKey, RecordLocationVal, RollupCursorKey, RollupCursorValue, SeenCounter,
+    TakeoffKey, TakeoffValue,
 };
 use crate::{CommitAction, DeleteAccount, Did, EventBatch, Nsid, RecordKey};
+use cardinality_estimator::CardinalityEstimator;
 use fjall::{
     Batch as FjallBatch, CompressionType, Config, Keyspace, PartitionCreateOptions, PartitionHandle,
 };
@@ -74,31 +75,24 @@ struct Db {
  *      key: nullstr || nullstr || nullstr (did, collection, rkey)
  *      val: u64 || bool || nullstr || rawval (js_cursor, is_update, rev, actual record)
  *
+ *
  * Partition: 'rollups'
  *
- * - Live (batched) records per collection
- *      key: "live_records" || u64 || nullstr (js_cursor, nsid)
- *      val: u64
+ * - Live (batched) records counts and dids estimate per collection
+ *      key: "live_counts" || u64 || nullstr (js_cursor, nsid)
+ *      val: u64 || HLL (count (not cursor), estimator)
  *
- * - Live (batched) DIDs estimate per collections
- *      key: "live_dids" || u64 || nullstr
- *      val: HLL (estimator)
+ * - Hourly total record counts and dids estimate per collection
+ *      key: "hourly_counts" || u64 || nullstr (hour, nsid)
+ *      val: u64 || HLL (count (not cursor), estimator)
  *
- * - Hourly total records per collection
- *      key: "hourly_records" || u64 || nullstr (hour, nsid)
- *      val: u64 (total count, not jetstream cursor)
+ * - TODO: weekly rollups?
  *
- * - Hourly unique DIDs estimate per collection
- *      key: "hourly_dids" || u64 || nullstr (hour, nsid)
- *      val: HLL (estimator)
+ * - All-time total record counts and dids estimate per collection
+ *      key: "ever_counts" || nullstr (nsid)
+ *      val: u64 || HLL (count (not cursor), estimator)
  *
- * - All-time total records per collection
- *      key: "ever_records" || u64 || nullstr (total, nsid. yeah, total is in the *key*, and acts as a sorter. every update requires a delete+put)
- *      val: (empty)
- *
- * - All-time total DIDs estimate per collection
- *      key: "ever_dids" || u64 || nullstr (estimated cardinality, nsid. like ever_records)
- *      val: HLL (estimator)
+ * - TODO: sorted indexes for all-times?
  *
  *
  * Partition: 'queues'
@@ -203,33 +197,21 @@ pub struct FjallReader {
 }
 
 impl StoreReader for FjallReader {
-    fn get_total_by_collection(&self, collection: &Nsid) -> Result<u64, StorageError> {
+    fn get_counts_by_collection(&self, collection: &Nsid) -> Result<(u64, u64), StorageError> {
         // TODO: start from rollup
-        let full_range = LiveRecordsKey::range_from_cursor(Cursor::from_start())?;
+        let full_range = LiveCountsKey::range_from_cursor(Cursor::from_start())?;
         let mut total = 0;
+        let mut dids = CardinalityEstimator::new();
         for kv in self.rollups.range(full_range) {
             let (key_bytes, val_bytes) = kv?;
-            let key = db_complete::<LiveRecordsKey>(&key_bytes)?;
+            let key = db_complete::<LiveCountsKey>(&key_bytes)?;
             if key.collection() == collection {
-                let LiveRecordsValue(n) = db_complete(&val_bytes)?;
-                total += n;
+                let counts = db_complete::<CountsValue>(&val_bytes)?;
+                total += counts.records();
+                dids.merge(counts.dids());
             }
         }
-        Ok(total)
-    }
-    fn get_dids_by_collection(&self, collection: &Nsid) -> Result<u64, StorageError> {
-        // TODO: start from rollup
-        let full_range = LiveDidsKey::range_from_cursor(Cursor::from_start())?;
-        let mut total_estimate = cardinality_estimator::CardinalityEstimator::new();
-        for kv in self.rollups.range(full_range) {
-            let (key_bytes, val_bytes) = kv?;
-            let key = db_complete::<LiveDidsKey>(&key_bytes)?;
-            if key.collection() == collection {
-                let LiveDidsValue(estimate) = db_complete(&val_bytes)?;
-                total_estimate.merge(&estimate);
-            }
-        }
-        Ok(total_estimate.estimate() as u64)
+        Ok((total, dids.estimate() as u64))
     }
 }
 
@@ -252,15 +234,14 @@ impl FjallWriter {
             )?;
 
         // timelies
-        let live_records_range = LiveRecordsKey::range_from_cursor(rollup_cursor)?;
-        // let live_dids_range = LiveDidsKey::range_from_cursor(rollup_cursor)?; // shoudl be in sync with live records range. we could keep both value under same key?
-        let mut timely_iter = self.rollups.range(live_records_range);
+        let live_counts_range = LiveCountsKey::range_from_cursor(rollup_cursor)?;
+        let mut timely_iter = self.rollups.range(live_counts_range);
 
         let next_timely = timely_iter
             .next()
             .transpose()?
             .map(|(key_bytes, val_bytes)| {
-                db_complete::<LiveRecordsKey>(&key_bytes).map(|k| (k, val_bytes))
+                db_complete::<LiveCountsKey>(&key_bytes).map(|k| (k, val_bytes))
             })
             .transpose()?;
 
@@ -341,20 +322,12 @@ impl StoreWriter for FjallWriter {
                     }
                 }
             }
-            let live_records_key: LiveRecordsKey = (latest, &nsid).into();
-            let live_records_value = LiveRecordsValue(commits.total_seen as u64);
+            let live_counts_key: LiveCountsKey = (latest, &nsid).into();
+            let counts_value = CountsValue::new(commits.total_seen as u64, commits.dids_estimate);
             batch.insert(
                 &self.rollups,
-                &live_records_key.to_db_bytes()?,
-                &live_records_value.to_db_bytes()?,
-            );
-
-            let live_dids_key: LiveDidsKey = (latest, &nsid).into();
-            let live_dids_value = LiveDidsValue(commits.dids_estimate);
-            batch.insert(
-                &self.rollups,
-                &live_dids_key.to_db_bytes()?,
-                &live_dids_value.to_db_bytes()?,
+                &live_counts_key.to_db_bytes()?,
+                &counts_value.to_db_bytes()?,
             );
         }
 
@@ -1202,8 +1175,10 @@ mod tests {
     fn test_hello() -> anyhow::Result<()> {
         let (read, mut write) = fjall_db();
         write.insert_batch(EventBatch::default())?;
-        let total = read.get_total_by_collection(&Nsid::new("a.b.c".to_string()).unwrap())?;
-        assert_eq!(total, 0);
+        let (records, dids) =
+            read.get_counts_by_collection(&Nsid::new("a.b.c".to_string()).unwrap())?;
+        assert_eq!(records, 0);
+        assert_eq!(dids, 0);
         Ok(())
     }
 
@@ -1223,15 +1198,13 @@ mod tests {
         );
         write.insert_batch(batch.batch)?;
 
-        let total = read.get_total_by_collection(&collection)?;
-        assert_eq!(total, 1);
-        let total = read.get_total_by_collection(&Nsid::new("d.e.f".to_string()).unwrap())?;
-        assert_eq!(total, 0);
-
-        let total = read.get_dids_by_collection(&collection)?;
-        assert_eq!(total, 1);
-        let total = read.get_dids_by_collection(&Nsid::new("d.e.f".to_string()).unwrap())?;
-        assert_eq!(total, 0);
+        let (records, dids) = read.get_counts_by_collection(&collection)?;
+        assert_eq!(records, 1);
+        assert_eq!(dids, 1);
+        let (records, dids) =
+            read.get_counts_by_collection(&Nsid::new("d.e.f".to_string()).unwrap())?;
+        assert_eq!(records, 0);
+        assert_eq!(dids, 0);
 
         // let records = read.get_records_by_collections(&vec![collection], 2);
         // assert_eq!(records.len, 1);
