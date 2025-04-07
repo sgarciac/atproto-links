@@ -1128,57 +1128,85 @@ mod tests {
     use jetstream::exports::Cid;
     use serde_json::value::RawValue;
 
-    #[test]
-    fn test_hello() -> anyhow::Result<()> {
-        // let db_path = tempfile::tempdir()?;
-        let (_read, mut write, _) = FjallStorage::init(
-            tempfile::tempdir()?,
+    fn fjall_db() -> (FjallReader, FjallWriter) {
+        let (read, write, _) = FjallStorage::init(
+            tempfile::tempdir().unwrap(),
             "offline test (no real jetstream endpoint)".to_string(),
             false,
             FjallConfig { temp: true },
-        )?;
+        )
+        .unwrap();
+        (read, write)
+    }
 
-        write.insert_batch(EventBatch {
-            ..Default::default()
-        })?;
+    #[derive(Debug, Default)]
+    struct TestBatch {
+        pub batch: EventBatch,
+    }
 
+    impl TestBatch {
+        pub fn create(
+            &mut self,
+            did: &str,
+            collection: &str,
+            rkey: &str,
+            record: &str,
+            rev: Option<&str>,
+            cid: Option<Cid>,
+        ) -> Nsid {
+            let did = Did::new(did.to_string()).unwrap();
+            let collection = Nsid::new(collection.to_string()).unwrap();
+            let record = RawValue::from_string(record.to_string()).unwrap();
+            let cid = cid.unwrap_or(
+                "bafyreidofvwoqvd2cnzbun6dkzgfucxh57tirf3ohhde7lsvh4fu3jehgy"
+                    .parse()
+                    .unwrap(),
+            );
+
+            let event = CommitEvent {
+                collection,
+                rkey: RecordKey::new(rkey.to_string()).unwrap(),
+                rev: rev.unwrap_or("asdf").to_string(),
+                operation: CommitOp::Create,
+                record: Some(record),
+                cid: Some(cid),
+            };
+
+            let (commit, collection) =
+                UFOsCommit::from_commit_info(event, did.clone(), Cursor::from_raw_u64(100))
+                    .unwrap();
+
+            self.batch
+                .commits_by_nsid
+                .entry(collection.clone())
+                .or_default()
+                .truncating_insert(commit, 1);
+
+            collection
+        }
+    }
+
+    #[test]
+    fn test_hello() -> anyhow::Result<()> {
+        let (_, mut write) = fjall_db();
+        write.insert_batch(EventBatch::default())?;
         Ok(())
     }
 
     #[test]
     fn test_insert_one() -> anyhow::Result<()> {
-        let (read, mut write, _) = FjallStorage::init(
-            tempfile::tempdir()?,
-            "offline test (no real jetstream endpoint)".to_string(),
-            false,
-            FjallConfig { temp: true },
-        )?;
+        let (read, mut write) = fjall_db();
 
-        let did = Did::new("did:plc:inze6wrmsm7pjl7yta3oig77".to_string()).unwrap();
-        let cid: Cid = "bafyreidofvwoqvd2cnzbun6dkzgfucxh57tirf3ohhde7lsvh4fu3jehgy"
-            .parse()
-            .unwrap();
-        let event = CommitEvent {
-            collection: Nsid::new("a.b.c".to_string()).unwrap(),
-            rkey: RecordKey::new("asdf".to_string()).unwrap(),
-            rev: "asdf".to_string(),
-            operation: CommitOp::Create,
-            record: Some(*Box::new(RawValue::from_string("{}".to_string()).unwrap())),
-            cid: Some(cid),
-        };
-        let (commit, collection) =
-            UFOsCommit::from_commit_info(event, did.clone(), Cursor::from_raw_u64(100))?;
-
-        let mut commits = CollectionCommits::default();
-        commits.truncating_insert(commit, 1);
-
-        let mut commits_by_nsid = HashMap::new();
-        commits_by_nsid.insert(collection.clone(), commits);
-
-        write.insert_batch(EventBatch {
-            commits_by_nsid,
-            ..Default::default()
-        })?;
+        let mut batch = TestBatch::default();
+        let collection = batch.create(
+            "did:plc:inze6wrmsm7pjl7yta3oig77",
+            "a.b.c",
+            "asdf",
+            "{}",
+            Some("rev-z"),
+            None,
+        );
+        write.insert_batch(batch.batch)?;
 
         let total = read.get_total_by_collection(&collection)?;
         assert_eq!(total, 1);
