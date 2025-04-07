@@ -146,8 +146,7 @@ pub type LiveRecordsKey = DbConcat<LiveRecordsCursorPrefix, Nsid>;
 impl LiveRecordsKey {
     pub fn range_from_cursor(cursor: Cursor) -> Result<Range<Vec<u8>>, EncodingError> {
         let prefix = LiveRecordsCursorPrefix::from_pair(Default::default(), cursor);
-        let end = Self::prefix_range_end(&prefix)?;
-        Ok(prefix.to_db_bytes()?..end.to_db_bytes()?)
+        Ok(prefix.range_to_prefix_end()?)
     }
     pub fn cursor(&self) -> Cursor {
         self.prefix.suffix

@@ -1171,8 +1171,6 @@ mod tests {
             UFOsCommit::from_commit_info(event, did.clone(), Cursor::from_raw_u64(100))?;
 
         let mut commits = CollectionCommits::default();
-        commits.total_seen += 1;
-        commits.dids_estimate.insert(&did);
         commits.truncating_insert(commit, 1);
 
         let mut commits_by_nsid = HashMap::new();
