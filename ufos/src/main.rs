@@ -46,8 +46,12 @@ async fn main() -> anyhow::Result<()> {
 
     let args = Args::parse();
     let jetstream = args.jetstream.clone();
-    let (_read_store, mut write_store, cursor) =
-        FjallStorage::init(args.data, jetstream, args.jetstream_force, Default::default())?;
+    let (_read_store, mut write_store, cursor) = FjallStorage::init(
+        args.data,
+        jetstream,
+        args.jetstream_force,
+        Default::default(),
+    )?;
 
     // println!("starting server with storage...");
     // let serving = server::serve(storage.clone());
@@ -73,7 +77,8 @@ async fn main() -> anyhow::Result<()> {
                         write_store.step_rollup()?;
                     }
                     Ok::<(), StorageError>(())
-                }).await??;
+                })
+                .await??;
 
                 // let r = storage.receive(batches).await;
                 log::warn!("storage.receive ended with");

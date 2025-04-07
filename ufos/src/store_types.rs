@@ -1,9 +1,9 @@
-use cardinality_estimator::CardinalityEstimator;
 use crate::db_types::{
-    DbBytes, DbConcat, DbEmpty, DbStaticStr, EncodingError, StaticStr, UseBincodePlz, SerdeBytes,
+    DbBytes, DbConcat, DbEmpty, DbStaticStr, EncodingError, SerdeBytes, StaticStr, UseBincodePlz,
 };
-use crate::{Cursor, Did, Nsid, RecordKey, UFOsCommit, PutAction};
+use crate::{Cursor, Did, Nsid, PutAction, RecordKey, UFOsCommit};
 use bincode::{Decode, Encode};
+use cardinality_estimator::CardinalityEstimator;
 use std::ops::Range;
 
 /// key format: ["js_cursor"]
@@ -37,7 +37,6 @@ impl StaticStr for RollupCursorKey {
 /// value format: [rollup_cursor(Cursor)|collection(Nsid)]
 pub type RollupCursorValue = DbConcat<Cursor, Nsid>;
 
-
 /// key format: ["rollup_cursor"]
 #[derive(Debug, PartialEq)]
 pub struct NewRollupCursorKey {}
@@ -50,7 +49,6 @@ impl StaticStr for NewRollupCursorKey {
 /// value format: [rollup_cursor(Cursor)|collection(Nsid)]
 pub type NewRollupCursorValue = Cursor;
 
-
 /// key format: ["js_endpoint"]
 #[derive(Debug, PartialEq)]
 pub struct TakeoffKey {}
@@ -60,7 +58,6 @@ impl StaticStr for TakeoffKey {
     }
 }
 pub type TakeoffValue = Cursor;
-
 
 /// key format: ["js_endpoint"]
 #[derive(Debug, PartialEq)]
@@ -92,14 +89,18 @@ impl From<(&Did, &RecordKey, &str)> for NsidRecordFeedVal {
     fn from((did, rkey, rev): (&Did, &RecordKey, &str)) -> Self {
         Self::from_pair(
             did.clone(),
-            DbConcat::from_pair(rkey.clone(), rev.to_string()))
+            DbConcat::from_pair(rkey.clone(), rev.to_string()),
+        )
     }
 }
 
 pub type RecordLocationKey = DbConcat<Did, DbConcat<Nsid, RecordKey>>;
 impl From<(&UFOsCommit, &Nsid)> for RecordLocationKey {
     fn from((commit, collection): (&UFOsCommit, &Nsid)) -> Self {
-        Self::from_pair(commit.did.clone(), DbConcat::from_pair(collection.clone(), commit.rkey.clone()))
+        Self::from_pair(
+            commit.did.clone(),
+            DbConcat::from_pair(collection.clone(), commit.rkey.clone()),
+        )
     }
 }
 #[derive(Debug, PartialEq, Encode, Decode)]
@@ -193,7 +194,7 @@ impl From<(Cursor, &Nsid)> for LiveDidsKey {
     }
 }
 #[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct LiveDidsValue(pub CardinalityEstimator::<Did>);
+pub struct LiveDidsValue(pub CardinalityEstimator<Did>);
 impl SerdeBytes for LiveDidsValue {}
 impl DbBytes for LiveDidsValue {
     fn to_db_bytes(&self) -> Result<Vec<u8>, EncodingError> {
@@ -219,7 +220,6 @@ impl DeleteAccountQueueKey {
     }
 }
 pub type DeleteAccountQueueVal = Did;
-
 
 #[derive(Debug, Clone, Encode, Decode)]
 pub struct SeenCounter(pub u64);
@@ -474,7 +474,6 @@ impl DbBytes for ModQueueItemValue {
     }
 }
 
-
 const HOUR_IN_MICROS: u64 = 1_000_000 * 3600;
 #[derive(Debug, Copy, Clone, PartialEq, PartialOrd)]
 pub struct HourTrucatedCursor(u64);
@@ -487,7 +486,7 @@ impl HourTrucatedCursor {
     pub fn try_from_raw_u64(time_us: u64) -> Result<Self, EncodingError> {
         let rem = time_us % HOUR_IN_MICROS;
         if rem != 0 {
-            return Err(EncodingError::InvalidHourlyTruncated(rem))
+            return Err(EncodingError::InvalidHourlyTruncated(rem));
         }
         Ok(Self(time_us))
     }
@@ -503,10 +502,12 @@ impl From<HourTrucatedCursor> for Cursor {
     }
 }
 
-
 #[cfg(test)]
 mod test {
-    use super::{ByCollectionKey, ByCollectionValue, Cursor, Did, EncodingError, Nsid, RecordKey, HourTrucatedCursor, HOUR_IN_MICROS};
+    use super::{
+        ByCollectionKey, ByCollectionValue, Cursor, Did, EncodingError, HourTrucatedCursor, Nsid,
+        RecordKey, HOUR_IN_MICROS,
+    };
     use crate::db_types::DbBytes;
 
     #[test]

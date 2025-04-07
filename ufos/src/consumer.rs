@@ -8,8 +8,8 @@ use std::mem;
 use std::time::Duration;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 
-use crate::{DeleteAccount, EventBatch, UFOsCommit};
 use crate::error::FirehoseEventError;
+use crate::{DeleteAccount, EventBatch, UFOsCommit};
 
 const MAX_BATCHED_RECORDS: usize = 128; // *non-blocking* limit. drops oldest batched record per collection once reached.
 const MAX_ACCOUNT_REMOVES: usize = 1024; // hard limit, extremely unlikely to reach, but just in case
@@ -94,12 +94,16 @@ impl Batcher {
 
         match event.kind {
             EventKind::Commit => {
-                let commit = event.commit.ok_or(FirehoseEventError::CommitEventMissingCommit)?;
+                let commit = event
+                    .commit
+                    .ok_or(FirehoseEventError::CommitEventMissingCommit)?;
                 let (commit, nsid) = UFOsCommit::from_commit_info(commit, event.did, event.cursor)?;
                 self.handle_commit(commit, nsid).await?;
             }
             EventKind::Account => {
-                let account = event.account.ok_or(FirehoseEventError::AccountEventMissingAccount)?;
+                let account = event
+                    .account
+                    .ok_or(FirehoseEventError::AccountEventMissingAccount)?;
                 if !account.active {
                     self.handle_delete_account(event.did, event.cursor).await?;
                 }
@@ -109,8 +113,9 @@ impl Batcher {
 
         // if the queue is empty and we have enough, send immediately. otherewise, let the current batch fill up.
         if let Some(earliest) = &self.current_batch.initial_cursor {
-            if event.cursor.duration_since(earliest)?.as_secs_f64() > MIN_BATCH_SPAN_SECS &&
-                self.batch_sender.capacity() == BATCH_QUEUE_SIZE {
+            if event.cursor.duration_since(earliest)?.as_secs_f64() > MIN_BATCH_SPAN_SECS
+                && self.batch_sender.capacity() == BATCH_QUEUE_SIZE
+            {
                 log::info!("queue empty: immediately sending batch.");
                 self.send_current_batch_now().await?;
             }
@@ -119,18 +124,13 @@ impl Batcher {
     }
 
     async fn handle_commit(&mut self, commit: UFOsCommit, nsid: Nsid) -> anyhow::Result<()> {
-        if !self
-            .current_batch
-            .batch
-            .commits_by_nsid
-            .contains_key(&nsid)
+        if !self.current_batch.batch.commits_by_nsid.contains_key(&nsid)
             && self.current_batch.batch.commits_by_nsid.len() >= MAX_BATCHED_COLLECTIONS
         {
             self.send_current_batch_now().await?;
         }
 
-        self
-            .current_batch
+        self.current_batch
             .batch
             .commits_by_nsid
             .entry(nsid)

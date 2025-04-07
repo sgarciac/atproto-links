@@ -1,5 +1,5 @@
-use thiserror::Error;
 use crate::db_types::EncodingError;
+use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum FirehoseEventError {

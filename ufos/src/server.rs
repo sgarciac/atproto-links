@@ -1,5 +1,5 @@
 use crate::storage_fjall::{Storage, StorageInfo};
-use crate::{Nsid};
+use crate::Nsid;
 use dropshot::endpoint;
 use dropshot::ApiDescription;
 use dropshot::ConfigDropshot;

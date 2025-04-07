@@ -6,12 +6,12 @@ pub mod storage;
 pub mod storage_fjall;
 pub mod store_types;
 
-use jetstream::events::{Cursor, CommitEvent, CommitOp};
-use jetstream::exports::{Did, Nsid, RecordKey};
-use std::collections::{HashMap, VecDeque};
-use serde_json::value::RawValue;
 use cardinality_estimator::CardinalityEstimator;
 use error::FirehoseEventError;
+use jetstream::events::{CommitEvent, CommitOp, Cursor};
+use jetstream::exports::{Did, Nsid, RecordKey};
+use serde_json::value::RawValue;
+use std::collections::{HashMap, VecDeque};
 
 #[derive(Debug, Default, Clone)]
 pub struct CollectionCommits {
@@ -42,7 +42,10 @@ pub enum CommitAction {
 }
 
 #[derive(Debug, Clone)]
-pub struct PutAction { record: Box<RawValue>, is_update: bool }
+pub struct PutAction {
+    record: Box<RawValue>,
+    is_update: bool,
+}
 
 #[derive(Debug, Clone)]
 pub struct UFOsCommit {
@@ -57,14 +60,14 @@ impl UFOsCommit {
     pub fn from_commit_info(
         commit: CommitEvent,
         did: Did,
-        cursor: Cursor
+        cursor: Cursor,
     ) -> Result<(Self, Nsid), FirehoseEventError> {
         let action = match commit.operation {
             CommitOp::Delete => CommitAction::Cut,
             cru @ _ => CommitAction::Put(PutAction {
                 record: commit.record.ok_or(FirehoseEventError::CruMissingRecord)?,
                 is_update: cru == CommitOp::Update,
-            })
+            }),
         };
         let batched = Self {
             cursor,

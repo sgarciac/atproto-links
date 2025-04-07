@@ -1,14 +1,17 @@
-use std::path::Path;
-use jetstream::exports::Nsid;
 use crate::{error::StorageError, Cursor, EventBatch};
+use jetstream::exports::Nsid;
+use std::path::Path;
 
-pub trait StorageWhatever<R: StoreReader, W: StoreWriter, C> { // TODO: extract this
+pub trait StorageWhatever<R: StoreReader, W: StoreWriter, C> {
+    // TODO: extract this
     fn init(
         path: impl AsRef<Path>,
         endpoint: String,
         force_endpoint: bool,
         config: C,
-    ) -> Result<(R, W, Option<Cursor>), StorageError> where Self: Sized;
+    ) -> Result<(R, W, Option<Cursor>), StorageError>
+    where
+        Self: Sized;
 }
 
 pub trait StoreWriter {

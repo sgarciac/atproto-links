@@ -1,20 +1,16 @@
-use crate::storage::{StorageWhatever, StoreReader, StoreWriter};
 use crate::db_types::{db_complete, DbBytes, DbStaticStr, EncodingError, StaticStr};
+use crate::error::StorageError;
+use crate::storage::{StorageWhatever, StoreReader, StoreWriter};
 use crate::store_types::{
     ByCollectionKey, ByCollectionValue, ByCursorSeenKey, ByCursorSeenValue, ByIdKey, ByIdValue,
-    JetstreamCursorKey, JetstreamCursorValue, JetstreamEndpointKey, JetstreamEndpointValue,
-    ModCursorKey, ModCursorValue, ModQueueItemKey, ModQueueItemStringValue, ModQueueItemValue,
-    RollupCursorKey, RollupCursorValue, SeenCounter,
-    NsidRecordFeedKey, NsidRecordFeedVal, RecordLocationKey, RecordLocationVal,
-    LiveRecordsKey, LiveRecordsValue, LiveDidsKey, LiveDidsValue,
-    DeleteAccountQueueKey, DeleteAccountQueueVal,
-    NewRollupCursorKey, NewRollupCursorValue,
-    TakeoffKey, TakeoffValue,
+    DeleteAccountQueueKey, DeleteAccountQueueVal, JetstreamCursorKey, JetstreamCursorValue,
+    JetstreamEndpointKey, JetstreamEndpointValue, LiveDidsKey, LiveDidsValue, LiveRecordsKey,
+    LiveRecordsValue, ModCursorKey, ModCursorValue, ModQueueItemKey, ModQueueItemStringValue,
+    ModQueueItemValue, NewRollupCursorKey, NewRollupCursorValue, NsidRecordFeedKey,
+    NsidRecordFeedVal, RecordLocationKey, RecordLocationVal, RollupCursorKey, RollupCursorValue,
+    SeenCounter, TakeoffKey, TakeoffValue,
 };
-use crate::{
-    DeleteAccount, Did, EventBatch, Nsid, RecordKey, CommitAction,
-};
-use crate::error::StorageError;
+use crate::{CommitAction, DeleteAccount, Did, EventBatch, Nsid, RecordKey};
 use fjall::{
     Batch as FjallBatch, CompressionType, Config, Keyspace, PartitionCreateOptions, PartitionHandle,
 };
@@ -41,7 +37,6 @@ const MAX_BATCHED_RW_ITEMS: usize = 24;
 struct Db {
     keyspace: Keyspace,
     global: PartitionHandle,
-
 }
 
 /**
@@ -153,10 +148,12 @@ impl StorageWhatever<FjallReader, FjallWriter, FjallConfig> for FjallStorage {
         let js_cursor = get_static_neu::<JetstreamCursorKey, JetstreamCursorValue>(&global)?;
 
         if js_cursor.is_some() {
-            let stored_endpoint = get_static_neu::<JetstreamEndpointKey, JetstreamEndpointValue>(&global)?;
+            let stored_endpoint =
+                get_static_neu::<JetstreamEndpointKey, JetstreamEndpointValue>(&global)?;
 
-            let JetstreamEndpointValue(stored) = stored_endpoint
-                .ok_or(StorageError::InitError("found cursor but missing js_endpoint, refusing to start.".to_string()))?;
+            let JetstreamEndpointValue(stored) = stored_endpoint.ok_or(StorageError::InitError(
+                "found cursor but missing js_endpoint, refusing to start.".to_string(),
+            ))?;
 
             if stored != endpoint {
                 if force_endpoint {
@@ -175,14 +172,8 @@ impl StorageWhatever<FjallReader, FjallWriter, FjallConfig> for FjallStorage {
                 &global,
                 JetstreamEndpointValue(endpoint.to_string()),
             )?;
-            insert_static_neu::<TakeoffKey>(
-                &global,
-                Cursor::at(SystemTime::now()),
-            )?;
-            insert_static_neu::<NewRollupCursorKey>(
-                &global,
-                Cursor::from_start(),
-            )?;
+            insert_static_neu::<TakeoffKey>(&global, Cursor::at(SystemTime::now()))?;
+            insert_static_neu::<NewRollupCursorKey>(&global, Cursor::from_start())?;
         }
 
         let reader = FjallReader {
@@ -191,7 +182,14 @@ impl StorageWhatever<FjallReader, FjallWriter, FjallConfig> for FjallStorage {
             records: records.clone(),
             rollups: rollups.clone(),
         };
-        let writer = FjallWriter { keyspace, global, feeds, records, rollups, queues };
+        let writer = FjallWriter {
+            keyspace,
+            global,
+            feeds,
+            records,
+            rollups,
+            queues,
+        };
         Ok((reader, writer, js_cursor))
     }
 }
@@ -205,7 +203,10 @@ pub struct FjallReader {
 }
 
 impl StoreReader for FjallReader {
-    fn get_total_by_collection(&self, collection: &jetstream::exports::Nsid) -> Result<u64, StorageError> {
+    fn get_total_by_collection(
+        &self,
+        collection: &jetstream::exports::Nsid,
+    ) -> Result<u64, StorageError> {
         // TODO: start from rollup
         let full_range = LiveRecordsKey::range_from_cursor(Cursor::from_start())?;
         let mut total = 0;
@@ -234,8 +235,10 @@ impl FjallWriter {
     pub fn step_rollup(&mut self) -> Result<(), StorageError> {
         // let mut batch = self.keyspace.batch();
 
-        let rollup_cursor = get_static_neu::<NewRollupCursorKey, NewRollupCursorValue>(&self.global)?
-            .ok_or(StorageError::BadStateError("Could not find current rollup cursor".to_string()))?;
+        let rollup_cursor =
+            get_static_neu::<NewRollupCursorKey, NewRollupCursorValue>(&self.global)?.ok_or(
+                StorageError::BadStateError("Could not find current rollup cursor".to_string()),
+            )?;
 
         // timelies
         let live_records_range = LiveRecordsKey::range_from_cursor(rollup_cursor)?;
@@ -245,20 +248,23 @@ impl FjallWriter {
         let next_timely = timely_iter
             .next()
             .transpose()?
-            .map(|(key_bytes, val_bytes)|
-                db_complete::<LiveRecordsKey>(&key_bytes)
-                    .map(|k| (k, val_bytes)))
+            .map(|(key_bytes, val_bytes)| {
+                db_complete::<LiveRecordsKey>(&key_bytes).map(|k| (k, val_bytes))
+            })
             .transpose()?;
 
         // delete accounts
-        let delete_accounts_range = DeleteAccountQueueKey::new(rollup_cursor).range_to_prefix_end()?;
+        let delete_accounts_range =
+            DeleteAccountQueueKey::new(rollup_cursor).range_to_prefix_end()?;
 
-        let next_delete = self.queues.range(delete_accounts_range)
+        let next_delete = self
+            .queues
+            .range(delete_accounts_range)
             .next()
             .transpose()?
-            .map(|(key_bytes, val_bytes)|
-                db_complete::<DeleteAccountQueueKey>(&key_bytes)
-                    .map(|k| (k.suffix, val_bytes)))
+            .map(|(key_bytes, val_bytes)| {
+                db_complete::<DeleteAccountQueueKey>(&key_bytes).map(|k| (k.suffix, val_bytes))
+            })
             .transpose()?;
 
         match (next_timely, next_delete) {
@@ -288,7 +294,7 @@ impl FjallWriter {
 impl StoreWriter for FjallWriter {
     fn insert_batch(&mut self, event_batch: EventBatch) -> Result<(), StorageError> {
         if event_batch.is_empty() {
-            return Ok(())
+            return Ok(());
         }
 
         let mut batch = self.keyspace.batch();
@@ -306,14 +312,16 @@ impl StoreWriter for FjallWriter {
                     }
                     CommitAction::Put(put_action) => {
                         let feed_key = NsidRecordFeedKey::from_pair(nsid.clone(), commit.cursor);
-                        let feed_val: NsidRecordFeedVal = (&commit.did, &commit.rkey, commit.rev.as_str()).into();
+                        let feed_val: NsidRecordFeedVal =
+                            (&commit.did, &commit.rkey, commit.rev.as_str()).into();
                         batch.insert(
                             &self.feeds,
                             feed_key.to_db_bytes()?,
                             feed_val.to_db_bytes()?,
                         );
 
-                        let location_val: RecordLocationVal = (commit.cursor, commit.rev.as_str(), put_action).into();
+                        let location_val: RecordLocationVal =
+                            (commit.cursor, commit.rev.as_str(), put_action).into();
                         batch.insert(
                             &self.records,
                             &location_key.to_db_bytes()?,
@@ -360,7 +368,6 @@ impl StoreWriter for FjallWriter {
     }
 }
 
-
 #[derive(Clone)]
 pub struct Storage {
     /// horrible: gate all db access behind this to force global serialization to avoid deadlock
@@ -375,10 +382,7 @@ impl Storage {
             PartitionCreateOptions::default().compression(CompressionType::None),
         )?;
         Ok(Self {
-            db: Db {
-                keyspace,
-                global,
-            },
+            db: Db { keyspace, global },
         })
     }
 
@@ -681,7 +685,9 @@ fn get_static<K: StaticStr, V: DbBytes>(global: &PartitionHandle) -> anyhow::Res
 }
 
 /// Get a value from a fixed key
-fn get_static_neu<K: StaticStr, V: DbBytes>(global: &PartitionHandle) -> Result<Option<V>, StorageError> {
+fn get_static_neu<K: StaticStr, V: DbBytes>(
+    global: &PartitionHandle,
+) -> Result<Option<V>, StorageError> {
     let key_bytes = DbStaticStr::<K>::default().to_db_bytes()?;
     let value = global
         .get(&key_bytes)?
@@ -736,10 +742,7 @@ fn remove_batch<K: DbBytes>(
 }
 
 /// Get stats that haven't been rolled up yet
-fn get_unrolled_collection_seen(
-    global: &PartitionHandle,
-    collection: Nsid,
-) -> anyhow::Result<u64> {
+fn get_unrolled_collection_seen(global: &PartitionHandle, collection: Nsid) -> anyhow::Result<u64> {
     let range =
         if let Some(cursor_value) = get_static::<RollupCursorKey, RollupCursorValue>(global)? {
             eprintln!("found existing cursor");
@@ -773,9 +776,7 @@ fn get_unrolled_collection_seen(
     Ok(collection_total)
 }
 
-fn get_unrolled_top_collections(
-    global: &PartitionHandle,
-) -> anyhow::Result<HashMap<String, u64>> {
+fn get_unrolled_top_collections(global: &PartitionHandle) -> anyhow::Result<HashMap<String, u64>> {
     let range =
         if let Some(cursor_value) = get_static::<RollupCursorKey, RollupCursorValue>(global)? {
             eprintln!("found existing cursor");
@@ -905,11 +906,7 @@ impl DBWriter {
 
         log::trace!("delete_record: iterate over up to current cursor...");
 
-        for (i, pair) in self
-            .global
-            .range(key_prefix_bytes..key_limit)
-            .enumerate()
-        {
+        for (i, pair) in self.global.range(key_prefix_bytes..key_limit).enumerate() {
             log::trace!("delete_record iter {i}: found");
             // find all (hopefully 1)
             let (key_bytes, _) = pair?;
@@ -1123,15 +1120,13 @@ fn summarize_batch(batch: &EventBatch) -> String {
     )
 }
 
-
-
 #[cfg(test)]
 mod tests {
-    use jetstream::exports::Cid;
-    use jetstream::events::{CommitEvent, CommitOp};
-    use serde_json::value::RawValue;
-    use crate::{UFOsCommit, CollectionCommits};
     use super::*;
+    use crate::{CollectionCommits, UFOsCommit};
+    use jetstream::events::{CommitEvent, CommitOp};
+    use jetstream::exports::Cid;
+    use serde_json::value::RawValue;
 
     #[test]
     fn test_hello() -> anyhow::Result<()> {
@@ -1166,9 +1161,14 @@ mod tests {
             rev: "asdf".to_string(),
             operation: CommitOp::Create,
             record: Some(*Box::new(RawValue::from_string("{}".to_string()).unwrap())),
-            cid: Some("bafyreidofvwoqvd2cnzbun6dkzgfucxh57tirf3ohhde7lsvh4fu3jehgy".parse().unwrap()),
+            cid: Some(
+                "bafyreidofvwoqvd2cnzbun6dkzgfucxh57tirf3ohhde7lsvh4fu3jehgy"
+                    .parse()
+                    .unwrap(),
+            ),
         };
-        let (commit, collection) = UFOsCommit::from_commit_info(event, did.clone(), Cursor::from_raw_u64(100))?;
+        let (commit, collection) =
+            UFOsCommit::from_commit_info(event, did.clone(), Cursor::from_raw_u64(100))?;
 
         let mut commits = CollectionCommits::default();
         commits.total_seen += 1;
