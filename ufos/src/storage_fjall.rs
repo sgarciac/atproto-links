@@ -203,10 +203,7 @@ pub struct FjallReader {
 }
 
 impl StoreReader for FjallReader {
-    fn get_total_by_collection(
-        &self,
-        collection: &jetstream::exports::Nsid,
-    ) -> Result<u64, StorageError> {
+    fn get_total_by_collection(&self, collection: &Nsid) -> Result<u64, StorageError> {
         // TODO: start from rollup
         let full_range = LiveRecordsKey::range_from_cursor(Cursor::from_start())?;
         let mut total = 0;
@@ -219,6 +216,20 @@ impl StoreReader for FjallReader {
             }
         }
         Ok(total)
+    }
+    fn get_dids_by_collection(&self, collection: &Nsid) -> Result<u64, StorageError> {
+        // TODO: start from rollup
+        let full_range = LiveDidsKey::range_from_cursor(Cursor::from_start())?;
+        let mut total_estimate = cardinality_estimator::CardinalityEstimator::new();
+        for kv in self.rollups.range(full_range) {
+            let (key_bytes, val_bytes) = kv?;
+            let key = db_complete::<LiveDidsKey>(&key_bytes)?;
+            if key.collection() == collection {
+                let LiveDidsValue(estimate) = db_complete(&val_bytes)?;
+                total_estimate.merge(&estimate);
+            }
+        }
+        Ok(total_estimate.estimate() as u64)
     }
 }
 
@@ -1153,6 +1164,7 @@ mod tests {
             record: &str,
             rev: Option<&str>,
             cid: Option<Cid>,
+            cursor: u64,
         ) -> Nsid {
             let did = Did::new(did.to_string()).unwrap();
             let collection = Nsid::new(collection.to_string()).unwrap();
@@ -1173,7 +1185,7 @@ mod tests {
             };
 
             let (commit, collection) =
-                UFOsCommit::from_commit_info(event, did.clone(), Cursor::from_raw_u64(100))
+                UFOsCommit::from_commit_info(event, did.clone(), Cursor::from_raw_u64(cursor))
                     .unwrap();
 
             self.batch
@@ -1188,8 +1200,10 @@ mod tests {
 
     #[test]
     fn test_hello() -> anyhow::Result<()> {
-        let (_, mut write) = fjall_db();
+        let (read, mut write) = fjall_db();
         write.insert_batch(EventBatch::default())?;
+        let total = read.get_total_by_collection(&Nsid::new("a.b.c".to_string()).unwrap())?;
+        assert_eq!(total, 0);
         Ok(())
     }
 
@@ -1205,11 +1219,25 @@ mod tests {
             "{}",
             Some("rev-z"),
             None,
+            100,
         );
         write.insert_batch(batch.batch)?;
 
         let total = read.get_total_by_collection(&collection)?;
         assert_eq!(total, 1);
+        let total = read.get_total_by_collection(&Nsid::new("d.e.f".to_string()).unwrap())?;
+        assert_eq!(total, 0);
+
+        let total = read.get_dids_by_collection(&collection)?;
+        assert_eq!(total, 1);
+        let total = read.get_dids_by_collection(&Nsid::new("d.e.f".to_string()).unwrap())?;
+        assert_eq!(total, 0);
+
+        // let records = read.get_records_by_collections(&vec![collection], 2);
+        // assert_eq!(records.len, 1);
+
+        // let records = read.get_records_by_collections(&vec![&Nsid::new("d.e.f".to_string()).unwrap()], 2);
+        // assert_eq!(records.len, 0);
 
         Ok(())
     }

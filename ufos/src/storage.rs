@@ -20,4 +20,6 @@ pub trait StoreWriter {
 
 pub trait StoreReader: Clone {
     fn get_total_by_collection(&self, collection: &Nsid) -> Result<u64, StorageError>;
+    fn get_dids_by_collection(&self, collection: &Nsid) -> Result<u64, StorageError>;
+    // fn get_records_by_collections(&self, collections: &)
 }
