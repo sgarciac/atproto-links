@@ -1,7 +1,7 @@
 use crate::db_types::{
     DbBytes, DbConcat, DbEmpty, DbStaticStr, EncodingError, SerdeBytes, StaticStr, UseBincodePlz,
 };
-use crate::{CollectionCommits, Cursor, Did, Nsid, PutAction, RecordKey, UFOsCommit};
+use crate::{Cursor, Did, Nsid, PutAction, RecordKey, UFOsCommit};
 use bincode::{Decode, Encode};
 use cardinality_estimator::CardinalityEstimator;
 use std::ops::Range;

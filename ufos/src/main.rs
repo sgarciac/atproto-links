@@ -1,9 +1,9 @@
 use clap::Parser;
 use std::path::PathBuf;
+use ufos::consumer;
 use ufos::error::StorageError;
 use ufos::storage::{StorageWhatever, StoreWriter};
 use ufos::storage_fjall::FjallStorage;
-use ufos::{consumer, storage_fjall};
 
 #[cfg(not(target_env = "msvc"))]
 use tikv_jemallocator::Jemalloc;

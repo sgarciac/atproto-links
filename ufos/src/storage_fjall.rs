@@ -10,7 +10,7 @@ use crate::store_types::{
     RecordLocationKey, RecordLocationMeta, RecordLocationVal, RecordRawValue, RollupCursorKey,
     RollupCursorValue, SeenCounter, TakeoffKey,
 };
-use crate::{CommitAction, DeleteAccount, Did, EventBatch, Nsid, RecordKey, UFOsRecord};
+use crate::{CommitAction, Did, EventBatch, Nsid, RecordKey, UFOsRecord};
 use cardinality_estimator::CardinalityEstimator;
 use fjall::{
     Batch as FjallBatch, CompressionType, Config, Keyspace, PartitionCreateOptions, PartitionHandle,
@@ -476,7 +476,6 @@ impl StoreWriter for FjallWriter {
         batch.commit()?;
 
         log::info!("trim_collection ({collection:?}) removed {dangling_feed_keys_cleaned} dangling feed entries and {records_deleted} records");
-        eprintln!("trim_collection ({collection:?}) removed {dangling_feed_keys_cleaned} dangling feed entries and {records_deleted} records");
         Ok(())
     }
 }
@@ -649,7 +648,6 @@ impl Storage {
 
             log::trace!("rw: iterating {i}: sending to batcher {mod_key:?} => {mod_value:?}");
             batched_rw_items += DBWriter {
-                keyspace: keyspace.clone(),
                 global: global.clone(),
             }
             .write_rw(&mut db_batch, mod_key, mod_value)?;
@@ -917,22 +915,6 @@ fn get_unrolled_top_collections(global: &PartitionHandle) -> anyhow::Result<Hash
 }
 
 impl DBWriter {
-    fn write_batch(self, _event_batch: EventBatch, _last: Option<Cursor>) -> anyhow::Result<()> {
-        todo!();
-        // let mut db_batch = self.keyspace.batch();
-        // self.add_record_creates(&mut db_batch, event_batch.record_creates)?;
-        // self.add_record_modifies(&mut db_batch, event_batch.record_modifies)?;
-        // self.add_account_removes(&mut db_batch, event_batch.account_removes)?;
-        // if let Some(cursor) = last {
-        //     insert_batch_static::<JetstreamCursorKey>(&mut db_batch, &self.global, cursor)?;
-        // }
-        // log::info!("write: committing write batch...");
-        // let r = db_batch.commit();
-        // log::info!("write: commit result: {r:?}");
-        // r?;
-        // Ok(())
-    }
-
     fn write_rw(
         self,
         db_batch: &mut FjallBatch,
@@ -1096,46 +1078,6 @@ impl DBWriter {
         Ok((items_added, true))
     }
 
-    fn add_record_creates(
-        &self,
-        _db_batch: &mut FjallBatch,
-        _record_creates: HashMap<Nsid, ()>,
-    ) -> anyhow::Result<()> {
-        todo!();
-        // for (
-        //     collection,
-        //     CollectionSamples {
-        //         total_seen,
-        //         samples,
-        //     },
-        // ) in record_creates.into_iter()
-        // {
-        //     if let Some(last_record) = &samples.back() {
-        //         db_batch.insert(
-        //             &self.global,
-        //             ByCursorSeenKey::new(last_record.cursor.clone(), collection.clone())
-        //                 .to_db_bytes()?,
-        //             ByCursorSeenValue::new(total_seen as u64).to_db_bytes()?,
-        //         );
-        //     } else {
-        //         log::error!(
-        //             "collection samples should only exist when at least one sample has been added"
-        //         );
-        //     }
-
-        //     for CreateRecord {
-        //         did,
-        //         rkey,
-        //         cursor,
-        //         record,
-        //     } in samples.into_iter().rev()
-        //     {
-        //         self.add_record(db_batch, cursor, did, collection.clone(), rkey, record)?;
-        //     }
-        // }
-        // Ok(())
-    }
-
     fn add_record(
         &self,
         db_batch: &mut FjallBatch,
@@ -1161,47 +1103,6 @@ impl DBWriter {
 
         Ok(())
     }
-
-    fn add_record_modifies(
-        &self,
-        _db_batch: &mut FjallBatch,
-        _record_modifies: Vec<()>,
-    ) -> anyhow::Result<()> {
-        todo!();
-        // for modification in record_modifies {
-        //     let (cursor, db_val) = match modification {
-        //         ModifyRecord::Update(u) => (
-        //             u.cursor,
-        //             ModQueueItemValue::UpdateRecord(u.did, u.collection, u.rkey, u.record),
-        //         ),
-        //         ModifyRecord::Delete(d) => (
-        //             d.cursor,
-        //             ModQueueItemValue::DeleteRecord(d.did, d.collection, d.rkey),
-        //         ),
-        //     };
-        //     db_batch.insert(
-        //         &self.global,
-        //         ModQueueItemKey::new(cursor).to_db_bytes()?,
-        //         db_val.to_db_bytes()?,
-        //     );
-        // }
-        // Ok(())
-    }
-
-    fn add_account_removes(
-        &self,
-        db_batch: &mut FjallBatch,
-        account_removes: Vec<DeleteAccount>,
-    ) -> anyhow::Result<()> {
-        for deletion in account_removes {
-            db_batch.insert(
-                &self.global,
-                ModQueueItemKey::new(deletion.cursor).to_db_bytes()?,
-                ModQueueItemValue::DeleteAccount(deletion.did).to_db_bytes()?,
-            );
-        }
-        Ok(())
-    }
 }
 
 #[derive(Debug, serde::Serialize, schemars::JsonSchema)]
@@ -1213,7 +1114,6 @@ pub struct StorageInfo {
 }
 
 struct DBWriter {
-    keyspace: Keyspace,
     global: PartitionHandle,
 }
 
