@@ -1155,17 +1155,16 @@ mod tests {
         )?;
 
         let did = Did::new("did:plc:inze6wrmsm7pjl7yta3oig77".to_string()).unwrap();
+        let cid: Cid = "bafyreidofvwoqvd2cnzbun6dkzgfucxh57tirf3ohhde7lsvh4fu3jehgy"
+            .parse()
+            .unwrap();
         let event = CommitEvent {
             collection: Nsid::new("a.b.c".to_string()).unwrap(),
             rkey: RecordKey::new("asdf".to_string()).unwrap(),
             rev: "asdf".to_string(),
             operation: CommitOp::Create,
             record: Some(*Box::new(RawValue::from_string("{}".to_string()).unwrap())),
-            cid: Some(
-                "bafyreidofvwoqvd2cnzbun6dkzgfucxh57tirf3ohhde7lsvh4fu3jehgy"
-                    .parse()
-                    .unwrap(),
-            ),
+            cid: Some(cid),
         };
         let (commit, collection) =
             UFOsCommit::from_commit_info(event, did.clone(), Cursor::from_raw_u64(100))?;
