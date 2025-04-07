@@ -1230,6 +1230,76 @@ mod tests {
 
             collection
         }
+        pub fn update(
+            &mut self,
+            did: &str,
+            collection: &str,
+            rkey: &str,
+            record: &str,
+            rev: Option<&str>,
+            cid: Option<Cid>,
+            cursor: u64,
+        ) -> Nsid {
+            let did = Did::new(did.to_string()).unwrap();
+            let collection = Nsid::new(collection.to_string()).unwrap();
+            let record = RawValue::from_string(record.to_string()).unwrap();
+            let cid = cid.unwrap_or(
+                "bafyreidofvwoqvd2cnzbun6dkzgfucxh57tirf3ohhde7lsvh4fu3jehgy"
+                    .parse()
+                    .unwrap(),
+            );
+
+            let event = CommitEvent {
+                collection,
+                rkey: RecordKey::new(rkey.to_string()).unwrap(),
+                rev: rev.unwrap_or("asdf").to_string(),
+                operation: CommitOp::Update,
+                record: Some(record),
+                cid: Some(cid),
+            };
+
+            let (commit, collection) =
+                UFOsCommit::from_commit_info(event, did.clone(), Cursor::from_raw_u64(cursor))
+                    .unwrap();
+
+            self.batch
+                .commits_by_nsid
+                .entry(collection.clone())
+                .or_default()
+                .truncating_insert(commit, 1);
+
+            collection
+        }
+        pub fn delete(
+            &mut self,
+            did: &str,
+            collection: &str,
+            rkey: &str,
+            rev: Option<&str>,
+            cursor: u64,
+        ) -> Nsid {
+            let did = Did::new(did.to_string()).unwrap();
+            let collection = Nsid::new(collection.to_string()).unwrap();
+            let event = CommitEvent {
+                collection,
+                rkey: RecordKey::new(rkey.to_string()).unwrap(),
+                rev: rev.unwrap_or("asdf").to_string(),
+                operation: CommitOp::Delete,
+                record: None,
+                cid: None,
+            };
+
+            let (commit, collection) =
+                UFOsCommit::from_commit_info(event, did, Cursor::from_raw_u64(cursor)).unwrap();
+
+            self.batch
+                .commits_by_nsid
+                .entry(collection.clone())
+                .or_default()
+                .truncating_insert(commit, 1);
+
+            collection
+        }
     }
 
     #[test]
@@ -1275,6 +1345,82 @@ mod tests {
 
         let records =
             read.get_records_by_collections(&vec![&Nsid::new("d.e.f".to_string()).unwrap()], 2)?;
+        assert_eq!(records.len(), 0);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_update_one() -> anyhow::Result<()> {
+        let (read, mut write) = fjall_db();
+
+        let mut batch = TestBatch::default();
+        let collection = batch.create(
+            "did:plc:inze6wrmsm7pjl7yta3oig77",
+            "a.b.c",
+            "rkey-asdf",
+            "{}",
+            Some("rev-a"),
+            None,
+            100,
+        );
+        write.insert_batch(batch.batch)?;
+
+        let mut batch = TestBatch::default();
+        batch.update(
+            "did:plc:inze6wrmsm7pjl7yta3oig77",
+            "a.b.c",
+            "rkey-asdf",
+            r#"{"ch":  "ch-ch-ch-changes"}"#,
+            Some("rev-z"),
+            None,
+            101,
+        );
+        write.insert_batch(batch.batch)?;
+
+        let (records, dids) = read.get_counts_by_collection(&collection)?;
+        assert_eq!(records, 1);
+        assert_eq!(dids, 1);
+
+        let records = read.get_records_by_collections(&vec![&collection], 2)?;
+        assert_eq!(records.len(), 1);
+        let rec = &records[0];
+        assert_eq!(rec.record.get(), r#"{"ch":  "ch-ch-ch-changes"}"#);
+        assert_eq!(rec.is_update, true);
+        Ok(())
+    }
+
+    #[test]
+    fn test_delete_one() -> anyhow::Result<()> {
+        let (read, mut write) = fjall_db();
+
+        let mut batch = TestBatch::default();
+        let collection = batch.create(
+            "did:plc:inze6wrmsm7pjl7yta3oig77",
+            "a.b.c",
+            "rkey-asdf",
+            "{}",
+            Some("rev-a"),
+            None,
+            100,
+        );
+        write.insert_batch(batch.batch)?;
+
+        let mut batch = TestBatch::default();
+        batch.delete(
+            "did:plc:inze6wrmsm7pjl7yta3oig77",
+            "a.b.c",
+            "rkey-asdf",
+            Some("rev-z"),
+            101,
+        );
+        write.insert_batch(batch.batch)?;
+
+        let (records, dids) = read.get_counts_by_collection(&collection)?;
+        assert_eq!(records, 1);
+        assert_eq!(dids, 1);
+
+        let records = read.get_records_by_collections(&vec![&collection], 2)?;
         assert_eq!(records.len(), 0);
 
         Ok(())

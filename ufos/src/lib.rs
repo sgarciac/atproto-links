@@ -23,8 +23,13 @@ pub struct CollectionCommits {
 
 impl CollectionCommits {
     pub fn truncating_insert(&mut self, commit: UFOsCommit, limit: usize) {
-        self.total_seen += 1;
-        self.dids_estimate.insert(&commit.did);
+        if let CommitAction::Put(PutAction {
+            is_update: false, ..
+        }) = commit.action
+        {
+            self.total_seen += 1;
+            self.dids_estimate.insert(&commit.did);
+        }
         self.commits.truncate(limit - 1);
         self.commits.push_front(commit);
     }
