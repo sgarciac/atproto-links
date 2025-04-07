@@ -204,7 +204,22 @@ pub struct FjallReader {
     rollups: PartitionHandle,
 }
 
-impl StoreReader for FjallReader {}
+impl StoreReader for FjallReader {
+    fn get_total_by_collection(&self, collection: &jetstream::exports::Nsid) -> Result<u64, StorageError> {
+        // TODO: start from rollup
+        let full_range = LiveRecordsKey::range_from_cursor(Cursor::from_start())?;
+        let mut total = 0;
+        for kv in self.rollups.range(full_range) {
+            let (key_bytes, val_bytes) = kv?;
+            let key = db_complete::<LiveRecordsKey>(&key_bytes)?;
+            if key.collection() == collection {
+                let LiveRecordsValue(n) = db_complete(&val_bytes)?;
+                total += n;
+            }
+        }
+        Ok(total)
+    }
+}
 
 pub struct FjallWriter {
     keyspace: Keyspace,
@@ -1137,8 +1152,7 @@ mod tests {
 
     #[test]
     fn test_insert_one() -> anyhow::Result<()> {
-        // let db_path = tempfile::tempdir()?;
-        let (_read, mut write, _) = FjallStorage::init(
+        let (read, mut write, _) = FjallStorage::init(
             tempfile::tempdir()?,
             "offline test (no real jetstream endpoint)".to_string(),
             false,
@@ -1162,12 +1176,15 @@ mod tests {
         commits.truncating_insert(commit, 1);
 
         let mut commits_by_nsid = HashMap::new();
-        commits_by_nsid.insert(collection, commits);
+        commits_by_nsid.insert(collection.clone(), commits);
 
         write.insert_batch(EventBatch {
             commits_by_nsid,
             ..Default::default()
         })?;
+
+        let total = read.get_total_by_collection(&collection)?;
+        assert_eq!(total, 1);
 
         Ok(())
     }

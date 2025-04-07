@@ -138,6 +138,7 @@ impl StaticStr for _LiveRecordsStaticStr {
         "live_records"
     }
 }
+// TODO: merge counts with hlls
 type LiveRecordsStaticPrefix = DbStaticStr<_LiveRecordsStaticStr>;
 type LiveRecordsCursorPrefix = DbConcat<LiveRecordsStaticPrefix, Cursor>;
 pub type LiveRecordsKey = DbConcat<LiveRecordsCursorPrefix, Nsid>;
@@ -149,6 +150,9 @@ impl LiveRecordsKey {
     }
     pub fn cursor(&self) -> Cursor {
         self.prefix.suffix
+    }
+    pub fn collection(&self) -> &Nsid {
+        &self.suffix
     }
 }
 impl From<(Cursor, &Nsid)> for LiveRecordsKey {

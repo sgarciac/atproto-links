@@ -1,5 +1,6 @@
-use crate::{error::StorageError, Cursor, EventBatch};
 use std::path::Path;
+use jetstream::exports::Nsid;
+use crate::{error::StorageError, Cursor, EventBatch};
 
 pub trait StorageWhatever<R: StoreReader, W: StoreWriter, C> { // TODO: extract this
     fn init(
@@ -15,4 +16,5 @@ pub trait StoreWriter {
 }
 
 pub trait StoreReader: Clone {
+    fn get_total_by_collection(&self, collection: &Nsid) -> Result<u64, StorageError>;
 }
