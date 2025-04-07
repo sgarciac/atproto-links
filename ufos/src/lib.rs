@@ -30,6 +30,7 @@ impl CollectionCommits {
             self.total_seen += 1;
             self.dids_estimate.insert(&commit.did);
         }
+        // TODO: oops we can't truncate *delete* commits!!!!!!!
         self.commits.truncate(limit - 1);
         self.commits.push_front(commit);
     }

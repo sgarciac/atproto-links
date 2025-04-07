@@ -18,6 +18,7 @@ pub trait StorageWhatever<R: StoreReader, W: StoreWriter, C> {
 
 pub trait StoreWriter {
     fn insert_batch(&mut self, event_batch: EventBatch) -> StorageResult<()>;
+    fn trim_collection(&mut self, collection: &Nsid, limit: usize) -> StorageResult<()>;
 }
 
 pub trait StoreReader: Clone {

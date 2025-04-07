@@ -34,6 +34,8 @@ const MAX_BATCHED_RW_EVENTS: usize = 18;
 /// this is higher than [MAX_BATCHED_RW_EVENTS] because account-deletes can have lots of items
 const MAX_BATCHED_RW_ITEMS: usize = 24;
 
+const MAX_BATCHED_CLEANUP_SIZE: usize = 1024; // try to commit progress for longer feeds
+
 #[derive(Clone)]
 struct Db {
     keyspace: Keyspace,
@@ -411,6 +413,70 @@ impl StoreWriter for FjallWriter {
         );
 
         batch.commit()?;
+        Ok(())
+    }
+    fn trim_collection(
+        &mut self,
+        collection: &Nsid,
+        limit: usize,
+        // TODO: could add a start cursor limit to avoid iterating deleted stuff at the start (/end)
+    ) -> StorageResult<()> {
+        let mut dangling_feed_keys_cleaned = 0;
+        let mut records_deleted = 0;
+
+        let mut batch = self.keyspace.batch();
+
+        let prefix = NsidRecordFeedKey::from_prefix_to_db_bytes(collection)?;
+        let mut found = 0;
+        for kv in self.feeds.prefix(prefix).rev() {
+            let (key_bytes, val_bytes) = kv?;
+            let feed_key = db_complete::<NsidRecordFeedKey>(&key_bytes)?;
+            let feed_val = db_complete::<NsidRecordFeedVal>(&val_bytes)?;
+            let location_key: RecordLocationKey = (&feed_key, &feed_val).into();
+            let location_key_bytes = location_key.to_db_bytes()?;
+
+            let Some(location_val_bytes) = self.records.get(&location_key_bytes)? else {
+                // record was deleted (hopefully)
+                batch.remove(&self.feeds, &location_key_bytes);
+                dangling_feed_keys_cleaned += 1;
+                continue;
+            };
+
+            let (meta, _) = RecordLocationMeta::from_db_bytes(&location_val_bytes)?;
+
+            if meta.cursor() != feed_key.cursor() {
+                // older/different version
+                batch.remove(&self.feeds, &location_key_bytes);
+                dangling_feed_keys_cleaned += 1;
+                continue;
+            }
+            if meta.rev != feed_val.rev() {
+                // weird...
+                log::warn!("record lookup: cursor match but rev did not...? removing.");
+                batch.remove(&self.feeds, &location_key_bytes);
+                dangling_feed_keys_cleaned += 1;
+                continue;
+            }
+
+            if batch.len() >= MAX_BATCHED_CLEANUP_SIZE {
+                batch.commit()?;
+                batch = self.keyspace.batch();
+            }
+
+            found += 1;
+            if found <= limit {
+                continue;
+            }
+
+            batch.remove(&self.feeds, &location_key_bytes);
+            batch.remove(&self.records, &location_key_bytes);
+            records_deleted += 1;
+        }
+
+        batch.commit()?;
+
+        log::info!("trim_collection ({collection:?}) removed {dangling_feed_keys_cleaned} dangling feed entries and {records_deleted} records");
+        eprintln!("trim_collection ({collection:?}) removed {dangling_feed_keys_cleaned} dangling feed entries and {records_deleted} records");
         Ok(())
     }
 }
@@ -1168,7 +1234,7 @@ fn summarize_batch(batch: &EventBatch) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{CollectionCommits, UFOsCommit};
+    use crate::UFOsCommit;
     use jetstream::events::{CommitEvent, CommitOp};
     use jetstream::exports::Cid;
     use serde_json::value::RawValue;
@@ -1199,6 +1265,7 @@ mod tests {
             rev: Option<&str>,
             cid: Option<Cid>,
             cursor: u64,
+            truncate_at: usize,
         ) -> Nsid {
             let did = Did::new(did.to_string()).unwrap();
             let collection = Nsid::new(collection.to_string()).unwrap();
@@ -1226,7 +1293,7 @@ mod tests {
                 .commits_by_nsid
                 .entry(collection.clone())
                 .or_default()
-                .truncating_insert(commit, 1);
+                .truncating_insert(commit, truncate_at);
 
             collection
         }
@@ -1239,6 +1306,7 @@ mod tests {
             rev: Option<&str>,
             cid: Option<Cid>,
             cursor: u64,
+            truncate_at: usize,
         ) -> Nsid {
             let did = Did::new(did.to_string()).unwrap();
             let collection = Nsid::new(collection.to_string()).unwrap();
@@ -1266,7 +1334,7 @@ mod tests {
                 .commits_by_nsid
                 .entry(collection.clone())
                 .or_default()
-                .truncating_insert(commit, 1);
+                .truncating_insert(commit, truncate_at);
 
             collection
         }
@@ -1296,7 +1364,7 @@ mod tests {
                 .commits_by_nsid
                 .entry(collection.clone())
                 .or_default()
-                .truncating_insert(commit, 1);
+                .truncating_insert(commit, 10000); // eek this needs to be fixed!!
 
             collection
         }
@@ -1326,6 +1394,7 @@ mod tests {
             Some("rev-z"),
             None,
             100,
+            1,
         );
         write.insert_batch(batch.batch)?;
 
@@ -1363,6 +1432,7 @@ mod tests {
             Some("rev-a"),
             None,
             100,
+            1,
         );
         write.insert_batch(batch.batch)?;
 
@@ -1375,6 +1445,7 @@ mod tests {
             Some("rev-z"),
             None,
             101,
+            1,
         );
         write.insert_batch(batch.batch)?;
 
@@ -1403,6 +1474,7 @@ mod tests {
             Some("rev-a"),
             None,
             100,
+            1,
         );
         write.insert_batch(batch.batch)?;
 
@@ -1425,4 +1497,82 @@ mod tests {
 
         Ok(())
     }
+
+    #[test]
+    fn test_collection_trim() -> anyhow::Result<()> {
+        let (read, mut write) = fjall_db();
+
+        let mut batch = TestBatch::default();
+        batch.create(
+            "did:plc:inze6wrmsm7pjl7yta3oig77",
+            "a.a.a",
+            "rkey-aaa",
+            "{}",
+            Some("rev-aaa"),
+            None,
+            10_000,
+            100,
+        );
+        let mut last_b_cursor;
+        for i in 1..=10 {
+            last_b_cursor = 11_000 + i;
+            batch.create(
+                &format!("did:plc:inze6wrmsm7pjl7yta3oig7{}", i % 3),
+                "a.a.b",
+                &format!("rkey-bbb-{i}"),
+                &format!(r#"{{"n": {i}}}"#),
+                Some(&format!("rev-bbb-{i}")),
+                None,
+                last_b_cursor,
+                100,
+            );
+        }
+        batch.create(
+            "did:plc:inze6wrmsm7pjl7yta3oig77",
+            "a.a.c",
+            "rkey-ccc",
+            "{}",
+            Some("rev-ccc"),
+            None,
+            12_000,
+            100,
+        );
+
+        write.insert_batch(batch.batch)?;
+
+        let records =
+            read.get_records_by_collections(&vec![&Nsid::new("a.a.a".to_string()).unwrap()], 100)?;
+        assert_eq!(records.len(), 1);
+        let records =
+            read.get_records_by_collections(&vec![&Nsid::new("a.a.b".to_string()).unwrap()], 100)?;
+        assert_eq!(records.len(), 10);
+        let records =
+            read.get_records_by_collections(&vec![&Nsid::new("a.a.c".to_string()).unwrap()], 100)?;
+        assert_eq!(records.len(), 1);
+        let records =
+            read.get_records_by_collections(&vec![&Nsid::new("a.a.d".to_string()).unwrap()], 100)?;
+        assert_eq!(records.len(), 0);
+
+        write.trim_collection(&Nsid::new("a.a.a".to_string()).unwrap(), 6)?;
+        write.trim_collection(&Nsid::new("a.a.b".to_string()).unwrap(), 6)?;
+        write.trim_collection(&Nsid::new("a.a.c".to_string()).unwrap(), 6)?;
+        write.trim_collection(&Nsid::new("a.a.d".to_string()).unwrap(), 6)?;
+
+        let records =
+            read.get_records_by_collections(&vec![&Nsid::new("a.a.a".to_string()).unwrap()], 100)?;
+        assert_eq!(records.len(), 1);
+        let records =
+            read.get_records_by_collections(&vec![&Nsid::new("a.a.b".to_string()).unwrap()], 100)?;
+        assert_eq!(records.len(), 6);
+        let records =
+            read.get_records_by_collections(&vec![&Nsid::new("a.a.c".to_string()).unwrap()], 100)?;
+        assert_eq!(records.len(), 1);
+        let records =
+            read.get_records_by_collections(&vec![&Nsid::new("a.a.d".to_string()).unwrap()], 100)?;
+        assert_eq!(records.len(), 0);
+
+        Ok(())
+    }
+
+    // TODO: test that delete commits don't get truncated
 }
