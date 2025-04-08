@@ -318,4 +318,42 @@ mod tests {
 
         Ok(())
     }
+
+    #[test]
+    fn test_truncating_insert_maxes_out_deletes() -> anyhow::Result<()> {
+        let mut commits: CollectionCommits<2> = Default::default();
+
+        commits.truncating_insert(UFOsCommit {
+            cursor: Cursor::from_raw_u64(100),
+            did: Did::new("did:plc:whatever".to_string()).unwrap(),
+            rkey: RecordKey::new("rkey-asdf-a".to_string()).unwrap(),
+            rev: "rev-asdf".to_string(),
+            action: CommitAction::Cut,
+        }).unwrap();
+
+        commits.truncating_insert(UFOsCommit {
+            cursor: Cursor::from_raw_u64(101),
+            did: Did::new("did:plc:whatever".to_string()).unwrap(),
+            rkey: RecordKey::new("rkey-asdf-b".to_string()).unwrap(),
+            rev: "rev-asdg".to_string(),
+            action: CommitAction::Cut,
+        }).unwrap();
+
+        let res = commits.truncating_insert(UFOsCommit {
+            cursor: Cursor::from_raw_u64(102),
+            did: Did::new("did:plc:whatever".to_string()).unwrap(),
+            rkey: RecordKey::new("rkey-asdf-c".to_string()).unwrap(),
+            rev: "rev-asdh".to_string(),
+            action: CommitAction::Cut,
+        });
+
+        assert!(res.is_err());
+        let overflowed = match res {
+            Err(BatchInsertError::BatchFull(c)) => c,
+            e => panic!("expected overflow but a different error happened: {e:?}"),
+        };
+        assert_eq!(overflowed.rev, "rev-asdh");
+
+        Ok(())
+    }
 }
