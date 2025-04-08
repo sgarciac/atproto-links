@@ -50,7 +50,7 @@ impl<const LIMIT: usize> CollectionCommits<LIMIT> {
                     .get_mut(self.head)
                     .ok_or(BatchInsertError::BatchOverflow(self.head))?;
                 if candidate.action.is_create() {
-                    std::mem::replace(candidate, commit);
+                    *candidate = commit;
                     break;
                 }
                 self.advance_head();
