@@ -225,7 +225,7 @@ mod tests {
                 record: RawValue::from_string("{}".to_string())?,
                 is_update: false,
             }),
-        });
+        })?;
 
         commits.truncating_insert(UFOsCommit {
             cursor: Cursor::from_raw_u64(101),
@@ -236,7 +236,7 @@ mod tests {
                 record: RawValue::from_string("{}".to_string())?,
                 is_update: false,
             }),
-        });
+        })?;
 
         commits.truncating_insert(UFOsCommit {
             cursor: Cursor::from_raw_u64(102),
@@ -247,7 +247,7 @@ mod tests {
                 record: RawValue::from_string("{}".to_string())?,
                 is_update: false,
             }),
-        });
+        })?;
 
         assert_eq!(commits.total_seen, 3);
         assert_eq!(commits.dids_estimate.estimate(), 1);
@@ -282,7 +282,7 @@ mod tests {
             rkey: RecordKey::new("rkey-asdf-a".to_string()).unwrap(),
             rev: "rev-asdf".to_string(),
             action: CommitAction::Cut,
-        });
+        })?;
 
         commits.truncating_insert(UFOsCommit {
             cursor: Cursor::from_raw_u64(101),
@@ -293,7 +293,7 @@ mod tests {
                 record: RawValue::from_string("{}".to_string())?,
                 is_update: false,
             }),
-        });
+        })?;
 
         commits.truncating_insert(UFOsCommit {
             cursor: Cursor::from_raw_u64(102),
@@ -304,7 +304,7 @@ mod tests {
                 record: RawValue::from_string("{}".to_string())?,
                 is_update: false,
             }),
-        });
+        })?;
 
         assert_eq!(commits.total_seen, 2);
         assert_eq!(commits.dids_estimate.estimate(), 1);

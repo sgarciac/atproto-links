@@ -1198,7 +1198,8 @@ mod tests {
                 .commits_by_nsid
                 .entry(collection.clone())
                 .or_default()
-                .truncating_insert(commit);
+                .truncating_insert(commit)
+                .unwrap();
 
             collection
         }
@@ -1238,7 +1239,8 @@ mod tests {
                 .commits_by_nsid
                 .entry(collection.clone())
                 .or_default()
-                .truncating_insert(commit);
+                .truncating_insert(commit)
+                .unwrap();
 
             collection
         }
@@ -1268,7 +1270,8 @@ mod tests {
                 .commits_by_nsid
                 .entry(collection.clone())
                 .or_default()
-                .truncating_insert(commit);
+                .truncating_insert(commit)
+                .unwrap();
 
             collection
         }
