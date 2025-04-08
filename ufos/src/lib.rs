@@ -323,21 +323,39 @@ mod tests {
     fn test_truncating_insert_maxes_out_deletes() -> anyhow::Result<()> {
         let mut commits: CollectionCommits<2> = Default::default();
 
-        commits.truncating_insert(UFOsCommit {
-            cursor: Cursor::from_raw_u64(100),
-            did: Did::new("did:plc:whatever".to_string()).unwrap(),
-            rkey: RecordKey::new("rkey-asdf-a".to_string()).unwrap(),
-            rev: "rev-asdf".to_string(),
-            action: CommitAction::Cut,
-        }).unwrap();
+        commits
+            .truncating_insert(UFOsCommit {
+                cursor: Cursor::from_raw_u64(100),
+                did: Did::new("did:plc:whatever".to_string()).unwrap(),
+                rkey: RecordKey::new("rkey-asdf-a".to_string()).unwrap(),
+                rev: "rev-asdf".to_string(),
+                action: CommitAction::Cut,
+            })
+            .unwrap();
 
-        commits.truncating_insert(UFOsCommit {
-            cursor: Cursor::from_raw_u64(101),
-            did: Did::new("did:plc:whatever".to_string()).unwrap(),
-            rkey: RecordKey::new("rkey-asdf-b".to_string()).unwrap(),
-            rev: "rev-asdg".to_string(),
-            action: CommitAction::Cut,
-        }).unwrap();
+        // this create will just be discarded
+        commits
+            .truncating_insert(UFOsCommit {
+                cursor: Cursor::from_raw_u64(80),
+                did: Did::new("did:plc:whatever".to_string()).unwrap(),
+                rkey: RecordKey::new("rkey-asdf-zzz".to_string()).unwrap(),
+                rev: "rev-asdzzz".to_string(),
+                action: CommitAction::Put(PutAction {
+                    record: RawValue::from_string("{}".to_string())?,
+                    is_update: false,
+                }),
+            })
+            .unwrap();
+
+        commits
+            .truncating_insert(UFOsCommit {
+                cursor: Cursor::from_raw_u64(101),
+                did: Did::new("did:plc:whatever".to_string()).unwrap(),
+                rkey: RecordKey::new("rkey-asdf-b".to_string()).unwrap(),
+                rev: "rev-asdg".to_string(),
+                action: CommitAction::Cut,
+            })
+            .unwrap();
 
         let res = commits.truncating_insert(UFOsCommit {
             cursor: Cursor::from_raw_u64(102),
