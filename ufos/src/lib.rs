@@ -149,6 +149,21 @@ pub struct EventBatch<const LIMIT: usize> {
 }
 
 impl<const LIMIT: usize> EventBatch<LIMIT> {
+    pub fn insert_commit_by_nsid(
+        &mut self,
+        collection: &Nsid,
+        commit: UFOsCommit,
+        max_collections: usize,
+    ) -> Result<(), BatchInsertError> {
+        let map = &mut self.commits_by_nsid;
+        if !map.contains_key(collection) && map.len() >= max_collections {
+            return Err(BatchInsertError::BatchFull(commit));
+        }
+        map.entry(collection.clone())
+            .or_default()
+            .truncating_insert(commit)?;
+        Ok(())
+    }
     pub fn total_records(&self) -> usize {
         self.commits_by_nsid.values().map(|v| v.commits.len()).sum()
     }

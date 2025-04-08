@@ -8,7 +8,7 @@ use std::mem;
 use std::time::Duration;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 
-use crate::error::FirehoseEventError;
+use crate::error::{BatchInsertError, FirehoseEventError};
 use crate::{DeleteAccount, EventBatch, UFOsCommit};
 
 const MAX_BATCHED_RECORDS: usize = 128; // *non-blocking* limit. drops oldest batched record per collection once reached.
@@ -125,19 +125,23 @@ impl Batcher {
         Ok(())
     }
 
-    async fn handle_commit(&mut self, commit: UFOsCommit, nsid: Nsid) -> anyhow::Result<()> {
-        if !self.current_batch.batch.commits_by_nsid.contains_key(&nsid)
-            && self.current_batch.batch.commits_by_nsid.len() >= MAX_BATCHED_COLLECTIONS
-        {
-            self.send_current_batch_now().await?;
-        }
+    async fn handle_commit(&mut self, commit: UFOsCommit, collection: Nsid) -> anyhow::Result<()> {
+        let optimistic_res = self.current_batch.batch.insert_commit_by_nsid(
+            &collection,
+            commit,
+            MAX_BATCHED_COLLECTIONS,
+        );
 
-        self.current_batch
-            .batch
-            .commits_by_nsid
-            .entry(nsid)
-            .or_default()
-            .truncating_insert(commit);
+        if let Err(BatchInsertError::BatchFull(commit)) = optimistic_res {
+            self.send_current_batch_now().await?;
+            self.current_batch.batch.insert_commit_by_nsid(
+                &collection,
+                commit,
+                MAX_BATCHED_COLLECTIONS,
+            )?;
+        } else {
+            optimistic_res?;
+        }
 
         Ok(())
     }
