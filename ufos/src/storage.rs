@@ -1,5 +1,5 @@
 use crate::{error::StorageError, Cursor, EventBatch, UFOsRecord};
-use jetstream::exports::Nsid;
+use jetstream::exports::{Did, Nsid};
 use std::path::Path;
 
 pub type StorageResult<T> = Result<T, StorageError>;
@@ -22,6 +22,7 @@ pub trait StoreWriter {
         event_batch: EventBatch<LIMIT>,
     ) -> StorageResult<()>;
     fn trim_collection(&mut self, collection: &Nsid, limit: usize) -> StorageResult<()>;
+    fn delete_account(&mut self, did: &Did) -> StorageResult<usize>;
 }
 
 pub trait StoreReader: Clone {

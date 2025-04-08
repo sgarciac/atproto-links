@@ -36,6 +36,7 @@ const MAX_BATCHED_RW_EVENTS: usize = 18;
 const MAX_BATCHED_RW_ITEMS: usize = 24;
 
 const MAX_BATCHED_CLEANUP_SIZE: usize = 1024; // try to commit progress for longer feeds
+const MAX_BATCHED_ACCOUNT_DELETE_RECORDS: usize = 1024;
 
 #[derive(Clone)]
 struct Db {
@@ -419,6 +420,7 @@ impl StoreWriter for FjallWriter {
         batch.commit()?;
         Ok(())
     }
+
     fn trim_collection(
         &mut self,
         collection: &Nsid,
@@ -481,6 +483,23 @@ impl StoreWriter for FjallWriter {
 
         log::info!("trim_collection ({collection:?}) removed {dangling_feed_keys_cleaned} dangling feed entries and {records_deleted} records");
         Ok(())
+    }
+
+    fn delete_account(&mut self, did: &Did) -> Result<usize, StorageError> {
+        let mut records_deleted = 0;
+        let mut batch = self.keyspace.batch();
+        let prefix = RecordLocationKey::from_prefix_to_db_bytes(did)?;
+        for kv in self.records.prefix(prefix) {
+            let (key_bytes, _) = kv?;
+            batch.remove(&self.records, key_bytes);
+            records_deleted += 1;
+            if batch.len() >= MAX_BATCHED_ACCOUNT_DELETE_RECORDS {
+                batch.commit()?;
+                batch = self.keyspace.batch();
+            }
+        }
+        batch.commit()?;
+        Ok(records_deleted)
     }
 }
 
@@ -1474,5 +1493,45 @@ mod tests {
         Ok(())
     }
 
-    // TODO: test that delete commits don't get truncated
+    #[test]
+    fn test_delete_account() -> anyhow::Result<()> {
+        let (read, mut write) = fjall_db();
+
+        let mut batch = TestBatch::default();
+        batch.create(
+            "did:plc:person-a",
+            "a.a.a",
+            "rkey-aaa",
+            "{}",
+            Some("rev-aaa"),
+            None,
+            10_000,
+        );
+        for i in 1..=2 {
+            batch.create(
+                "did:plc:person-b",
+                "a.a.a",
+                &format!("rkey-bbb-{i}"),
+                &format!(r#"{{"n": {i}}}"#),
+                Some(&format!("rev-bbb-{i}")),
+                None,
+                11_000 + i,
+            );
+        }
+        write.insert_batch(batch.batch)?;
+
+        let records =
+            read.get_records_by_collections(&vec![&Nsid::new("a.a.a".to_string()).unwrap()], 100)?;
+        assert_eq!(records.len(), 3);
+
+        let records_deleted =
+            write.delete_account(&Did::new("did:plc:person-b".to_string()).unwrap())?;
+        assert_eq!(records_deleted, 2);
+
+        let records =
+            read.get_records_by_collections(&vec![&Nsid::new("a.a.a".to_string()).unwrap()], 100)?;
+        assert_eq!(records.len(), 1);
+
+        Ok(())
+    }
 }
