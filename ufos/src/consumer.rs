@@ -19,16 +19,18 @@ const MAX_BATCH_SPAN_SECS: f64 = 60.; // hard limit, pause consumer if we're una
 const SEND_TIMEOUT_S: f64 = 15.; // if the channel is blocked longer than this, something is probably up
 const BATCH_QUEUE_SIZE: usize = 1; // nearly-rendez-vous
 
+pub type LimitedBatch = EventBatch<MAX_BATCHED_RECORDS>;
+
 #[derive(Debug, Default)]
 struct CurrentBatch {
     initial_cursor: Option<Cursor>,
-    batch: EventBatch,
+    batch: LimitedBatch,
 }
 
 #[derive(Debug)]
 struct Batcher {
     jetstream_receiver: JetstreamReceiver,
-    batch_sender: Sender<EventBatch>,
+    batch_sender: Sender<LimitedBatch>,
     current_batch: CurrentBatch,
 }
 
@@ -36,7 +38,7 @@ pub async fn consume(
     jetstream_endpoint: &str,
     cursor: Option<Cursor>,
     no_compress: bool,
-) -> anyhow::Result<Receiver<EventBatch>> {
+) -> anyhow::Result<Receiver<LimitedBatch>> {
     let endpoint = DefaultJetstreamEndpoints::endpoint_or_shortcut(jetstream_endpoint);
     if endpoint == jetstream_endpoint {
         log::info!("connecting to jetstream at {endpoint}");
@@ -57,14 +59,14 @@ pub async fn consume(
     let jetstream_receiver = JetstreamConnector::new(config)?
         .connect_cursor(cursor)
         .await?;
-    let (batch_sender, batch_reciever) = channel::<EventBatch>(BATCH_QUEUE_SIZE);
+    let (batch_sender, batch_reciever) = channel::<LimitedBatch>(BATCH_QUEUE_SIZE);
     let mut batcher = Batcher::new(jetstream_receiver, batch_sender);
     tokio::task::spawn(async move { batcher.run().await });
     Ok(batch_reciever)
 }
 
 impl Batcher {
-    fn new(jetstream_receiver: JetstreamReceiver, batch_sender: Sender<EventBatch>) -> Self {
+    fn new(jetstream_receiver: JetstreamReceiver, batch_sender: Sender<LimitedBatch>) -> Self {
         Self {
             jetstream_receiver,
             batch_sender,
@@ -135,7 +137,7 @@ impl Batcher {
             .commits_by_nsid
             .entry(nsid)
             .or_default()
-            .truncating_insert(commit, MAX_BATCHED_RECORDS);
+            .truncating_insert(commit);
 
         Ok(())
     }

@@ -6,33 +6,68 @@ pub mod storage;
 pub mod storage_fjall;
 pub mod store_types;
 
+use crate::error::BatchInsertError;
 use cardinality_estimator::CardinalityEstimator;
 use error::FirehoseEventError;
 use jetstream::events::{CommitEvent, CommitOp, Cursor};
 use jetstream::exports::{Did, Nsid, RecordKey};
 use serde::Serialize;
 use serde_json::value::RawValue;
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 
 #[derive(Debug, Default, Clone)]
-pub struct CollectionCommits {
+pub struct CollectionCommits<const LIMIT: usize> {
     pub total_seen: usize,
     pub dids_estimate: CardinalityEstimator<Did>,
-    pub commits: VecDeque<UFOsCommit>,
+    pub commits: Vec<UFOsCommit>,
+    head: usize,
+    non_creates: usize,
 }
 
-impl CollectionCommits {
-    pub fn truncating_insert(&mut self, commit: UFOsCommit, limit: usize) {
-        if let CommitAction::Put(PutAction {
-            is_update: false, ..
-        }) = commit.action
-        {
-            self.total_seen += 1;
-            self.dids_estimate.insert(&commit.did);
+impl<const LIMIT: usize> CollectionCommits<LIMIT> {
+    fn advance_head(&mut self) {
+        self.head += 1;
+        if self.head > LIMIT {
+            self.head = 0;
         }
-        // TODO: oops we can't truncate *delete* commits!!!!!!!
-        self.commits.truncate(limit - 1);
-        self.commits.push_front(commit);
+    }
+    pub fn truncating_insert(&mut self, commit: UFOsCommit) -> Result<(), BatchInsertError> {
+        if self.non_creates == LIMIT {
+            return Err(BatchInsertError::BatchFull(commit));
+        }
+        let did = commit.did.clone();
+        let is_create = commit.action.is_create();
+        if self.commits.len() < LIMIT {
+            self.commits.push(commit);
+            if self.commits.capacity() > LIMIT {
+                self.commits.shrink_to(LIMIT); // save mem?????? maybe??
+            }
+        } else {
+            let head_started_at = self.head;
+            loop {
+                let candidate = self
+                    .commits
+                    .get_mut(self.head)
+                    .ok_or(BatchInsertError::BatchOverflow(self.head))?;
+                if candidate.action.is_create() {
+                    std::mem::replace(candidate, commit);
+                    break;
+                }
+                self.advance_head();
+                if self.head == head_started_at {
+                    return Err(BatchInsertError::BatchForever);
+                }
+            }
+        }
+
+        if is_create {
+            self.total_seen += 1;
+            self.dids_estimate.insert(&did);
+        } else {
+            self.non_creates += 1;
+        }
+
+        Ok(())
     }
 }
 
@@ -46,6 +81,14 @@ pub struct DeleteAccount {
 pub enum CommitAction {
     Put(PutAction),
     Cut,
+}
+impl CommitAction {
+    pub fn is_create(&self) -> bool {
+        match self {
+            CommitAction::Put(PutAction { is_update, .. }) => !is_update,
+            CommitAction::Cut => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -100,12 +143,12 @@ impl UFOsCommit {
 }
 
 #[derive(Debug, Default, Clone)]
-pub struct EventBatch {
-    pub commits_by_nsid: HashMap<Nsid, CollectionCommits>,
+pub struct EventBatch<const LIMIT: usize> {
+    pub commits_by_nsid: HashMap<Nsid, CollectionCommits<LIMIT>>,
     pub account_removes: Vec<DeleteAccount>,
 }
 
-impl EventBatch {
+impl<const LIMIT: usize> EventBatch<LIMIT> {
     pub fn total_records(&self) -> usize {
         self.commits_by_nsid.values().map(|v| v.commits.len()).sum()
     }
@@ -128,7 +171,7 @@ impl EventBatch {
     pub fn latest_cursor(&self) -> Option<Cursor> {
         let mut oldest = Cursor::from_start();
         for commits in self.commits_by_nsid.values() {
-            if let Some(commit) = commits.commits.front() {
+            for commit in &commits.commits {
                 if commit.cursor > oldest {
                     oldest = commit.cursor;
                 }
@@ -147,5 +190,132 @@ impl EventBatch {
     }
     pub fn is_empty(&self) -> bool {
         self.commits_by_nsid.is_empty() && self.account_removes.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_truncating_insert_truncates() -> anyhow::Result<()> {
+        let mut commits: CollectionCommits<2> = Default::default();
+
+        commits.truncating_insert(UFOsCommit {
+            cursor: Cursor::from_raw_u64(100),
+            did: Did::new("did:plc:whatever".to_string()).unwrap(),
+            rkey: RecordKey::new("rkey-asdf-a".to_string()).unwrap(),
+            rev: "rev-asdf".to_string(),
+            action: CommitAction::Put(PutAction {
+                record: RawValue::from_string("{}".to_string())?,
+                is_update: false,
+            }),
+        });
+
+        commits.truncating_insert(UFOsCommit {
+            cursor: Cursor::from_raw_u64(101),
+            did: Did::new("did:plc:whatever".to_string()).unwrap(),
+            rkey: RecordKey::new("rkey-asdf-b".to_string()).unwrap(),
+            rev: "rev-asdg".to_string(),
+            action: CommitAction::Put(PutAction {
+                record: RawValue::from_string("{}".to_string())?,
+                is_update: false,
+            }),
+        });
+
+        commits.truncating_insert(UFOsCommit {
+            cursor: Cursor::from_raw_u64(102),
+            did: Did::new("did:plc:whatever".to_string()).unwrap(),
+            rkey: RecordKey::new("rkey-asdf-c".to_string()).unwrap(),
+            rev: "rev-asdh".to_string(),
+            action: CommitAction::Put(PutAction {
+                record: RawValue::from_string("{}".to_string())?,
+                is_update: false,
+            }),
+        });
+
+        assert_eq!(commits.total_seen, 3);
+        assert_eq!(commits.dids_estimate.estimate(), 1);
+        assert_eq!(commits.commits.len(), 2);
+
+        let mut found_first = false;
+        let mut found_last = false;
+        for commit in commits.commits {
+            match commit.rev.as_ref() {
+                "rev-asdf" => {
+                    found_first = true;
+                }
+                "rev-asdh" => {
+                    found_last = true;
+                }
+                _ => {}
+            }
+        }
+        assert!(!found_first);
+        assert!(found_last);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_truncating_insert_does_not_truncate_deletes() -> anyhow::Result<()> {
+        let mut commits: CollectionCommits<2> = Default::default();
+
+        commits.truncating_insert(UFOsCommit {
+            cursor: Cursor::from_raw_u64(100),
+            did: Did::new("did:plc:whatever".to_string()).unwrap(),
+            rkey: RecordKey::new("rkey-asdf-a".to_string()).unwrap(),
+            rev: "rev-asdf".to_string(),
+            action: CommitAction::Cut,
+        });
+
+        commits.truncating_insert(UFOsCommit {
+            cursor: Cursor::from_raw_u64(101),
+            did: Did::new("did:plc:whatever".to_string()).unwrap(),
+            rkey: RecordKey::new("rkey-asdf-b".to_string()).unwrap(),
+            rev: "rev-asdg".to_string(),
+            action: CommitAction::Put(PutAction {
+                record: RawValue::from_string("{}".to_string())?,
+                is_update: false,
+            }),
+        });
+
+        commits.truncating_insert(UFOsCommit {
+            cursor: Cursor::from_raw_u64(102),
+            did: Did::new("did:plc:whatever".to_string()).unwrap(),
+            rkey: RecordKey::new("rkey-asdf-c".to_string()).unwrap(),
+            rev: "rev-asdh".to_string(),
+            action: CommitAction::Put(PutAction {
+                record: RawValue::from_string("{}".to_string())?,
+                is_update: false,
+            }),
+        });
+
+        assert_eq!(commits.total_seen, 2);
+        assert_eq!(commits.dids_estimate.estimate(), 1);
+        assert_eq!(commits.commits.len(), 2);
+
+        let mut found_first = false;
+        let mut found_last = false;
+        let mut found_delete = false;
+        for commit in commits.commits {
+            match commit.rev.as_ref() {
+                "rev-asdg" => {
+                    found_first = true;
+                }
+                "rev-asdh" => {
+                    found_last = true;
+                }
+                _ => {}
+            }
+            if let CommitAction::Cut = commit.action {
+                found_delete = true;
+            }
+        }
+        assert!(!found_first);
+        assert!(found_last);
+        assert!(found_delete);
+
+        Ok(())
     }
 }

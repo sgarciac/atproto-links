@@ -1,3 +1,4 @@
+use crate::consumer::LimitedBatch;
 use crate::db_types::{db_complete, DbBytes, DbStaticStr, EncodingError, StaticStr};
 use crate::error::StorageError;
 use crate::storage::{StorageResult, StorageWhatever, StoreReader, StoreWriter};
@@ -349,7 +350,10 @@ impl FjallWriter {
 }
 
 impl StoreWriter for FjallWriter {
-    fn insert_batch(&mut self, event_batch: EventBatch) -> StorageResult<()> {
+    fn insert_batch<const LIMIT: usize>(
+        &mut self,
+        event_batch: EventBatch<LIMIT>,
+    ) -> StorageResult<()> {
         if event_batch.is_empty() {
             return Ok(());
         }
@@ -529,7 +533,7 @@ impl Storage {
     /// Jetstream event batch receiver: writes without any reads
     ///
     /// Events that require reads like record updates or delets are written to a queue
-    pub async fn receive(&self, mut receiver: Receiver<EventBatch>) -> anyhow::Result<()> {
+    pub async fn receive(&self, mut receiver: Receiver<LimitedBatch>) -> anyhow::Result<()> {
         // TODO: see rw_loop: enforce single-thread.
         loop {
             let t_sleep = Instant::now();
@@ -1119,7 +1123,7 @@ struct DBWriter {
 
 ////////// temp stuff to remove:
 
-fn summarize_batch(batch: &EventBatch) -> String {
+fn summarize_batch<const LIMIT: usize>(batch: &EventBatch<LIMIT>) -> String {
     format!(
         "batch of {: >3} samples from {: >4} records in {: >2} collections from ~{: >4} DIDs, {} acct removes, cursor {: <12?}",
         batch.total_records(),
@@ -1150,9 +1154,11 @@ mod tests {
         (read, write)
     }
 
+    const TEST_BATCH_LIMIT: usize = 16;
+
     #[derive(Debug, Default)]
     struct TestBatch {
-        pub batch: EventBatch,
+        pub batch: EventBatch<TEST_BATCH_LIMIT>,
     }
 
     impl TestBatch {
@@ -1165,7 +1171,6 @@ mod tests {
             rev: Option<&str>,
             cid: Option<Cid>,
             cursor: u64,
-            truncate_at: usize,
         ) -> Nsid {
             let did = Did::new(did.to_string()).unwrap();
             let collection = Nsid::new(collection.to_string()).unwrap();
@@ -1193,7 +1198,7 @@ mod tests {
                 .commits_by_nsid
                 .entry(collection.clone())
                 .or_default()
-                .truncating_insert(commit, truncate_at);
+                .truncating_insert(commit);
 
             collection
         }
@@ -1206,7 +1211,6 @@ mod tests {
             rev: Option<&str>,
             cid: Option<Cid>,
             cursor: u64,
-            truncate_at: usize,
         ) -> Nsid {
             let did = Did::new(did.to_string()).unwrap();
             let collection = Nsid::new(collection.to_string()).unwrap();
@@ -1234,7 +1238,7 @@ mod tests {
                 .commits_by_nsid
                 .entry(collection.clone())
                 .or_default()
-                .truncating_insert(commit, truncate_at);
+                .truncating_insert(commit);
 
             collection
         }
@@ -1264,7 +1268,7 @@ mod tests {
                 .commits_by_nsid
                 .entry(collection.clone())
                 .or_default()
-                .truncating_insert(commit, 10000); // eek this needs to be fixed!!
+                .truncating_insert(commit);
 
             collection
         }
@@ -1273,7 +1277,7 @@ mod tests {
     #[test]
     fn test_hello() -> anyhow::Result<()> {
         let (read, mut write) = fjall_db();
-        write.insert_batch(EventBatch::default())?;
+        write.insert_batch::<TEST_BATCH_LIMIT>(EventBatch::default())?;
         let (records, dids) =
             read.get_counts_by_collection(&Nsid::new("a.b.c".to_string()).unwrap())?;
         assert_eq!(records, 0);
@@ -1294,7 +1298,6 @@ mod tests {
             Some("rev-z"),
             None,
             100,
-            1,
         );
         write.insert_batch(batch.batch)?;
 
@@ -1332,7 +1335,6 @@ mod tests {
             Some("rev-a"),
             None,
             100,
-            1,
         );
         write.insert_batch(batch.batch)?;
 
@@ -1345,7 +1347,6 @@ mod tests {
             Some("rev-z"),
             None,
             101,
-            1,
         );
         write.insert_batch(batch.batch)?;
 
@@ -1374,7 +1375,6 @@ mod tests {
             Some("rev-a"),
             None,
             100,
-            1,
         );
         write.insert_batch(batch.batch)?;
 
@@ -1411,7 +1411,6 @@ mod tests {
             Some("rev-aaa"),
             None,
             10_000,
-            100,
         );
         let mut last_b_cursor;
         for i in 1..=10 {
@@ -1424,7 +1423,6 @@ mod tests {
                 Some(&format!("rev-bbb-{i}")),
                 None,
                 last_b_cursor,
-                100,
             );
         }
         batch.create(
@@ -1435,7 +1433,6 @@ mod tests {
             Some("rev-ccc"),
             None,
             12_000,
-            100,
         );
 
         write.insert_batch(batch.batch)?;
