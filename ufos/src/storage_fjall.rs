@@ -1157,7 +1157,7 @@ fn summarize_batch<const LIMIT: usize>(batch: &EventBatch<LIMIT>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::UFOsCommit;
+    use crate::{DeleteAccount, UFOsCommit};
     use jetstream::events::{CommitEvent, CommitOp};
     use jetstream::exports::Cid;
     use serde_json::value::RawValue;
@@ -1293,6 +1293,14 @@ mod tests {
                 .unwrap();
 
             collection
+        }
+        pub fn delete_account(&mut self, did: &str, cursor: u64) -> Did {
+            let did = Did::new(did.to_string()).unwrap();
+            self.batch.account_removes.push(DeleteAccount {
+                did: did.clone(),
+                cursor: Cursor::from_raw_u64(cursor),
+            });
+            did
         }
     }
 
@@ -1532,6 +1540,54 @@ mod tests {
             read.get_records_by_collections(&vec![&Nsid::new("a.a.a".to_string()).unwrap()], 100)?;
         assert_eq!(records.len(), 1);
 
+        Ok(())
+    }
+
+    #[test]
+    fn rollup_delete_live_count_step() -> anyhow::Result<()> {
+        let (_read, mut write) = fjall_db();
+
+        let mut batch = TestBatch::default();
+        batch.create(
+            "did:plc:person-a",
+            "a.a.a",
+            "rkey-aaa",
+            "{}",
+            Some("rev-aaa"),
+            None,
+            10_000,
+        );
+        write.insert_batch(batch.batch)?;
+
+        write.step_rollup()?;
+
+        let mut batch = TestBatch::default();
+        batch.delete_account("did:plc:person-a", 10_001);
+        write.insert_batch(batch.batch)?;
+
+        write.step_rollup()?;
+
+        let mut batch = TestBatch::default();
+        batch.delete_account("did:plc:person-a", 9_999);
+        write.insert_batch(batch.batch)?;
+
+        write.step_rollup()?;
+
+        assert!(false);
+        Ok(())
+    }
+
+    #[test]
+    fn rollup_delete_live_count_step_delete_first() -> anyhow::Result<()> {
+        let (_read, mut write) = fjall_db();
+
+        let mut batch = TestBatch::default();
+        batch.delete_account("did:plc:person-a", 9_999);
+        write.insert_batch(batch.batch)?;
+
+        write.step_rollup()?;
+
+        assert!(false);
         Ok(())
     }
 }
