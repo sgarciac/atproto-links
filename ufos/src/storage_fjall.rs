@@ -302,13 +302,18 @@ impl FjallWriter {
 
         // timelies
         let live_counts_range = LiveCountsKey::range_from_cursor(rollup_cursor)?;
-        let mut timely_iter = self.rollups.range(live_counts_range);
+        let mut timely_iter = self.rollups.range(live_counts_range).into_iter().peekable();
 
-        let next_timely = timely_iter
-            .next()
-            .transpose()?
-            .map(|(key_bytes, val_bytes)| {
-                db_complete::<LiveCountsKey>(&key_bytes).map(|k| (k, val_bytes))
+        let timely_next_cursor = timely_iter
+            .peek_mut()
+            .map(|kv| -> StorageResult<Cursor> {
+                match kv {
+                    Err(e) => Err(std::mem::replace(e, fjall::Error::Poisoned))?,
+                    Ok((key_bytes, _)) => {
+                        let key = db_complete::<LiveCountsKey>(&key_bytes)?;
+                        Ok(key.cursor())
+                    }
+                }
             })
             .transpose()?;
 
@@ -326,15 +331,15 @@ impl FjallWriter {
             })
             .transpose()?;
 
-        match (next_timely, next_delete) {
-            (Some((k, timely_val_bytes)), Some((cursor, delete_val_bytes))) => {
-                if k.cursor() < cursor {
+        match (timely_next_cursor, next_delete) {
+            (Some(timely_next_cursor), Some((delete_cursor, delete_val_bytes))) => {
+                if timely_next_cursor < delete_cursor {
                     eprintln!("rollup until delete cursor");
                 } else {
                     eprintln!("delete then come back for rollups");
                 }
             }
-            (Some((k, timely_val_bytes)), None) => {
+            (Some(timely_next_cursor), None) => {
                 eprintln!("do as much rollup as we want");
             }
             (None, Some((cursor, delete_val_bytes))) => {
