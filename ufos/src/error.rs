@@ -34,4 +34,6 @@ pub enum StorageError {
     FjallLsmError(#[from] fjall::LsmError),
     #[error("Bytes encoding error")]
     EncodingError(#[from] EncodingError),
+    #[error("If you ever see this, there's a bug in the code. The error was stolen")]
+    Stolen,
 }

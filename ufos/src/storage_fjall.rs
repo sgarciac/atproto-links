@@ -426,21 +426,41 @@ impl StoreReader<FjallStats> for FjallReader {
     ) -> StorageResult<Vec<UFOsRecord>> {
         if collections.is_empty() {
             return Ok(vec![]);
-        } else if collections.len() > 1 {
-            todo!()
         }
-
-        let collection = collections[0];
-
-        let mut out = Vec::new();
-        for rec in RecordIterator::new(&self.feeds, self.records.clone(), collection, limit)? {
-            if let Some(r) = rec? {
-                out.push(r)
-            } else {
-                break;
+        let mut record_iterators = Vec::new();
+        for collection in collections {
+            let iter = RecordIterator::new(&self.feeds, self.records.clone(), collection, limit)?;
+            record_iterators.push(iter.peekable());
+        }
+        let mut merged = Vec::new();
+        loop {
+            let mut latest: Option<(Cursor, usize)> = None; // ugh
+            for (i, iter) in record_iterators.iter_mut().enumerate() {
+                let Some(it) = iter.peek_mut() else {
+                    continue;
+                };
+                let it = match it {
+                    Ok(v) => v,
+                    Err(e) => Err(std::mem::replace(e, StorageError::Stolen))?,
+                };
+                let Some(rec) = it else {
+                    break;
+                };
+                if let Some((cursor, _)) = latest {
+                    if rec.cursor > cursor {
+                        latest = Some((rec.cursor, i))
+                    }
+                } else {
+                    latest = Some((rec.cursor, i));
+                }
             }
+            let Some((_, idx)) = latest else {
+                break;
+            };
+            // yeah yeah whateverrrrrrrrrrrrrrrr
+            merged.push(record_iterators[idx].next().unwrap().unwrap().unwrap());
         }
-        Ok(out)
+        Ok(merged)
     }
 }
 
@@ -1648,6 +1668,68 @@ mod tests {
         let records =
             read.get_records_by_collections(&[&Nsid::new("d.e.f".to_string()).unwrap()], 2)?;
         assert_eq!(records.len(), 0);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_multi_collection() -> anyhow::Result<()> {
+        let (read, mut write) = fjall_db();
+
+        let mut batch = TestBatch::default();
+        batch.create(
+            "did:plc:inze6wrmsm7pjl7yta3oig77",
+            "a.a.a",
+            "aaa",
+            r#""earliest""#,
+            Some("rev-a"),
+            None,
+            100,
+        );
+        batch.create(
+            "did:plc:inze6wrmsm7pjl7yta3oig77",
+            "a.a.b",
+            "aab",
+            r#""in between""#,
+            Some("rev-ab"),
+            None,
+            101,
+        );
+        batch.create(
+            "did:plc:inze6wrmsm7pjl7yta3oig77",
+            "a.a.a",
+            "aaa-2",
+            r#""last""#,
+            Some("rev-a-2"),
+            None,
+            102,
+        );
+        write.insert_batch(batch.batch)?;
+
+        let records = read.get_records_by_collections(
+            &[
+                &Nsid::new("a.a.a".to_string()).unwrap(),
+                &Nsid::new("a.a.b".to_string()).unwrap(),
+                &Nsid::new("a.a.c".to_string()).unwrap(),
+            ],
+            100,
+        )?;
+        assert_eq!(records.len(), 3);
+        assert_eq!(records[0].record.get(), r#""last""#);
+        assert_eq!(
+            records[0].collection,
+            Nsid::new("a.a.a".to_string()).unwrap()
+        );
+        assert_eq!(records[1].record.get(), r#""in between""#);
+        assert_eq!(
+            records[1].collection,
+            Nsid::new("a.a.b".to_string()).unwrap()
+        );
+        assert_eq!(records[2].record.get(), r#""earliest""#);
+        assert_eq!(
+            records[2].collection,
+            Nsid::new("a.a.a".to_string()).unwrap()
+        );
 
         Ok(())
     }
