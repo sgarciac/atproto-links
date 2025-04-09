@@ -13,7 +13,6 @@ use crate::store_types::{
     SeenCounter, TakeoffKey, WeekTruncatedCursor, WeeklyRollupKey,
 };
 use crate::{CommitAction, Did, EventBatch, Nsid, RecordKey, UFOsRecord};
-use cardinality_estimator::CardinalityEstimator;
 use fjall::{
     Batch as FjallBatch, CompressionType, Config, Keyspace, PartitionCreateOptions, PartitionHandle,
 };
@@ -179,6 +178,7 @@ impl StorageWhatever<FjallReader, FjallWriter, FjallConfig> for FjallStorage {
         }
 
         let reader = FjallReader {
+            keyspace: keyspace.clone(),
             global: global.clone(),
             feeds: feeds.clone(),
             records: records.clone(),
@@ -198,6 +198,7 @@ impl StorageWhatever<FjallReader, FjallWriter, FjallConfig> for FjallStorage {
 
 #[derive(Clone)]
 pub struct FjallReader {
+    keyspace: Keyspace,
     global: PartitionHandle,
     feeds: PartitionHandle,
     records: PartitionHandle,
@@ -206,20 +207,39 @@ pub struct FjallReader {
 
 impl StoreReader for FjallReader {
     fn get_counts_by_collection(&self, collection: &Nsid) -> StorageResult<(u64, u64)> {
-        // TODO: start from rollup
-        let full_range = LiveCountsKey::range_from_cursor(Cursor::from_start())?;
-        let mut total = 0;
-        let mut dids = CardinalityEstimator::new();
-        for kv in self.rollups.range(full_range) {
+        // 0. grab a snapshot in case rollups happen while we're working
+        let instant = self.keyspace.instant();
+        let global = self.global.snapshot_at(instant);
+        let rollups = self.rollups.snapshot_at(instant);
+
+        // 1. all-time counts
+        let all_time_key = AllTimeRollupKey::new(collection).to_db_bytes()?;
+        let mut total_counts = rollups
+            .get(&all_time_key)?
+            .as_deref()
+            .map(db_complete::<CountsValue>)
+            .transpose()?
+            .unwrap_or_default();
+
+        // 2. live counts that haven't been rolled into all-time yet.
+        let rollup_cursor =
+            get_snapshot_static_neu::<NewRollupCursorKey, NewRollupCursorValue>(&global)?.ok_or(
+                StorageError::BadStateError("Could not find current rollup cursor".to_string()),
+            )?;
+
+        let full_range = LiveCountsKey::range_from_cursor(rollup_cursor)?;
+        for kv in rollups.range(full_range) {
             let (key_bytes, val_bytes) = kv?;
             let key = db_complete::<LiveCountsKey>(&key_bytes)?;
             if key.collection() == collection {
                 let counts = db_complete::<CountsValue>(&val_bytes)?;
-                total += counts.records();
-                dids.merge(counts.dids());
+                total_counts.merge(&counts);
             }
         }
-        Ok((total, dids.estimate() as u64))
+        Ok((
+            total_counts.records(),
+            total_counts.dids().estimate() as u64,
+        ))
     }
 
     fn get_records_by_collections(
@@ -340,29 +360,22 @@ impl FjallWriter {
                 Some((delete_cursor, delete_key_bytes, delete_val_bytes)),
             ) => {
                 if timely_next_cursor < delete_cursor {
-                    eprintln!("rollup until delete cursor");
                     self.rollup_live_counts(
                         timely_iter,
                         Some(delete_cursor),
                         MAX_BATCHED_ROLLUP_COUNTS,
                     )?
                 } else {
-                    eprintln!("delete then come back for rollups");
                     self.rollup_delete_account(delete_cursor, &delete_key_bytes, &delete_val_bytes)?
                 }
             }
             (Some(_), None) => {
-                eprintln!("do as much rollup as we want");
                 self.rollup_live_counts(timely_iter, None, MAX_BATCHED_ROLLUP_COUNTS)?
             }
             (None, Some((delete_cursor, delete_key_bytes, delete_val_bytes))) => {
-                eprintln!("just delete an account");
                 self.rollup_delete_account(delete_cursor, &delete_key_bytes, &delete_val_bytes)?
             }
-            (None, None) => {
-                eprintln!("do nothing.");
-                0
-            }
+            (None, None) => 0,
         };
 
         Ok(cursors_stepped)
@@ -378,7 +391,7 @@ impl FjallWriter {
         self.delete_account(&did)?;
         let mut batch = self.keyspace.batch();
         batch.remove(&self.queues, key_bytes);
-        insert_batch_static_neu::<NewRollupCursorKey>(&mut batch, &self.global, cursor.next())?;
+        insert_batch_static_neu::<NewRollupCursorKey>(&mut batch, &self.global, cursor)?;
         batch.commit()?;
         Ok(1)
     }
@@ -466,11 +479,7 @@ impl FjallWriter {
             batch.insert(&self.rollups, &key_bytes, &rolled.to_db_bytes()?);
         }
 
-        insert_batch_static_neu::<NewRollupCursorKey>(
-            &mut batch,
-            &self.global,
-            last_cursor.next(),
-        )?;
+        insert_batch_static_neu::<NewRollupCursorKey>(&mut batch, &self.global, last_cursor)?;
 
         batch.commit()?;
         Ok(cursors_advanced)
@@ -947,6 +956,18 @@ fn get_static<K: StaticStr, V: DbBytes>(global: &PartitionHandle) -> anyhow::Res
 
 /// Get a value from a fixed key
 fn get_static_neu<K: StaticStr, V: DbBytes>(global: &PartitionHandle) -> StorageResult<Option<V>> {
+    let key_bytes = DbStaticStr::<K>::default().to_db_bytes()?;
+    let value = global
+        .get(&key_bytes)?
+        .map(|value_bytes| db_complete(&value_bytes))
+        .transpose()?;
+    Ok(value)
+}
+
+/// Get a value from a fixed key
+fn get_snapshot_static_neu<K: StaticStr, V: DbBytes>(
+    global: &fjall::Snapshot,
+) -> StorageResult<Option<V>> {
     let key_bytes = DbStaticStr::<K>::default().to_db_bytes()?;
     let value = global
         .get(&key_bytes)?
@@ -1786,6 +1807,87 @@ mod tests {
         let n = write.step_rollup()?;
         assert_eq!(n, 2);
 
+        let n = write.step_rollup()?;
+        assert_eq!(n, 0);
+
+        Ok(())
+    }
+
+    #[test]
+    fn counts_before_and_after_rollup() -> anyhow::Result<()> {
+        let (read, mut write) = fjall_db();
+
+        let mut batch = TestBatch::default();
+        batch.create(
+            "did:plc:person-a",
+            "a.a.a",
+            "rkey-aaa",
+            "{}",
+            Some("rev-aaa"),
+            None,
+            10_000,
+        );
+        batch.create(
+            "did:plc:person-b",
+            "a.a.a",
+            "rkey-bbb",
+            "{}",
+            Some("rev-bbb"),
+            None,
+            10_001,
+        );
+        write.insert_batch(batch.batch)?;
+
+        let mut batch = TestBatch::default();
+        batch.delete_account("did:plc:person-a", 11_000);
+        write.insert_batch(batch.batch)?;
+
+        let mut batch = TestBatch::default();
+        batch.create(
+            "did:plc:person-a",
+            "a.a.a",
+            "rkey-aac",
+            "{}",
+            Some("rev-aac"),
+            None,
+            12_000,
+        );
+        write.insert_batch(batch.batch)?;
+
+        // before any rollup
+        let (records, dids) =
+            read.get_counts_by_collection(&Nsid::new("a.a.a".to_string()).unwrap())?;
+        assert_eq!(records, 3);
+        assert_eq!(dids, 2);
+
+        // first batch rolled up
+        let n = write.step_rollup()?;
+        assert_eq!(n, 1);
+
+        let (records, dids) =
+            read.get_counts_by_collection(&Nsid::new("a.a.a".to_string()).unwrap())?;
+        assert_eq!(records, 3);
+        assert_eq!(dids, 2);
+
+        // delete account rolled up
+        let n = write.step_rollup()?;
+        assert_eq!(n, 1);
+
+        let (records, dids) =
+            read.get_counts_by_collection(&Nsid::new("a.a.a".to_string()).unwrap())?;
+        assert_eq!(records, 3);
+        assert_eq!(dids, 2);
+
+        // second batch rolled up
+        let n = write.step_rollup()?;
+        assert_eq!(n, 1);
+
+        let (records, dids) =
+            read.get_counts_by_collection(&Nsid::new("a.a.a".to_string()).unwrap())?;
+        assert_eq!(records, 3);
+        assert_eq!(dids, 2);
+
+        // no more rollups left
         let n = write.step_rollup()?;
         assert_eq!(n, 0);
 

@@ -30,6 +30,8 @@ pub enum StorageError {
     BadStateError(String),
     #[error("Fjall error")]
     FjallError(#[from] fjall::Error),
+    #[error("LSM-tree error (from fjall)")]
+    FjallLsmError(#[from] fjall::LsmError),
     #[error("Bytes encoding error")]
     EncodingError(#[from] EncodingError),
 }
