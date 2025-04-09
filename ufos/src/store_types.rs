@@ -334,6 +334,9 @@ impl AllTimeRollupKey {
     pub fn new(nsid: &Nsid) -> Self {
         Self::from_pair(Default::default(), nsid.clone())
     }
+    pub fn collection(&self) -> &Nsid {
+        &self.suffix
+    }
 }
 pub type AllTimeRollupVal = CountsValue;
 

@@ -12,7 +12,9 @@ use crate::store_types::{
     RecordLocationMeta, RecordLocationVal, RecordRawValue, RollupCursorKey, RollupCursorValue,
     SeenCounter, TakeoffKey, TakeoffValue, WeekTruncatedCursor, WeeklyRollupKey,
 };
-use crate::{CommitAction, ConsumerInfo, Did, EventBatch, Nsid, RecordKey, UFOsRecord};
+use crate::{
+    CommitAction, ConsumerInfo, Did, EventBatch, Nsid, RecordKey, TopCollections, UFOsRecord,
+};
 use fjall::{
     Batch as FjallBatch, CompressionType, Config, Keyspace, PartitionCreateOptions, PartitionHandle,
 };
@@ -253,6 +255,50 @@ impl StoreReader<FjallStats> for FjallReader {
             started_at,
             latest_cursor,
         })
+    }
+
+    fn get_top_collections(&self) -> Result<TopCollections, StorageError> {
+        // TODO: limit nsid traversal depth
+        // TODO: limit nsid traversal breadth
+        // TODO: be serious about anything
+
+        // TODO: probably use a stack of segments to reduce to ~log-n merges
+
+        #[derive(Default)]
+        struct Blah {
+            counts: CountsValue,
+            children: HashMap<String, Blah>,
+        }
+        impl From<&Blah> for TopCollections {
+            fn from(bla: &Blah) -> Self {
+                let mut me = Self {
+                    total_records: bla.counts.records(),
+                    dids_estimate: bla.counts.dids().estimate() as u64,
+                    ..Default::default()
+                };
+                for (k, v) in &bla.children {
+                    me.nsid_child_segments.insert(k.to_string(), v.into());
+                }
+                me
+            }
+        }
+
+        let mut b = Blah::default();
+        let prefix = AllTimeRollupKey::from_prefix_to_db_bytes(&Default::default())?;
+        for kv in self.rollups.prefix(&prefix.to_db_bytes()?) {
+            let (key_bytes, val_bytes) = kv?;
+            let key = db_complete::<AllTimeRollupKey>(&key_bytes)?;
+            let val = db_complete::<CountsValue>(&val_bytes)?;
+
+            let mut node = &mut b;
+            node.counts.merge(&val);
+            for segment in key.collection().split('.') {
+                node = node.children.entry(segment.to_string()).or_default();
+                node.counts.merge(&val);
+            }
+        }
+
+        Ok((&b).into())
     }
 
     fn get_counts_by_collection(&self, collection: &Nsid) -> StorageResult<(u64, u64)> {
@@ -1942,6 +1988,112 @@ mod tests {
         let n = write.step_rollup()?;
         assert_eq!(n, 0);
 
+        Ok(())
+    }
+
+    #[test]
+    fn get_top_collections() -> anyhow::Result<()> {
+        let (read, mut write) = fjall_db();
+
+        let mut batch = TestBatch::default();
+        batch.create(
+            "did:plc:person-a",
+            "a.a.a",
+            "rkey-aaa",
+            "{}",
+            Some("rev-aaa"),
+            None,
+            10_000,
+        );
+        batch.create(
+            "did:plc:person-b",
+            "a.a.b",
+            "rkey-bbb",
+            "{}",
+            Some("rev-bbb"),
+            None,
+            10_001,
+        );
+        batch.create(
+            "did:plc:person-c",
+            "a.b.c",
+            "rkey-ccc",
+            "{}",
+            Some("rev-ccc"),
+            None,
+            10_002,
+        );
+        batch.create(
+            "did:plc:person-a",
+            "a.a.a",
+            "rkey-aaa-2",
+            "{}",
+            Some("rev-aaa-2"),
+            None,
+            10_003,
+        );
+        write.insert_batch(batch.batch)?;
+
+        let n = write.step_rollup()?;
+        assert_eq!(n, 3); // 3 collections
+
+        let tops = read.get_top_collections()?;
+        assert_eq!(
+            tops,
+            TopCollections {
+                total_records: 4,
+                dids_estimate: 3,
+                nsid_child_segments: HashMap::from([(
+                    "a".to_string(),
+                    TopCollections {
+                        total_records: 4,
+                        dids_estimate: 3,
+                        nsid_child_segments: HashMap::from([
+                            (
+                                "a".to_string(),
+                                TopCollections {
+                                    total_records: 3,
+                                    dids_estimate: 2,
+                                    nsid_child_segments: HashMap::from([
+                                        (
+                                            "a".to_string(),
+                                            TopCollections {
+                                                total_records: 2,
+                                                dids_estimate: 1,
+                                                nsid_child_segments: HashMap::from([]),
+                                            },
+                                        ),
+                                        (
+                                            "b".to_string(),
+                                            TopCollections {
+                                                total_records: 1,
+                                                dids_estimate: 1,
+                                                nsid_child_segments: HashMap::from([]),
+                                            }
+                                        ),
+                                    ]),
+                                },
+                            ),
+                            (
+                                "b".to_string(),
+                                TopCollections {
+                                    total_records: 1,
+                                    dids_estimate: 1,
+                                    nsid_child_segments: HashMap::from([(
+                                        "c".to_string(),
+                                        TopCollections {
+                                            total_records: 1,
+                                            dids_estimate: 1,
+                                            nsid_child_segments: HashMap::from([]),
+                                        },
+                                    ),]),
+                                },
+                            ),
+                        ]),
+                    },
+                ),]),
+            }
+        );
         Ok(())
     }
 }

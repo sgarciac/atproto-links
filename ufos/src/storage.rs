@@ -1,5 +1,5 @@
 // use crate::store_types::CountsValue;
-use crate::{error::StorageError, ConsumerInfo, Cursor, EventBatch, UFOsRecord};
+use crate::{error::StorageError, ConsumerInfo, Cursor, EventBatch, TopCollections, UFOsRecord};
 use jetstream::exports::{Did, Nsid};
 use schemars::JsonSchema;
 use serde::Serialize;
@@ -38,6 +38,8 @@ pub trait StoreReader<S>: Clone {
     fn get_storage_stats(&self) -> StorageResult<S>;
 
     fn get_consumer_info(&self) -> StorageResult<ConsumerInfo>;
+
+    fn get_top_collections(&self) -> StorageResult<TopCollections>;
 
     fn get_counts_by_collection(&self, collection: &Nsid) -> StorageResult<(u64, u64)>;
 

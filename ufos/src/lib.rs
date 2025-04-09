@@ -218,6 +218,13 @@ pub enum ConsumerInfo {
     },
 }
 
+#[derive(Debug, Default, PartialEq, Serialize, JsonSchema)]
+pub struct TopCollections {
+    total_records: u64,
+    dids_estimate: u64,
+    nsid_child_segments: HashMap<String, TopCollections>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
