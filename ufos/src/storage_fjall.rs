@@ -324,7 +324,7 @@ impl FjallWriter {
 
         // timelies
         let live_counts_range = LiveCountsKey::range_from_cursor(rollup_cursor)?;
-        let mut timely_iter = self.rollups.range(live_counts_range).into_iter().peekable();
+        let mut timely_iter = self.rollups.range(live_counts_range).peekable();
 
         let timely_next_cursor = timely_iter
             .peek_mut()
@@ -332,7 +332,7 @@ impl FjallWriter {
                 match kv {
                     Err(e) => Err(std::mem::replace(e, fjall::Error::Poisoned))?,
                     Ok((key_bytes, _)) => {
-                        let key = db_complete::<LiveCountsKey>(&key_bytes)?;
+                        let key = db_complete::<LiveCountsKey>(key_bytes)?;
                         Ok(key.cursor())
                     }
                 }
@@ -702,7 +702,7 @@ impl Storage {
                 log::info!("{}", batch_summary);
 
                 // todo!();
-                // let last = event_batch.last_jetstream_cursor.clone(); // TODO: get this from the data. track last in consumer. compute or track first.
+                // let last = event_batch.last_jetstream_cursor; // TODO: get this from the data. track last in consumer. compute or track first.
 
                 // let db = &self.db;
                 // let keyspace = db.keyspace.clone();
@@ -777,7 +777,7 @@ impl Storage {
         log::trace!("rw: getting rw cursor...");
         let mod_cursor =
             get_static::<ModCursorKey, ModCursorValue>(&global)?.unwrap_or(Cursor::from_start());
-        let range = ModQueueItemKey::new(mod_cursor.clone()).range_to_prefix_end()?;
+        let range = ModQueueItemKey::new(mod_cursor).range_to_prefix_end()?;
 
         let mut db_batch = keyspace.batch();
         let mut batched_rw_items = 0;
@@ -1106,7 +1106,7 @@ impl DBWriter {
     ) -> anyhow::Result<usize> {
         // update the current rw cursor to this item (atomically with the batch if it succeeds)
         let mod_cursor: Cursor = (&mod_key).into();
-        insert_batch_static::<ModCursorKey>(db_batch, &self.global, mod_cursor.clone())?;
+        insert_batch_static::<ModCursorKey>(db_batch, &self.global, mod_cursor)?;
 
         let items_modified = match mod_value {
             ModQueueItemValue::DeleteAccount(did) => {
@@ -1150,7 +1150,7 @@ impl DBWriter {
         // 1. delete any existing versions older than us
         let items_deleted = self.delete_record(
             db_batch,
-            cursor.clone(),
+            cursor,
             did.clone(),
             collection.clone(),
             rkey.clone(),
@@ -1175,8 +1175,7 @@ impl DBWriter {
             ByIdKey::record_prefix(did.clone(), collection.clone(), rkey.clone()).to_db_bytes()?;
 
         // put the cursor of the actual deletion event in to prevent prefix iter from touching newer docs
-        let key_limit =
-            ByIdKey::new(did, collection.clone(), rkey, cursor.clone()).to_db_bytes()?;
+        let key_limit = ByIdKey::new(did, collection.clone(), rkey, cursor).to_db_bytes()?;
 
         let mut items_removed = 0;
 
@@ -1273,7 +1272,7 @@ impl DBWriter {
         // ["by_collection"|collection|js_cursor] => [did|rkey|record]
         db_batch.insert(
             &self.global,
-            ByCollectionKey::new(collection.clone(), cursor.clone()).to_db_bytes()?,
+            ByCollectionKey::new(collection.clone(), cursor).to_db_bytes()?,
             ByCollectionValue::new(did.clone(), rkey.clone(), record).to_db_bytes()?,
         );
 
@@ -1341,6 +1340,7 @@ mod tests {
     }
 
     impl TestBatch {
+        #[allow(clippy::too_many_arguments)]
         pub fn create(
             &mut self,
             did: &str,
@@ -1382,6 +1382,7 @@ mod tests {
 
             collection
         }
+        #[allow(clippy::too_many_arguments)]
         pub fn update(
             &mut self,
             did: &str,
@@ -1423,6 +1424,7 @@ mod tests {
 
             collection
         }
+        #[allow(clippy::too_many_arguments)]
         pub fn delete(
             &mut self,
             did: &str,
@@ -1499,14 +1501,14 @@ mod tests {
         assert_eq!(records, 0);
         assert_eq!(dids, 0);
 
-        let records = read.get_records_by_collections(&vec![&collection], 2)?;
+        let records = read.get_records_by_collections(&[&collection], 2)?;
         assert_eq!(records.len(), 1);
         let rec = &records[0];
         assert_eq!(rec.record.get(), "{}");
-        assert_eq!(rec.is_update, false);
+        assert!(!rec.is_update);
 
         let records =
-            read.get_records_by_collections(&vec![&Nsid::new("d.e.f".to_string()).unwrap()], 2)?;
+            read.get_records_by_collections(&[&Nsid::new("d.e.f".to_string()).unwrap()], 2)?;
         assert_eq!(records.len(), 0);
 
         Ok(())
@@ -1544,11 +1546,11 @@ mod tests {
         assert_eq!(records, 1);
         assert_eq!(dids, 1);
 
-        let records = read.get_records_by_collections(&vec![&collection], 2)?;
+        let records = read.get_records_by_collections(&[&collection], 2)?;
         assert_eq!(records.len(), 1);
         let rec = &records[0];
         assert_eq!(rec.record.get(), r#"{"ch":  "ch-ch-ch-changes"}"#);
-        assert_eq!(rec.is_update, true);
+        assert!(rec.is_update);
         Ok(())
     }
 
@@ -1582,7 +1584,7 @@ mod tests {
         assert_eq!(records, 1);
         assert_eq!(dids, 1);
 
-        let records = read.get_records_by_collections(&vec![&collection], 2)?;
+        let records = read.get_records_by_collections(&[&collection], 2)?;
         assert_eq!(records.len(), 0);
 
         Ok(())
@@ -1628,16 +1630,16 @@ mod tests {
         write.insert_batch(batch.batch)?;
 
         let records =
-            read.get_records_by_collections(&vec![&Nsid::new("a.a.a".to_string()).unwrap()], 100)?;
+            read.get_records_by_collections(&[&Nsid::new("a.a.a".to_string()).unwrap()], 100)?;
         assert_eq!(records.len(), 1);
         let records =
-            read.get_records_by_collections(&vec![&Nsid::new("a.a.b".to_string()).unwrap()], 100)?;
+            read.get_records_by_collections(&[&Nsid::new("a.a.b".to_string()).unwrap()], 100)?;
         assert_eq!(records.len(), 10);
         let records =
-            read.get_records_by_collections(&vec![&Nsid::new("a.a.c".to_string()).unwrap()], 100)?;
+            read.get_records_by_collections(&[&Nsid::new("a.a.c".to_string()).unwrap()], 100)?;
         assert_eq!(records.len(), 1);
         let records =
-            read.get_records_by_collections(&vec![&Nsid::new("a.a.d".to_string()).unwrap()], 100)?;
+            read.get_records_by_collections(&[&Nsid::new("a.a.d".to_string()).unwrap()], 100)?;
         assert_eq!(records.len(), 0);
 
         write.trim_collection(&Nsid::new("a.a.a".to_string()).unwrap(), 6)?;
@@ -1646,16 +1648,16 @@ mod tests {
         write.trim_collection(&Nsid::new("a.a.d".to_string()).unwrap(), 6)?;
 
         let records =
-            read.get_records_by_collections(&vec![&Nsid::new("a.a.a".to_string()).unwrap()], 100)?;
+            read.get_records_by_collections(&[&Nsid::new("a.a.a".to_string()).unwrap()], 100)?;
         assert_eq!(records.len(), 1);
         let records =
-            read.get_records_by_collections(&vec![&Nsid::new("a.a.b".to_string()).unwrap()], 100)?;
+            read.get_records_by_collections(&[&Nsid::new("a.a.b".to_string()).unwrap()], 100)?;
         assert_eq!(records.len(), 6);
         let records =
-            read.get_records_by_collections(&vec![&Nsid::new("a.a.c".to_string()).unwrap()], 100)?;
+            read.get_records_by_collections(&[&Nsid::new("a.a.c".to_string()).unwrap()], 100)?;
         assert_eq!(records.len(), 1);
         let records =
-            read.get_records_by_collections(&vec![&Nsid::new("a.a.d".to_string()).unwrap()], 100)?;
+            read.get_records_by_collections(&[&Nsid::new("a.a.d".to_string()).unwrap()], 100)?;
         assert_eq!(records.len(), 0);
 
         Ok(())
@@ -1689,7 +1691,7 @@ mod tests {
         write.insert_batch(batch.batch)?;
 
         let records =
-            read.get_records_by_collections(&vec![&Nsid::new("a.a.a".to_string()).unwrap()], 100)?;
+            read.get_records_by_collections(&[&Nsid::new("a.a.a".to_string()).unwrap()], 100)?;
         assert_eq!(records.len(), 3);
 
         let records_deleted =
@@ -1697,7 +1699,7 @@ mod tests {
         assert_eq!(records_deleted, 2);
 
         let records =
-            read.get_records_by_collections(&vec![&Nsid::new("a.a.a".to_string()).unwrap()], 100)?;
+            read.get_records_by_collections(&[&Nsid::new("a.a.a".to_string()).unwrap()], 100)?;
         assert_eq!(records.len(), 1);
 
         Ok(())
@@ -1726,7 +1728,7 @@ mod tests {
         write.step_rollup()?;
 
         let records =
-            read.get_records_by_collections(&vec![&Nsid::new("a.a.a".to_string()).unwrap()], 1)?;
+            read.get_records_by_collections(&[&Nsid::new("a.a.a".to_string()).unwrap()], 1)?;
         assert_eq!(records.len(), 0);
 
         Ok(())
@@ -1756,14 +1758,14 @@ mod tests {
         write.insert_batch(batch.batch)?;
 
         let records =
-            read.get_records_by_collections(&vec![&Nsid::new("a.a.a".to_string()).unwrap()], 1)?;
+            read.get_records_by_collections(&[&Nsid::new("a.a.a".to_string()).unwrap()], 1)?;
         assert_eq!(records.len(), 1);
 
         let n = write.step_rollup()?;
         assert_eq!(n, 1);
 
         let records =
-            read.get_records_by_collections(&vec![&Nsid::new("a.a.a".to_string()).unwrap()], 1)?;
+            read.get_records_by_collections(&[&Nsid::new("a.a.a".to_string()).unwrap()], 1)?;
         assert_eq!(records.len(), 0);
 
         let mut batch = TestBatch::default();

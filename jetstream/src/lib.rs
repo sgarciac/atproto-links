@@ -351,7 +351,7 @@ impl JetstreamConnector {
             loop {
                 let dict = DecoderDictionary::copy(JETSTREAM_ZSTD_DICTIONARY);
 
-                let req = match build_request(connect_cursor.clone()) {
+                let req = match build_request(connect_cursor) {
                     Ok(req) => req,
                     Err(e) => {
                         log::error!("Could not build jetstream websocket request: {e:?}");
@@ -359,7 +359,7 @@ impl JetstreamConnector {
                     }
                 };
 
-                let mut last_cursor = connect_cursor.clone();
+                let mut last_cursor = connect_cursor;
                 retry_attempt += 1;
                 if let Ok((ws_stream, _)) = connect_async(req).await {
                     let t_connected = Instant::now();
@@ -427,7 +427,7 @@ async fn websocket_task(
                     Message::Text(json) => {
                         let event: JetstreamEvent = serde_json::from_str(&json)
                             .map_err(JetstreamEventError::ReceivedMalformedJSON)?;
-                        let event_cursor = event.cursor.clone();
+                        let event_cursor = event.cursor;
 
                         if let Some(last) = last_cursor {
                             if event_cursor <= *last {
@@ -458,7 +458,7 @@ async fn websocket_task(
 
                         let event: JetstreamEvent = serde_json::from_reader(decoder)
                             .map_err(JetstreamEventError::ReceivedMalformedJSON)?;
-                        let event_cursor = event.cursor.clone();
+                        let event_cursor = event.cursor;
 
                         if let Some(last) = last_cursor {
                             if event_cursor <= *last {

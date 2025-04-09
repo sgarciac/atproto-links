@@ -126,7 +126,7 @@ impl UFOsCommit {
     ) -> Result<(Self, Nsid), FirehoseEventError> {
         let action = match commit.operation {
             CommitOp::Delete => CommitAction::Cut,
-            cru @ _ => CommitAction::Put(PutAction {
+            cru => CommitAction::Put(PutAction {
                 record: commit.record.ok_or(FirehoseEventError::CruMissingRecord)?,
                 is_update: cru == CommitOp::Update,
             }),

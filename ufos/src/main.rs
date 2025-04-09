@@ -66,7 +66,7 @@ async fn main() -> anyhow::Result<()> {
             if !args.pause_writer {
                 println!(
                     "starting consumer with cursor: {cursor:?} from {:?} ago",
-                    cursor.clone().map(|c| c.elapsed())
+                    cursor.map(|c| c.elapsed())
                 );
                 let mut batches =
                     consumer::consume(&args.jetstream, cursor, args.jetstream_no_zstd).await?;

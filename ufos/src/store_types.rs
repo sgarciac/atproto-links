@@ -206,7 +206,7 @@ pub type LiveCountsKey = DbConcat<LiveCountsCursorPrefix, Nsid>;
 impl LiveCountsKey {
     pub fn range_from_cursor(cursor: Cursor) -> Result<Range<Vec<u8>>, EncodingError> {
         let prefix = LiveCountsCursorPrefix::from_pair(Default::default(), cursor);
-        Ok(prefix.range_to_prefix_end()?)
+        prefix.range_to_prefix_end()
     }
     pub fn cursor(&self) -> Cursor {
         self.prefix.suffix
@@ -432,7 +432,7 @@ impl ByIdKey {
         ByIdDidPrefix::from_pair(Default::default(), did)
     }
     pub fn cursor(&self) -> Cursor {
-        self.suffix.clone()
+        self.suffix
     }
 }
 impl From<ByIdKey> for (Did, Nsid, RecordKey, Cursor) {
@@ -515,7 +515,7 @@ impl From<ModQueueItemKey> for Cursor {
 }
 impl From<&ModQueueItemKey> for ModCursorValue {
     fn from(k: &ModQueueItemKey) -> Self {
-        k.suffix.clone()
+        k.suffix
     }
 }
 
@@ -596,9 +596,7 @@ impl DbBytes for ModQueueItemValue {
 pub struct TruncatedCursor<const MOD: u64>(u64);
 impl<const MOD: u64> TruncatedCursor<MOD> {
     fn truncate(raw: u64) -> u64 {
-        let floored_ts = raw / MOD;
-        let truncated = floored_ts * MOD;
-        truncated
+        (raw / MOD) * MOD
     }
     pub fn try_from_raw_u64(time_us: u64) -> Result<Self, EncodingError> {
         let rem = time_us % MOD;
