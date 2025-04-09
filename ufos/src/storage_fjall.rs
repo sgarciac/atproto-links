@@ -45,73 +45,72 @@ struct Db {
     global: PartitionHandle,
 }
 
-/**
- * new data format, roughly:
- *
- * Partion: 'global'
- *
- *  - Global sequence counter (is the jetstream cursor -- monotonic with many gaps)
- *      key: "js_cursor" (literal)
- *      val: u64
- *
- *  - Jetstream server endpoint (persisted because the cursor can't be used on another instance without data loss)
- *      key: "js_endpoint" (literal)
- *      val: string (URL of the instance)
- *
- *  - Launch date
- *      key: "takeoff" (literal)
- *      val: u64 (micros timestamp, not from jetstream for now so not precise)
- *
- *  - Rollup cursor (bg work: roll stats into hourlies, delete accounts, old record deletes)
- *      key: "rollup_cursor" (literal)
- *      val: u64 (tracks behind js_cursor)
- *
- *
- * Partition: 'feed'
- *
- *  - Per-collection list of record references ordered by jetstream cursor
- *      key: nullstr || u64 (collection nsid null-terminated, jetstream cursor)
- *      val: nullstr || nullstr || nullstr (did, rkey, rev. rev is mostly a sanity-check for now.)
- *
- *
- * Partition: 'records'
- *
- *  - Actual records by their atproto location
- *      key: nullstr || nullstr || nullstr (did, collection, rkey)
- *      val: u64 || bool || nullstr || rawval (js_cursor, is_update, rev, actual record)
- *
- *
- * Partition: 'rollups'
- *
- * - Live (batched) records counts and dids estimate per collection
- *      key: "live_counts" || u64 || nullstr (js_cursor, nsid)
- *      val: u64 || HLL (count (not cursor), estimator)
- *
- * - Hourly total record counts and dids estimate per collection
- *      key: "hourly_counts" || u64 || nullstr (hour, nsid)
- *      val: u64 || HLL (count (not cursor), estimator)
- *
- * - Weekly total record counts and dids estimate per collection
- *      key: "weekly_counts" || u64 || nullstr (hour, nsid)
- *      val: u64 || HLL (count (not cursor), estimator)
- *
- * - All-time total record counts and dids estimate per collection
- *      key: "ever_counts" || nullstr (nsid)
- *      val: u64 || HLL (count (not cursor), estimator)
- *
- * - TODO: sorted indexes for all-times?
- *
- *
- * Partition: 'queues'
- *
- *  - Delete account queue
- *      key: "delete_acount" || u64 (js_cursor)
- *      val: nullstr (did)
- *
- *
- * TODO: moderation actions
- * TODO: account privacy preferences. Might wait for the protocol-level (PDS-level?) stuff to land. Will probably do lazy fetching + caching on read.
- **/
+///
+/// new data format, roughly:
+///
+/// Partion: 'global'
+///
+///  - Global sequence counter (is the jetstream cursor -- monotonic with many gaps)
+///      key: "js_cursor" (literal)
+///      val: u64
+///
+///  - Jetstream server endpoint (persisted because the cursor can't be used on another instance without data loss)
+///      key: "js_endpoint" (literal)
+///      val: string (URL of the instance)
+///
+///  - Launch date
+///      key: "takeoff" (literal)
+///      val: u64 (micros timestamp, not from jetstream for now so not precise)
+///
+///  - Rollup cursor (bg work: roll stats into hourlies, delete accounts, old record deletes)
+///      key: "rollup_cursor" (literal)
+///      val: u64 (tracks behind js_cursor)
+///
+///
+/// Partition: 'feed'
+///
+///  - Per-collection list of record references ordered by jetstream cursor
+///      key: nullstr || u64 (collection nsid null-terminated, jetstream cursor)
+///      val: nullstr || nullstr || nullstr (did, rkey, rev. rev is mostly a sanity-check for now.)
+///
+///
+/// Partition: 'records'
+///
+///  - Actual records by their atproto location
+///      key: nullstr || nullstr || nullstr (did, collection, rkey)
+///      val: u64 || bool || nullstr || rawval (js_cursor, is_update, rev, actual record)
+///
+///
+/// Partition: 'rollups'
+///
+/// - Live (batched) records counts and dids estimate per collection
+///      key: "live_counts" || u64 || nullstr (js_cursor, nsid)
+///      val: u64 || HLL (count (not cursor), estimator)
+///
+/// - Hourly total record counts and dids estimate per collection
+///      key: "hourly_counts" || u64 || nullstr (hour, nsid)
+///      val: u64 || HLL (count (not cursor), estimator)
+///
+/// - Weekly total record counts and dids estimate per collection
+///      key: "weekly_counts" || u64 || nullstr (hour, nsid)
+///      val: u64 || HLL (count (not cursor), estimator)
+///
+/// - All-time total record counts and dids estimate per collection
+///      key: "ever_counts" || nullstr (nsid)
+///      val: u64 || HLL (count (not cursor), estimator)
+///
+/// - TODO: sorted indexes for all-times?
+///
+///
+/// Partition: 'queues'
+///
+///  - Delete account queue
+///      key: "delete_acount" || u64 (js_cursor)
+///      val: nullstr (did)
+///
+///
+/// TODO: moderation actions
+/// TODO: account privacy preferences. Might wait for the protocol-level (PDS-level?) stuff to land. Will probably do lazy fetching + caching on read.
 #[derive(Debug)]
 pub struct FjallStorage {}
 
