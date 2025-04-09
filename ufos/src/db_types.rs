@@ -49,7 +49,10 @@ pub enum EncodingError {
 }
 
 fn bincode_conf() -> impl Config {
-    standard().with_big_endian().with_fixed_int_encoding()
+    standard()
+        .with_big_endian()
+        .with_fixed_int_encoding()
+        .with_limit::<{ 2_usize.pow(20) }>() // 1MB
 }
 
 pub trait DbBytes {

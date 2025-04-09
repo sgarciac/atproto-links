@@ -293,8 +293,6 @@ pub struct FjallWriter {
 
 impl FjallWriter {
     pub fn step_rollup(&mut self) -> StorageResult<()> {
-        // let mut batch = self.keyspace.batch();
-
         let rollup_cursor =
             get_static_neu::<NewRollupCursorKey, NewRollupCursorValue>(&self.global)?.ok_or(
                 StorageError::BadStateError("Could not find current rollup cursor".to_string()),
@@ -327,30 +325,57 @@ impl FjallWriter {
             .next()
             .transpose()?
             .map(|(key_bytes, val_bytes)| {
-                db_complete::<DeleteAccountQueueKey>(&key_bytes).map(|k| (k.suffix, val_bytes))
+                db_complete::<DeleteAccountQueueKey>(&key_bytes)
+                    .map(|k| (k.suffix, key_bytes, val_bytes))
             })
             .transpose()?;
 
         match (timely_next_cursor, next_delete) {
-            (Some(timely_next_cursor), Some((delete_cursor, delete_val_bytes))) => {
+            (
+                Some(timely_next_cursor),
+                Some((delete_cursor, delete_key_bytes, delete_val_bytes)),
+            ) => {
                 if timely_next_cursor < delete_cursor {
                     eprintln!("rollup until delete cursor");
                 } else {
+                    self.rollup_delete_account(
+                        delete_cursor,
+                        &delete_key_bytes,
+                        &delete_val_bytes,
+                    )?;
                     eprintln!("delete then come back for rollups");
                 }
             }
             (Some(timely_next_cursor), None) => {
                 eprintln!("do as much rollup as we want");
             }
-            (None, Some((cursor, delete_val_bytes))) => {
+            (None, Some((delete_cursor, delete_key_bytes, delete_val_bytes))) => {
                 eprintln!("just delete an account");
+                self.rollup_delete_account(delete_cursor, &delete_key_bytes, &delete_val_bytes)?;
             }
             (None, None) => {
                 eprintln!("do nothing.");
             }
         }
 
+        // TODO: advance the rollup cursor
+
         // batch.commit()?;
+        Ok(())
+    }
+
+    fn rollup_delete_account(
+        &mut self,
+        cursor: Cursor,
+        key_bytes: &[u8],
+        val_bytes: &[u8],
+    ) -> StorageResult<()> {
+        let did = db_complete::<DeleteAccountQueueVal>(val_bytes)?;
+        self.delete_account(&did)?;
+        let mut batch = self.keyspace.batch();
+        batch.remove(&self.queues, key_bytes);
+        insert_batch_static_neu::<NewRollupCursorKey>(&mut batch, &self.global, cursor.next())?;
+        batch.commit()?;
         Ok(())
     }
 }
@@ -861,6 +886,18 @@ fn insert_batch_static<K: StaticStr>(
     global: &PartitionHandle,
     value: impl DbBytes,
 ) -> anyhow::Result<()> {
+    let key_bytes = DbStaticStr::<K>::default().to_db_bytes()?;
+    let value_bytes = value.to_db_bytes()?;
+    batch.insert(global, &key_bytes, &value_bytes);
+    Ok(())
+}
+
+/// Set a value to a fixed key
+fn insert_batch_static_neu<K: StaticStr>(
+    batch: &mut FjallBatch,
+    global: &PartitionHandle,
+    value: impl DbBytes,
+) -> StorageResult<()> {
     let key_bytes = DbStaticStr::<K>::default().to_db_bytes()?;
     let value_bytes = value.to_db_bytes()?;
     batch.insert(global, &key_bytes, &value_bytes);
@@ -1549,8 +1586,37 @@ mod tests {
     }
 
     #[test]
+    fn rollup_delete_account_removes_record() -> anyhow::Result<()> {
+        let (read, mut write) = fjall_db();
+
+        let mut batch = TestBatch::default();
+        batch.create(
+            "did:plc:person-a",
+            "a.a.a",
+            "rkey-aaa",
+            "{}",
+            Some("rev-aaa"),
+            None,
+            10_000,
+        );
+        write.insert_batch(batch.batch)?;
+
+        let mut batch = TestBatch::default();
+        batch.delete_account("did:plc:person-a", 9_999); // queue it before the rollup
+        write.insert_batch(batch.batch)?;
+
+        write.step_rollup()?;
+
+        let records =
+            read.get_records_by_collections(&vec![&Nsid::new("a.a.a".to_string()).unwrap()], 1)?;
+        assert_eq!(records.len(), 0);
+
+        Ok(())
+    }
+
+    #[test]
     fn rollup_delete_live_count_step() -> anyhow::Result<()> {
-        let (_read, mut write) = fjall_db();
+        let (read, mut write) = fjall_db();
 
         let mut batch = TestBatch::default();
         batch.create(
@@ -1570,21 +1636,15 @@ mod tests {
         batch.delete_account("did:plc:person-a", 10_001);
         write.insert_batch(batch.batch)?;
 
-        write.step_rollup()?;
-
-        let mut batch = TestBatch::default();
-        batch.delete_account("did:plc:person-a", 9_999);
-        write.insert_batch(batch.batch)?;
+        let records =
+            read.get_records_by_collections(&vec![&Nsid::new("a.a.a".to_string()).unwrap()], 1)?;
+        assert_eq!(records.len(), 1);
 
         write.step_rollup()?;
 
-        assert!(false);
-        Ok(())
-    }
-
-    #[test]
-    fn rollup_delete_live_count_step_delete_first() -> anyhow::Result<()> {
-        let (_read, mut write) = fjall_db();
+        let records =
+            read.get_records_by_collections(&vec![&Nsid::new("a.a.a".to_string()).unwrap()], 1)?;
+        assert_eq!(records.len(), 0);
 
         let mut batch = TestBatch::default();
         batch.delete_account("did:plc:person-a", 9_999);

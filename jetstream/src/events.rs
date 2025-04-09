@@ -141,6 +141,12 @@ impl Cursor {
         let t: SystemTime = self.into();
         t.elapsed()
     }
+    /// Get the immediate next cursor value
+    ///
+    /// This is possible for the implementation of jetstream cursors
+    pub fn next(&self) -> Cursor {
+        Self(self.0 + 1)
+    }
 }
 
 impl From<&Cursor> for SystemTime {
