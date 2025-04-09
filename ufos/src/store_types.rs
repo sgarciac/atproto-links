@@ -253,6 +253,18 @@ impl CountsValue {
     pub fn dids(&self) -> &CardinalityEstimator<Did> {
         &self.suffix.0
     }
+    pub fn merge(&mut self, other: &Self) {
+        self.prefix.0 += other.records();
+        self.suffix.0.merge(other.dids());
+    }
+}
+impl Default for CountsValue {
+    fn default() -> Self {
+        Self {
+            prefix: TotalRecordsValue(0),
+            suffix: EstimatedDidsValue(CardinalityEstimator::new()),
+        }
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -270,6 +282,62 @@ impl DeleteAccountQueueKey {
     }
 }
 pub type DeleteAccountQueueVal = Did;
+
+#[derive(Debug, PartialEq)]
+pub struct _HourlyRollupStaticStr {}
+impl StaticStr for _HourlyRollupStaticStr {
+    fn static_str() -> &'static str {
+        "hourly_counts"
+    }
+}
+pub type HourlyRollupStaticPrefix = DbStaticStr<_HourlyRollupStaticStr>;
+pub type HourlyRollupKey = DbConcat<DbConcat<HourlyRollupStaticPrefix, HourTruncatedCursor>, Nsid>;
+impl HourlyRollupKey {
+    pub fn new(hourly_cursor: HourTruncatedCursor, nsid: &Nsid) -> Self {
+        Self::from_pair(
+            DbConcat::from_pair(Default::default(), hourly_cursor),
+            nsid.clone(),
+        )
+    }
+}
+pub type HourlyRollupVal = CountsValue;
+
+#[derive(Debug, PartialEq)]
+pub struct _WeeklyRollupStaticStr {}
+impl StaticStr for _WeeklyRollupStaticStr {
+    fn static_str() -> &'static str {
+        "weekly_counts"
+    }
+}
+pub type WeeklyRollupStaticPrefix = DbStaticStr<_WeeklyRollupStaticStr>;
+pub type WeeklyRollupKey = DbConcat<DbConcat<WeeklyRollupStaticPrefix, WeekTruncatedCursor>, Nsid>;
+impl WeeklyRollupKey {
+    pub fn new(weekly_cursor: WeekTruncatedCursor, nsid: &Nsid) -> Self {
+        Self::from_pair(
+            DbConcat::from_pair(Default::default(), weekly_cursor),
+            nsid.clone(),
+        )
+    }
+}
+pub type WeeklyRollupVal = CountsValue;
+
+#[derive(Debug, PartialEq)]
+pub struct _AllTimeRollupStaticStr {}
+impl StaticStr for _AllTimeRollupStaticStr {
+    fn static_str() -> &'static str {
+        "ever_counts"
+    }
+}
+pub type AllTimeRollupStaticPrefix = DbStaticStr<_AllTimeRollupStaticStr>;
+pub type AllTimeRollupKey = DbConcat<AllTimeRollupStaticPrefix, Nsid>;
+impl AllTimeRollupKey {
+    pub fn new(nsid: &Nsid) -> Self {
+        Self::from_pair(Default::default(), nsid.clone())
+    }
+}
+pub type AllTimeRollupVal = CountsValue;
+
+/////////// old stuff, probably: /////////////
 
 #[derive(Debug, Clone, Encode, Decode)]
 pub struct SeenCounter(pub u64);
@@ -524,21 +592,23 @@ impl DbBytes for ModQueueItemValue {
     }
 }
 
-const HOUR_IN_MICROS: u64 = 1_000_000 * 3600;
-#[derive(Debug, Copy, Clone, PartialEq, PartialOrd)]
-pub struct HourTrucatedCursor(u64);
-impl HourTrucatedCursor {
+#[derive(Debug, Copy, Clone, PartialEq, Hash, PartialOrd, Eq)]
+pub struct TruncatedCursor<const MOD: u64>(u64);
+impl<const MOD: u64> TruncatedCursor<MOD> {
     fn truncate(raw: u64) -> u64 {
-        let hours_ts = raw / HOUR_IN_MICROS;
-        let truncated = hours_ts * HOUR_IN_MICROS;
+        let floored_ts = raw / MOD;
+        let truncated = floored_ts * MOD;
         truncated
     }
     pub fn try_from_raw_u64(time_us: u64) -> Result<Self, EncodingError> {
-        let rem = time_us % HOUR_IN_MICROS;
+        let rem = time_us % MOD;
         if rem != 0 {
-            return Err(EncodingError::InvalidHourlyTruncated(rem));
+            return Err(EncodingError::InvalidTruncated(MOD, rem));
         }
         Ok(Self(time_us))
+    }
+    pub fn try_from_cursor(cursor: Cursor) -> Result<Self, EncodingError> {
+        Self::try_from_raw_u64(cursor.to_raw_u64())
     }
     pub fn truncate_cursor(cursor: Cursor) -> Self {
         let raw = cursor.to_raw_u64();
@@ -546,16 +616,38 @@ impl HourTrucatedCursor {
         Self(truncated)
     }
 }
-impl From<HourTrucatedCursor> for Cursor {
-    fn from(hour_truncated: HourTrucatedCursor) -> Self {
-        Cursor::from_raw_u64(hour_truncated.0)
+impl<const MOD: u64> From<TruncatedCursor<MOD>> for Cursor {
+    fn from(truncated: TruncatedCursor<MOD>) -> Self {
+        Cursor::from_raw_u64(truncated.0)
     }
 }
+impl<const MOD: u64> From<Cursor> for TruncatedCursor<MOD> {
+    fn from(cursor: Cursor) -> Self {
+        Self::truncate_cursor(cursor)
+    }
+}
+impl<const MOD: u64> DbBytes for TruncatedCursor<MOD> {
+    fn to_db_bytes(&self) -> Result<Vec<u8>, EncodingError> {
+        let as_cursor: Cursor = (*self).into();
+        as_cursor.to_db_bytes()
+    }
+    fn from_db_bytes(bytes: &[u8]) -> Result<(Self, usize), EncodingError> {
+        let (cursor, n) = Cursor::from_db_bytes(bytes)?;
+        let me = Self::try_from_cursor(cursor)?;
+        Ok((me, n))
+    }
+}
+
+const HOUR_IN_MICROS: u64 = 1_000_000 * 3600;
+pub type HourTruncatedCursor = TruncatedCursor<HOUR_IN_MICROS>;
+
+const WEEK_IN_MICROS: u64 = HOUR_IN_MICROS * 24 * 7;
+pub type WeekTruncatedCursor = TruncatedCursor<WEEK_IN_MICROS>;
 
 #[cfg(test)]
 mod test {
     use super::{
-        ByCollectionKey, ByCollectionValue, Cursor, Did, EncodingError, HourTrucatedCursor, Nsid,
+        ByCollectionKey, ByCollectionValue, Cursor, Did, EncodingError, HourTruncatedCursor, Nsid,
         RecordKey, HOUR_IN_MICROS,
     };
     use crate::db_types::DbBytes;
@@ -596,7 +688,7 @@ mod test {
     #[test]
     fn test_hour_truncated_cursor() {
         let us = Cursor::from_raw_u64(1_743_778_483_483_895);
-        let hr = HourTrucatedCursor::truncate_cursor(us);
+        let hr = HourTruncatedCursor::truncate_cursor(us);
         let back: Cursor = hr.into();
         assert!(back < us);
         let diff = us.to_raw_u64() - back.to_raw_u64();
@@ -606,7 +698,7 @@ mod test {
     #[test]
     fn test_hour_truncated_cursor_already_truncated() {
         let us = Cursor::from_raw_u64(1_743_775_200_000_000);
-        let hr = HourTrucatedCursor::truncate_cursor(us);
+        let hr = HourTruncatedCursor::truncate_cursor(us);
         let back: Cursor = hr.into();
         assert_eq!(back, us);
         let diff = us.to_raw_u64() - back.to_raw_u64();

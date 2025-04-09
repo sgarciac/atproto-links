@@ -3,13 +3,14 @@ use crate::db_types::{db_complete, DbBytes, DbStaticStr, EncodingError, StaticSt
 use crate::error::StorageError;
 use crate::storage::{StorageResult, StorageWhatever, StoreReader, StoreWriter};
 use crate::store_types::{
-    ByCollectionKey, ByCollectionValue, ByCursorSeenKey, ByCursorSeenValue, ByIdKey, ByIdValue,
-    CountsValue, DeleteAccountQueueKey, DeleteAccountQueueVal, JetstreamCursorKey,
-    JetstreamCursorValue, JetstreamEndpointKey, JetstreamEndpointValue, LiveCountsKey,
-    ModCursorKey, ModCursorValue, ModQueueItemKey, ModQueueItemStringValue, ModQueueItemValue,
-    NewRollupCursorKey, NewRollupCursorValue, NsidRecordFeedKey, NsidRecordFeedVal,
-    RecordLocationKey, RecordLocationMeta, RecordLocationVal, RecordRawValue, RollupCursorKey,
-    RollupCursorValue, SeenCounter, TakeoffKey,
+    AllTimeRollupKey, ByCollectionKey, ByCollectionValue, ByCursorSeenKey, ByCursorSeenValue,
+    ByIdKey, ByIdValue, CountsValue, DeleteAccountQueueKey, DeleteAccountQueueVal,
+    HourTruncatedCursor, HourlyRollupKey, JetstreamCursorKey, JetstreamCursorValue,
+    JetstreamEndpointKey, JetstreamEndpointValue, LiveCountsKey, ModCursorKey, ModCursorValue,
+    ModQueueItemKey, ModQueueItemStringValue, ModQueueItemValue, NewRollupCursorKey,
+    NewRollupCursorValue, NsidRecordFeedKey, NsidRecordFeedVal, RecordLocationKey,
+    RecordLocationMeta, RecordLocationVal, RecordRawValue, RollupCursorKey, RollupCursorValue,
+    SeenCounter, TakeoffKey, WeekTruncatedCursor, WeeklyRollupKey,
 };
 use crate::{CommitAction, Did, EventBatch, Nsid, RecordKey, UFOsRecord};
 use cardinality_estimator::CardinalityEstimator;
@@ -37,6 +38,7 @@ const MAX_BATCHED_RW_ITEMS: usize = 24;
 
 const MAX_BATCHED_CLEANUP_SIZE: usize = 1024; // try to commit progress for longer feeds
 const MAX_BATCHED_ACCOUNT_DELETE_RECORDS: usize = 1024;
+const MAX_BATCHED_ROLLUP_COUNTS: usize = 256;
 
 #[derive(Clone)]
 struct Db {
@@ -90,7 +92,9 @@ struct Db {
  *      key: "hourly_counts" || u64 || nullstr (hour, nsid)
  *      val: u64 || HLL (count (not cursor), estimator)
  *
- * - TODO: weekly rollups?
+ * - Weekly total record counts and dids estimate per collection
+ *      key: "weekly_counts" || u64 || nullstr (hour, nsid)
+ *      val: u64 || HLL (count (not cursor), estimator)
  *
  * - All-time total record counts and dids estimate per collection
  *      key: "ever_counts" || nullstr (nsid)
@@ -292,7 +296,7 @@ pub struct FjallWriter {
 }
 
 impl FjallWriter {
-    pub fn step_rollup(&mut self) -> StorageResult<()> {
+    pub fn step_rollup(&mut self) -> StorageResult<usize> {
         let rollup_cursor =
             get_static_neu::<NewRollupCursorKey, NewRollupCursorValue>(&self.global)?.ok_or(
                 StorageError::BadStateError("Could not find current rollup cursor".to_string()),
@@ -330,38 +334,38 @@ impl FjallWriter {
             })
             .transpose()?;
 
-        match (timely_next_cursor, next_delete) {
+        let cursors_stepped = match (timely_next_cursor, next_delete) {
             (
                 Some(timely_next_cursor),
                 Some((delete_cursor, delete_key_bytes, delete_val_bytes)),
             ) => {
                 if timely_next_cursor < delete_cursor {
                     eprintln!("rollup until delete cursor");
+                    self.rollup_live_counts(
+                        timely_iter,
+                        Some(delete_cursor),
+                        MAX_BATCHED_ROLLUP_COUNTS,
+                    )?
                 } else {
-                    self.rollup_delete_account(
-                        delete_cursor,
-                        &delete_key_bytes,
-                        &delete_val_bytes,
-                    )?;
                     eprintln!("delete then come back for rollups");
+                    self.rollup_delete_account(delete_cursor, &delete_key_bytes, &delete_val_bytes)?
                 }
             }
-            (Some(timely_next_cursor), None) => {
+            (Some(_), None) => {
                 eprintln!("do as much rollup as we want");
+                self.rollup_live_counts(timely_iter, None, MAX_BATCHED_ROLLUP_COUNTS)?
             }
             (None, Some((delete_cursor, delete_key_bytes, delete_val_bytes))) => {
                 eprintln!("just delete an account");
-                self.rollup_delete_account(delete_cursor, &delete_key_bytes, &delete_val_bytes)?;
+                self.rollup_delete_account(delete_cursor, &delete_key_bytes, &delete_val_bytes)?
             }
             (None, None) => {
                 eprintln!("do nothing.");
+                0
             }
-        }
+        };
 
-        // TODO: advance the rollup cursor
-
-        // batch.commit()?;
-        Ok(())
+        Ok(cursors_stepped)
     }
 
     fn rollup_delete_account(
@@ -369,14 +373,107 @@ impl FjallWriter {
         cursor: Cursor,
         key_bytes: &[u8],
         val_bytes: &[u8],
-    ) -> StorageResult<()> {
+    ) -> StorageResult<usize> {
         let did = db_complete::<DeleteAccountQueueVal>(val_bytes)?;
         self.delete_account(&did)?;
         let mut batch = self.keyspace.batch();
         batch.remove(&self.queues, key_bytes);
         insert_batch_static_neu::<NewRollupCursorKey>(&mut batch, &self.global, cursor.next())?;
         batch.commit()?;
-        Ok(())
+        Ok(1)
+    }
+
+    fn rollup_live_counts(
+        &mut self,
+        timelies: impl Iterator<Item = Result<(fjall::Slice, fjall::Slice), fjall::Error>>,
+        cursor_exclusive_limit: Option<Cursor>,
+        rollup_limit: usize,
+    ) -> StorageResult<usize> {
+        // current strategy is to buffer counts in mem before writing the rollups
+        // we *could* read+write every single batch to rollup.. but their merge is associative so
+        // ...so save the db some work up front? is this worth it? who knows...
+
+        #[derive(Eq, Hash, PartialEq)]
+        enum Rollup {
+            Hourly(HourTruncatedCursor),
+            Weekly(WeekTruncatedCursor),
+            AllTime,
+        }
+
+        let mut batch = self.keyspace.batch();
+        let mut cursors_advanced = 0;
+        let mut last_cursor = Cursor::from_start();
+        let mut counts_by_rollup: HashMap<(Nsid, Rollup), CountsValue> = HashMap::new();
+
+        for (i, kv) in timelies.enumerate() {
+            if i >= rollup_limit {
+                break;
+            }
+
+            let (key_bytes, val_bytes) = kv?;
+            let key = db_complete::<LiveCountsKey>(&key_bytes)?;
+
+            if cursor_exclusive_limit
+                .map(|limit| key.cursor() > limit)
+                .unwrap_or(false)
+            {
+                break;
+            }
+
+            batch.remove(&self.rollups, key_bytes);
+            let val = db_complete::<CountsValue>(&val_bytes)?;
+            counts_by_rollup
+                .entry((
+                    key.collection().clone(),
+                    Rollup::Hourly(key.cursor().into()),
+                ))
+                .or_default()
+                .merge(&val);
+            counts_by_rollup
+                .entry((
+                    key.collection().clone(),
+                    Rollup::Weekly(key.cursor().into()),
+                ))
+                .or_default()
+                .merge(&val);
+            counts_by_rollup
+                .entry((key.collection().clone(), Rollup::AllTime))
+                .or_default()
+                .merge(&val);
+
+            cursors_advanced += 1;
+            last_cursor = key.cursor();
+        }
+
+        for ((nsid, rollup), counts) in counts_by_rollup {
+            let key_bytes = match rollup {
+                Rollup::Hourly(hourly_cursor) => {
+                    HourlyRollupKey::new(hourly_cursor, &nsid).to_db_bytes()?
+                }
+                Rollup::Weekly(weekly_cursor) => {
+                    WeeklyRollupKey::new(weekly_cursor, &nsid).to_db_bytes()?
+                }
+                Rollup::AllTime => AllTimeRollupKey::new(&nsid).to_db_bytes()?,
+            };
+            let mut rolled = self
+                .rollups
+                .get(&key_bytes)?
+                .as_deref()
+                .map(db_complete::<CountsValue>)
+                .transpose()?
+                .unwrap_or_default();
+            rolled.merge(&counts);
+            batch.insert(&self.rollups, &key_bytes, &rolled.to_db_bytes()?);
+        }
+
+        insert_batch_static_neu::<NewRollupCursorKey>(
+            &mut batch,
+            &self.global,
+            last_cursor.next(),
+        )?;
+
+        batch.commit()?;
+        Ok(cursors_advanced)
     }
 }
 
@@ -1630,7 +1727,8 @@ mod tests {
         );
         write.insert_batch(batch.batch)?;
 
-        write.step_rollup()?;
+        let n = write.step_rollup()?;
+        assert_eq!(n, 1);
 
         let mut batch = TestBatch::default();
         batch.delete_account("did:plc:person-a", 10_001);
@@ -1640,7 +1738,8 @@ mod tests {
             read.get_records_by_collections(&vec![&Nsid::new("a.a.a".to_string()).unwrap()], 1)?;
         assert_eq!(records.len(), 1);
 
-        write.step_rollup()?;
+        let n = write.step_rollup()?;
+        assert_eq!(n, 1);
 
         let records =
             read.get_records_by_collections(&vec![&Nsid::new("a.a.a".to_string()).unwrap()], 1)?;
@@ -1650,9 +1749,46 @@ mod tests {
         batch.delete_account("did:plc:person-a", 9_999);
         write.insert_batch(batch.batch)?;
 
-        write.step_rollup()?;
+        let n = write.step_rollup()?;
+        assert_eq!(n, 0);
 
-        assert!(false);
+        Ok(())
+    }
+
+    #[test]
+    fn rollup_multiple_count_batches() -> anyhow::Result<()> {
+        let (_read, mut write) = fjall_db();
+
+        let mut batch = TestBatch::default();
+        batch.create(
+            "did:plc:person-a",
+            "a.a.a",
+            "rkey-aaa",
+            "{}",
+            Some("rev-aaa"),
+            None,
+            10_000,
+        );
+        write.insert_batch(batch.batch)?;
+
+        let mut batch = TestBatch::default();
+        batch.create(
+            "did:plc:person-a",
+            "a.a.a",
+            "rkey-aab",
+            "{}",
+            Some("rev-aab"),
+            None,
+            10_001,
+        );
+        write.insert_batch(batch.batch)?;
+
+        let n = write.step_rollup()?;
+        assert_eq!(n, 2);
+
+        let n = write.step_rollup()?;
+        assert_eq!(n, 0);
+
         Ok(())
     }
 }
