@@ -1,21 +1,18 @@
 // use crate::store_types::CountsValue;
-use crate::{error::StorageError, Cursor, EventBatch, UFOsRecord};
+use crate::{error::StorageError, ConsumerInfo, Cursor, EventBatch, UFOsRecord};
 use jetstream::exports::{Did, Nsid};
+use schemars::JsonSchema;
+use serde::Serialize;
 use std::path::Path;
 
 pub type StorageResult<T> = Result<T, StorageError>;
 
-// #[derive(Debug)]
-// pub enum RollupTask {
-//     CollectionRollup {
-//         live_counts_key_bytes: Vec<u8>,
-//         counts: CountsValue,
-//     },
-//     DeleteAccount(Did),
-// }
-
-pub trait StorageWhatever<R: StoreReader, W: StoreWriter, C> {
-    // TODO: extract this
+pub trait StorageWhatever<R, W, C, S>
+where
+    R: StoreReader<S>,
+    W: StoreWriter,
+    S: Serialize + JsonSchema,
+{
     fn init(
         path: impl AsRef<Path>,
         endpoint: String,
@@ -35,14 +32,13 @@ pub trait StoreWriter {
     fn trim_collection(&mut self, collection: &Nsid, limit: usize) -> StorageResult<()>;
 
     fn delete_account(&mut self, did: &Did) -> StorageResult<usize>;
-
-    // fn rollup_tasks(
-    //     &mut self,
-    //     from_cursor: Cursor,
-    // ) -> impl Iterator<Item = StorageResult<(RollupTask, Cursor)>>;
 }
 
-pub trait StoreReader: Clone {
+pub trait StoreReader<S>: Clone {
+    fn get_storage_stats(&self) -> StorageResult<S>;
+
+    fn get_consumer_info(&self) -> StorageResult<ConsumerInfo>;
+
     fn get_counts_by_collection(&self, collection: &Nsid) -> StorageResult<(u64, u64)>;
 
     fn get_records_by_collections(

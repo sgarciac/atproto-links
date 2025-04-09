@@ -37,7 +37,6 @@ struct MetaInfo {
     storage_info: StorageInfo,
     jetstream_endpoint: Option<String>,
     jetstream_cursor: Option<u64>,
-    mod_cursor: Option<u64>,
 }
 /// Get meta information about UFOs itself
 #[endpoint {
@@ -67,17 +66,10 @@ async fn get_meta_info(ctx: RequestContext<Context>) -> OkCorsResponse<MetaInfo>
         .map_err(failed_to_get("jetstream cursor"))?
         .map(|c| c.to_raw_u64());
 
-    let mod_cursor = storage
-        .get_mod_cursor()
-        .await
-        .map_err(failed_to_get("jetstream cursor"))?
-        .map(|c| c.to_raw_u64());
-
     ok_cors(MetaInfo {
         storage_info,
         jetstream_endpoint,
         jetstream_cursor,
-        mod_cursor,
     })
 }
 

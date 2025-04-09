@@ -11,6 +11,7 @@ use cardinality_estimator::CardinalityEstimator;
 use error::FirehoseEventError;
 use jetstream::events::{CommitEvent, CommitOp, Cursor};
 use jetstream::exports::{Did, Nsid, RecordKey};
+use schemars::JsonSchema;
 use serde::Serialize;
 use serde_json::value::RawValue;
 use std::collections::HashMap;
@@ -206,6 +207,15 @@ impl<const LIMIT: usize> EventBatch<LIMIT> {
     pub fn is_empty(&self) -> bool {
         self.commits_by_nsid.is_empty() && self.account_removes.is_empty()
     }
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub enum ConsumerInfo {
+    Jetstream {
+        endpoint: String,
+        started_at: u64,
+        latest_cursor: Option<u64>,
+    },
 }
 
 #[cfg(test)]

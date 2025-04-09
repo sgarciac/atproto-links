@@ -10,13 +10,15 @@ use crate::store_types::{
     ModQueueItemKey, ModQueueItemStringValue, ModQueueItemValue, NewRollupCursorKey,
     NewRollupCursorValue, NsidRecordFeedKey, NsidRecordFeedVal, RecordLocationKey,
     RecordLocationMeta, RecordLocationVal, RecordRawValue, RollupCursorKey, RollupCursorValue,
-    SeenCounter, TakeoffKey, WeekTruncatedCursor, WeeklyRollupKey,
+    SeenCounter, TakeoffKey, TakeoffValue, WeekTruncatedCursor, WeeklyRollupKey,
 };
-use crate::{CommitAction, Did, EventBatch, Nsid, RecordKey, UFOsRecord};
+use crate::{CommitAction, ConsumerInfo, Did, EventBatch, Nsid, RecordKey, UFOsRecord};
 use fjall::{
     Batch as FjallBatch, CompressionType, Config, Keyspace, PartitionCreateOptions, PartitionHandle,
 };
 use jetstream::events::Cursor;
+use schemars::JsonSchema;
+use serde::Serialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
@@ -51,53 +53,53 @@ struct Db {
 /// Partion: 'global'
 ///
 ///  - Global sequence counter (is the jetstream cursor -- monotonic with many gaps)
-///      key: "js_cursor" (literal)
-///      val: u64
+///      - key: "js_cursor" (literal)
+///      - val: u64
 ///
 ///  - Jetstream server endpoint (persisted because the cursor can't be used on another instance without data loss)
-///      key: "js_endpoint" (literal)
-///      val: string (URL of the instance)
+///      - key: "js_endpoint" (literal)
+///      - val: string (URL of the instance)
 ///
 ///  - Launch date
-///      key: "takeoff" (literal)
-///      val: u64 (micros timestamp, not from jetstream for now so not precise)
+///      - key: "takeoff" (literal)
+///      - val: u64 (micros timestamp, not from jetstream for now so not precise)
 ///
 ///  - Rollup cursor (bg work: roll stats into hourlies, delete accounts, old record deletes)
-///      key: "rollup_cursor" (literal)
-///      val: u64 (tracks behind js_cursor)
+///      - key: "rollup_cursor" (literal)
+///      - val: u64 (tracks behind js_cursor)
 ///
 ///
 /// Partition: 'feed'
 ///
 ///  - Per-collection list of record references ordered by jetstream cursor
-///      key: nullstr || u64 (collection nsid null-terminated, jetstream cursor)
-///      val: nullstr || nullstr || nullstr (did, rkey, rev. rev is mostly a sanity-check for now.)
+///      - key: nullstr || u64 (collection nsid null-terminated, jetstream cursor)
+///      - val: nullstr || nullstr || nullstr (did, rkey, rev. rev is mostly a sanity-check for now.)
 ///
 ///
 /// Partition: 'records'
 ///
 ///  - Actual records by their atproto location
-///      key: nullstr || nullstr || nullstr (did, collection, rkey)
-///      val: u64 || bool || nullstr || rawval (js_cursor, is_update, rev, actual record)
+///      - key: nullstr || nullstr || nullstr (did, collection, rkey)
+///      - val: u64 || bool || nullstr || rawval (js_cursor, is_update, rev, actual record)
 ///
 ///
 /// Partition: 'rollups'
 ///
 /// - Live (batched) records counts and dids estimate per collection
-///      key: "live_counts" || u64 || nullstr (js_cursor, nsid)
-///      val: u64 || HLL (count (not cursor), estimator)
+///      - key: "live_counts" || u64 || nullstr (js_cursor, nsid)
+///      - val: u64 || HLL (count (not cursor), estimator)
 ///
 /// - Hourly total record counts and dids estimate per collection
-///      key: "hourly_counts" || u64 || nullstr (hour, nsid)
-///      val: u64 || HLL (count (not cursor), estimator)
+///      - key: "hourly_counts" || u64 || nullstr (hour, nsid)
+///      - val: u64 || HLL (count (not cursor), estimator)
 ///
 /// - Weekly total record counts and dids estimate per collection
-///      key: "weekly_counts" || u64 || nullstr (hour, nsid)
-///      val: u64 || HLL (count (not cursor), estimator)
+///      - key: "weekly_counts" || u64 || nullstr (hour, nsid)
+///      - val: u64 || HLL (count (not cursor), estimator)
 ///
 /// - All-time total record counts and dids estimate per collection
-///      key: "ever_counts" || nullstr (nsid)
-///      val: u64 || HLL (count (not cursor), estimator)
+///      - key: "ever_counts" || nullstr (nsid)
+///      - val: u64 || HLL (count (not cursor), estimator)
 ///
 /// - TODO: sorted indexes for all-times?
 ///
@@ -105,8 +107,8 @@ struct Db {
 /// Partition: 'queues'
 ///
 ///  - Delete account queue
-///      key: "delete_acount" || u64 (js_cursor)
-///      val: nullstr (did)
+///      - key: "delete_acount" || u64 (js_cursor)
+///      - val: nullstr (did)
 ///
 ///
 /// TODO: moderation actions
@@ -123,7 +125,15 @@ pub struct FjallConfig {
     pub temp: bool,
 }
 
-impl StorageWhatever<FjallReader, FjallWriter, FjallConfig> for FjallStorage {
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct FjallStats {
+    pub keyspace_disk_space: u64,
+    pub keyspace_journal_count: usize,
+    pub keyspace_sequence: u64,
+    pub rollup_cursor: Option<u64>,
+}
+
+impl StorageWhatever<FjallReader, FjallWriter, FjallConfig, FjallStats> for FjallStorage {
     fn init(
         path: impl AsRef<Path>,
         endpoint: String,
@@ -204,7 +214,47 @@ pub struct FjallReader {
     rollups: PartitionHandle,
 }
 
-impl StoreReader for FjallReader {
+impl StoreReader<FjallStats> for FjallReader {
+    fn get_storage_stats(&self) -> StorageResult<FjallStats> {
+        let rollup_cursor =
+            get_static_neu::<NewRollupCursorKey, NewRollupCursorValue>(&self.global)?
+                .map(|c| c.to_raw_u64());
+
+        Ok(FjallStats {
+            keyspace_disk_space: self.keyspace.disk_space(),
+            keyspace_journal_count: self.keyspace.journal_count(),
+            keyspace_sequence: self.keyspace.instant(),
+            rollup_cursor,
+        })
+    }
+
+    fn get_consumer_info(&self) -> StorageResult<ConsumerInfo> {
+        let global = self.global.snapshot();
+
+        let endpoint =
+            get_snapshot_static_neu::<JetstreamEndpointKey, JetstreamEndpointValue>(&global)?
+                .ok_or(StorageError::BadStateError(
+                    "Could not find jetstream endpoint".to_string(),
+                ))?
+                .0;
+
+        let started_at = get_snapshot_static_neu::<TakeoffKey, TakeoffValue>(&global)?
+            .ok_or(StorageError::BadStateError(
+                "Could not find jetstream takeoff time".to_string(),
+            ))?
+            .to_raw_u64();
+
+        let latest_cursor =
+            get_snapshot_static_neu::<JetstreamCursorKey, JetstreamCursorValue>(&global)?
+                .map(|c| c.to_raw_u64());
+
+        Ok(ConsumerInfo::Jetstream {
+            endpoint,
+            started_at,
+            latest_cursor,
+        })
+    }
+
     fn get_counts_by_collection(&self, collection: &Nsid) -> StorageResult<(u64, u64)> {
         // 0. grab a snapshot in case rollups happen while we're working
         let instant = self.keyspace.instant();
