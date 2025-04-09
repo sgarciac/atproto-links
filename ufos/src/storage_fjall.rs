@@ -207,6 +207,8 @@ impl StorageWhatever<FjallReader, FjallWriter, FjallConfig, FjallStats> for Fjal
     }
 }
 
+type FjallRKV = fjall::Result<(fjall::Slice, fjall::Slice)>;
+
 #[derive(Clone)]
 pub struct FjallReader {
     keyspace: Keyspace,
@@ -214,6 +216,88 @@ pub struct FjallReader {
     feeds: PartitionHandle,
     records: PartitionHandle,
     rollups: PartitionHandle,
+}
+
+/// An iterator that knows how to skip over deleted/invalidated records
+struct RecordIterator {
+    db_iter: Box<dyn Iterator<Item = FjallRKV>>,
+    records: PartitionHandle,
+    limit: usize,
+    fetched: usize,
+}
+impl RecordIterator {
+    pub fn new(
+        feeds: &PartitionHandle,
+        records: PartitionHandle,
+        collection: &Nsid,
+        limit: usize,
+    ) -> StorageResult<Self> {
+        let prefix = NsidRecordFeedKey::from_prefix_to_db_bytes(collection)?;
+        let db_iter = feeds.prefix(prefix).rev();
+        Ok(Self {
+            db_iter: Box::new(db_iter),
+            records,
+            limit,
+            fetched: 0,
+        })
+    }
+    fn get_record(&self, db_next: FjallRKV) -> StorageResult<Option<UFOsRecord>> {
+        let (key_bytes, val_bytes) = db_next?;
+        let feed_key = db_complete::<NsidRecordFeedKey>(&key_bytes)?;
+        let feed_val = db_complete::<NsidRecordFeedVal>(&val_bytes)?;
+        let location_key: RecordLocationKey = (&feed_key, &feed_val).into();
+
+        let Some(location_val_bytes) = self.records.get(location_key.to_db_bytes()?)? else {
+            // record was deleted (hopefully)
+            return Ok(None);
+        };
+
+        let (meta, n) = RecordLocationMeta::from_db_bytes(&location_val_bytes)?;
+
+        if meta.cursor() != feed_key.cursor() {
+            // older/different version
+            return Ok(None);
+        }
+        if meta.rev != feed_val.rev() {
+            // weird...
+            log::warn!("record lookup: cursor match but rev did not...? excluding.");
+            return Ok(None);
+        }
+        let Some(raw_value_bytes) = location_val_bytes.get(n..) else {
+            log::warn!(
+                "record lookup: found record but could not get bytes to decode the record??"
+            );
+            return Ok(None);
+        };
+        let rawval = db_complete::<RecordRawValue>(raw_value_bytes)?;
+        Ok(Some(UFOsRecord {
+            collection: feed_key.collection().clone(),
+            cursor: feed_key.cursor(),
+            did: feed_val.did().clone(),
+            rkey: feed_val.rkey().clone(),
+            rev: meta.rev.to_string(),
+            record: rawval.try_into()?,
+            is_update: meta.is_update,
+        }))
+    }
+}
+impl Iterator for RecordIterator {
+    type Item = StorageResult<Option<UFOsRecord>>;
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.fetched == self.limit {
+            return Some(Ok(None));
+        }
+        let record = loop {
+            let db_next = self.db_iter.next()?; // None short-circuits here
+            match self.get_record(db_next) {
+                Err(e) => return Some(Err(e)),
+                Ok(Some(record)) => break record,
+                Ok(None) => continue,
+            }
+        };
+        self.fetched += 1;
+        Some(Ok(Some(record)))
+    }
 }
 
 impl StoreReader<FjallStats> for FjallReader {
@@ -348,53 +432,14 @@ impl StoreReader<FjallStats> for FjallReader {
 
         let collection = collections[0];
 
-        let prefix = NsidRecordFeedKey::from_prefix_to_db_bytes(collection)?;
-        let collected = 0;
-        let mut out = vec![];
-        for kv in self.feeds.prefix(prefix).rev() {
-            let (key_bytes, val_bytes) = kv?;
-            let feed_key = db_complete::<NsidRecordFeedKey>(&key_bytes)?;
-            let feed_val = db_complete::<NsidRecordFeedVal>(&val_bytes)?;
-            let location_key: RecordLocationKey = (&feed_key, &feed_val).into();
-
-            let Some(location_val_bytes) = self.records.get(location_key.to_db_bytes()?)? else {
-                // record was deleted (hopefully)
-                continue;
-            };
-
-            let (meta, n) = RecordLocationMeta::from_db_bytes(&location_val_bytes)?;
-
-            if meta.cursor() != feed_key.cursor() {
-                // older/different version
-                continue;
-            }
-            if meta.rev != feed_val.rev() {
-                // weird...
-                log::warn!("record lookup: cursor match but rev did not...? excluding.");
-                continue;
-            }
-            let Some(raw_value_bytes) = location_val_bytes.get(n..) else {
-                log::warn!(
-                    "record lookup: found record but could not get bytes to decode the record??"
-                );
-                continue;
-            };
-            let rawval = db_complete::<RecordRawValue>(raw_value_bytes)?;
-            out.push(UFOsRecord {
-                collection: feed_key.collection().clone(),
-                cursor: feed_key.cursor(),
-                did: feed_val.did().clone(),
-                rkey: feed_val.rkey().clone(),
-                rev: meta.rev.to_string(),
-                record: rawval.try_into()?,
-                is_update: meta.is_update,
-            });
-
-            if collected >= limit {
+        let mut out = Vec::new();
+        for rec in RecordIterator::new(&self.feeds, self.records.clone(), collection, limit)? {
+            if let Some(r) = rec? {
+                out.push(r)
+            } else {
                 break;
             }
         }
-
         Ok(out)
     }
 }
