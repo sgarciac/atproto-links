@@ -271,15 +271,13 @@ impl StoreReader<FjallStats> for FjallReader {
         }
         impl From<&Blah> for TopCollections {
             fn from(bla: &Blah) -> Self {
-                let mut me = Self {
+                Self {
                     total_records: bla.counts.records(),
                     dids_estimate: bla.counts.dids().estimate() as u64,
-                    ..Default::default()
-                };
-                for (k, v) in &bla.children {
-                    me.nsid_child_segments.insert(k.to_string(), v.into());
+                    nsid_child_segments: HashMap::from_iter(
+                        bla.children.iter().map(|(k, v)| (k.to_string(), v.into())),
+                    ),
                 }
-                me
             }
         }
 
