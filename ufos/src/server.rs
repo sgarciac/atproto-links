@@ -1,5 +1,5 @@
-use crate::storage::{StoreReader};
-use crate::{Nsid, ConsumerInfo};
+use crate::storage::StoreReader;
+use crate::{ConsumerInfo, Nsid, TopCollections, UFOsRecord};
 use dropshot::endpoint;
 use dropshot::ApiDescription;
 use dropshot::ConfigDropshot;
@@ -15,7 +15,6 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::task::block_in_place;
 
 struct Context {
     pub spec: Arc<serde_json::Value>,
@@ -32,7 +31,6 @@ async fn get_openapi(ctx: RequestContext<Context>) -> OkCorsResponse<serde_json:
     ok_cors(spec)
 }
 
-
 #[derive(Debug, Serialize, JsonSchema)]
 struct MetaInfo {
     storage: serde_json::Value,
@@ -48,10 +46,14 @@ async fn get_meta_info(ctx: RequestContext<Context>) -> OkCorsResponse<MetaInfo>
     let failed_to_get =
         |what| move |e| HttpError::for_internal_error(format!("failed to get {what}: {e:?}"));
 
-    let storage_info = storage.get_storage_stats_a().await
+    let storage_info = storage
+        .get_storage_stats()
+        .await
         .map_err(failed_to_get("storage info"))?;
 
-    let consumer = block_in_place(|| storage.get_consumer_info())
+    let consumer = storage
+        .get_consumer_info()
+        .await
         .map_err(failed_to_get("consumer info"))?;
 
     ok_cors(MetaInfo {
@@ -60,135 +62,128 @@ async fn get_meta_info(ctx: RequestContext<Context>) -> OkCorsResponse<MetaInfo>
     })
 }
 
-// #[derive(Debug, Deserialize, JsonSchema)]
-// struct CollectionsQuery {
-//     collection: String, // JsonSchema not implemented for Nsid :(
-// }
-// impl CollectionsQuery {
-//     fn to_multiple_nsids(&self) -> Result<Vec<Nsid>, String> {
-//         let mut out = Vec::with_capacity(self.collection.len());
-//         for collection in self.collection.split(',') {
-//             let Ok(nsid) = Nsid::new(collection.to_string()) else {
-//                 return Err(format!("collection {collection:?} was not a valid NSID"));
-//             };
-//             out.push(nsid);
-//         }
-//         Ok(out)
-//     }
-// }
-// // #[derive(Debug, Serialize, JsonSchema)]
-// // struct ApiRecord {
-// //     did: String,
-// //     collection: String,
-// //     rkey: String,
-// //     record: serde_json::Value,
-// //     time_us: u64,
-// // }
-// // impl ApiRecord {
-// //     fn from_create_record(create_record: CreateRecord, collection: &Nsid) -> Self {
-// //         let CreateRecord {
-// //             did,
-// //             rkey,
-// //             record,
-// //             cursor,
-// //         } = create_record;
-// //         Self {
-// //             did: did.to_string(),
-// //             collection: collection.to_string(),
-// //             rkey: rkey.to_string(),
-// //             record,
-// //             time_us: cursor.to_raw_u64(),
-// //         }
-// //     }
-// // }
-// // /// Get recent records by collection
-// // ///
-// // /// Multiple collections are supported. they will be delivered in one big array with no
-// // /// specified order.
-// // #[endpoint {
-// //     method = GET,
-// //     path = "/records",
-// // }]
-// // async fn get_records_by_collection(
-// //     ctx: RequestContext<Context>,
-// //     collection_query: Query<CollectionsQuery>,
-// // ) -> OkCorsResponse<Vec<ApiRecord>> {
-// //     let Context { storage, .. } = ctx.context();
+#[derive(Debug, Deserialize, JsonSchema)]
+struct CollectionsQuery {
+    collection: String, // JsonSchema not implemented for Nsid :(
+}
+impl CollectionsQuery {
+    fn to_multiple_nsids(&self) -> Result<Vec<Nsid>, String> {
+        let mut out = Vec::with_capacity(self.collection.len());
+        for collection in self.collection.split(',') {
+            let Ok(nsid) = Nsid::new(collection.to_string()) else {
+                return Err(format!("collection {collection:?} was not a valid NSID"));
+            };
+            out.push(nsid);
+        }
+        Ok(out)
+    }
+}
+#[derive(Debug, Serialize, JsonSchema)]
+struct ApiRecord {
+    did: String,
+    collection: String,
+    rkey: String,
+    record: Box<serde_json::value::RawValue>,
+    time_us: u64,
+}
+impl From<UFOsRecord> for ApiRecord {
+    fn from(ufo: UFOsRecord) -> Self {
+        Self {
+            did: ufo.did.to_string(),
+            collection: ufo.collection.to_string(),
+            rkey: ufo.rkey.to_string(),
+            record: ufo.record,
+            time_us: ufo.cursor.to_raw_u64(),
+        }
+    }
+}
+/// Get recent records by collection
+///
+/// Multiple collections are supported. they will be delivered in one big array with no
+/// specified order.
+#[endpoint {
+    method = GET,
+    path = "/records",
+}]
+async fn get_records_by_collection(
+    ctx: RequestContext<Context>,
+    collection_query: Query<CollectionsQuery>,
+) -> OkCorsResponse<Vec<ApiRecord>> {
+    let Context { storage, .. } = ctx.context();
 
-// //     let collections = collection_query
-// //         .into_inner()
-// //         .to_multiple_nsids()
-// //         .map_err(|reason| HttpError::for_bad_request(None, reason))?;
+    let collections = collection_query
+        .into_inner()
+        .to_multiple_nsids()
+        .map_err(|reason| HttpError::for_bad_request(None, reason))?;
 
-// //     let mut api_records = Vec::new();
+    let records = storage
+        .get_records_by_collections(&collections, 100)
+        .await
+        .map_err(|e| HttpError::for_internal_error(e.to_string()))?
+        .into_iter()
+        .map(|r| r.into())
+        .collect();
 
-// //     // TODO: set up multiple db iterators and iterate them together with merge sort
-// //     for collection in &collections {
-// //         let records = storage
-// //             .get_collection_records(collection, 100)
-// //             .await
-// //             .map_err(|e| HttpError::for_internal_error(e.to_string()))?;
+    ok_cors(records)
+}
 
-// //         for record in records {
-// //             let api_record = ApiRecord::from_create_record(record, collection);
-// //             api_records.push(api_record);
-// //         }
-// //     }
+#[derive(Debug, Serialize, JsonSchema)]
+struct TotalCounts {
+    total_records: u64,
+    dids_estimate: u64,
+}
+/// Get total records seen by collection
+#[endpoint {
+    method = GET,
+    path = "/records/total-seen"
+}]
+async fn get_records_total_seen(
+    ctx: RequestContext<Context>,
+    collection_query: Query<CollectionsQuery>,
+) -> OkCorsResponse<HashMap<String, TotalCounts>> {
+    let Context { storage, .. } = ctx.context();
 
-// //     ok_cors(api_records)
-// // }
+    let collections = collection_query
+        .into_inner()
+        .to_multiple_nsids()
+        .map_err(|reason| HttpError::for_bad_request(None, reason))?;
 
-// /// Get total records seen by collection
-// #[endpoint {
-//     method = GET,
-//     path = "/records/total-seen"
-// }]
-// async fn get_records_total_seen(
-//     ctx: RequestContext<Context>,
-//     collection_query: Query<CollectionsQuery>,
-// ) -> OkCorsResponse<HashMap<String, u64>> {
-//     let Context { storage, .. } = ctx.context();
+    let mut seen_by_collection = HashMap::with_capacity(collections.len());
 
-//     let collections = collection_query
-//         .into_inner()
-//         .to_multiple_nsids()
-//         .map_err(|reason| HttpError::for_bad_request(None, reason))?;
+    for collection in &collections {
+        let (total_records, dids_estimate) = storage
+            .get_counts_by_collection(collection)
+            .await
+            .map_err(|e| HttpError::for_internal_error(format!("boooo: {e:?}")))?;
 
-//     let mut seen_by_collection = HashMap::with_capacity(collections.len());
+        seen_by_collection.insert(
+            collection.to_string(),
+            TotalCounts {
+                total_records,
+                dids_estimate,
+            },
+        );
+    }
 
-//     for collection in &collections {
-//         let total = storage
-//             .get_collection_total_seen(collection)
-//             .await
-//             .map_err(|e| HttpError::for_internal_error(format!("boooo: {e:?}")))?;
+    ok_cors(seen_by_collection)
+}
 
-//         seen_by_collection.insert(collection.to_string(), total);
-//     }
+/// Get top collections
+#[endpoint {
+    method = GET,
+    path = "/collections"
+}]
+async fn get_top_collections(ctx: RequestContext<Context>) -> OkCorsResponse<TopCollections> {
+    let Context { storage, .. } = ctx.context();
+    let collections = storage
+        .get_top_collections()
+        .await
+        .map_err(|e| HttpError::for_internal_error(format!("boooo: {e:?}")))?;
 
-//     ok_cors(seen_by_collection)
-// }
-
-// /// Get top collections
-// #[endpoint {
-//     method = GET,
-//     path = "/collections"
-// }]
-// async fn get_top_collections(ctx: RequestContext<Context>) -> OkCorsResponse<HashMap<String, u64>> {
-//     let Context { storage, .. } = ctx.context();
-//     let collections = storage
-//         .get_top_collections()
-//         .await
-//         .map_err(|e| HttpError::for_internal_error(format!("boooo: {e:?}")))?;
-
-//     ok_cors(collections)
-// }
-
-// impl Context {
-//     fn what() -> () {}
-// }
+    ok_cors(collections)
+}
 
 pub async fn serve(storage: impl StoreReader + 'static) -> Result<(), String> {
-
     let log = ConfigLogging::StderrTerminal {
         level: ConfigLoggingLevel::Info,
     }
@@ -199,9 +194,9 @@ pub async fn serve(storage: impl StoreReader + 'static) -> Result<(), String> {
 
     api.register(get_openapi).unwrap();
     api.register(get_meta_info).unwrap();
-    // // api.register(get_records_by_collection).unwrap();
-    // api.register(get_records_total_seen).unwrap();
-    // api.register(get_top_collections).unwrap();
+    api.register(get_records_by_collection).unwrap();
+    api.register(get_records_total_seen).unwrap();
+    api.register(get_top_collections).unwrap();
 
     let context = Context {
         spec: Arc::new(

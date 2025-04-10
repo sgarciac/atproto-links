@@ -15,7 +15,7 @@ fjall = { version = "2.8.0", features = ["lz4", "bytes"] }
 jetstream = { path = "../jetstream" }
 log = "0.4.26"
 lsm-tree = "2.6.6"
-schemars = "0.8.22"
+schemars = { version = "0.8.22", features = ["raw_value"] }
 semver = "1.0.26"
 serde = "1.0.219"
 serde_json = "1.0.140"
