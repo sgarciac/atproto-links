@@ -135,7 +135,7 @@ pub struct FjallStats {
     pub rollup_cursor: Option<u64>,
 }
 
-impl StorageWhatever<FjallReader, FjallWriter, FjallConfig, FjallStats> for FjallStorage {
+impl StorageWhatever<FjallReader, FjallWriter, FjallConfig> for FjallStorage {
     fn init(
         path: impl AsRef<Path>,
         endpoint: String,
@@ -300,18 +300,18 @@ impl Iterator for RecordIterator {
     }
 }
 
-impl StoreReader<FjallStats> for FjallReader {
-    fn get_storage_stats(&self) -> StorageResult<FjallStats> {
+impl StoreReader for FjallReader {
+    fn get_storage_stats(&self) -> StorageResult<serde_json::Value> {
         let rollup_cursor =
             get_static_neu::<NewRollupCursorKey, NewRollupCursorValue>(&self.global)?
                 .map(|c| c.to_raw_u64());
 
-        Ok(FjallStats {
-            keyspace_disk_space: self.keyspace.disk_space(),
-            keyspace_journal_count: self.keyspace.journal_count(),
-            keyspace_sequence: self.keyspace.instant(),
-            rollup_cursor,
-        })
+        Ok(serde_json::json!({
+            "keyspace_disk_space": self.keyspace.disk_space(),
+            "keyspace_journal_count": self.keyspace.journal_count(),
+            "keyspace_sequence": self.keyspace.instant(),
+            "rollup_cursor": rollup_cursor,
+        }))
     }
 
     fn get_consumer_info(&self) -> StorageResult<ConsumerInfo> {

@@ -2,6 +2,7 @@ use clap::Parser;
 use std::path::PathBuf;
 use ufos::consumer;
 use ufos::error::StorageError;
+use ufos::server;
 use ufos::storage::{StorageWhatever, StoreWriter};
 use ufos::storage_fjall::FjallStorage;
 
@@ -46,20 +47,20 @@ async fn main() -> anyhow::Result<()> {
 
     let args = Args::parse();
     let jetstream = args.jetstream.clone();
-    let (_read_store, mut write_store, cursor) = FjallStorage::init(
+    let (read_store, mut write_store, cursor) = FjallStorage::init(
         args.data,
         jetstream,
         args.jetstream_force,
         Default::default(),
     )?;
 
-    // println!("starting server with storage...");
-    // let serving = server::serve(storage.clone());
+    println!("starting server with storage...");
+    let serving = server::serve(read_store);
 
-    // let t1 = tokio::task::spawn(async {
-    //     let r = serving.await;
-    //     log::warn!("serving ended with: {r:?}");
-    // });
+    let t1 = tokio::task::spawn(async {
+        let r = serving.await;
+        log::warn!("serving ended with: {r:?}");
+    });
 
     let t2: tokio::task::JoinHandle<anyhow::Result<()>> = tokio::task::spawn({
         async move {
@@ -105,8 +106,8 @@ async fn main() -> anyhow::Result<()> {
     // };
 
     // log::trace!("tasks running. waiting.");
-    // t1.await?;
-    // log::trace!("serve task ended.");
+    t1.await?;
+    log::trace!("serve task ended.");
     t2.await??;
     log::trace!("storage receive task ended.");
     // t3.await?;

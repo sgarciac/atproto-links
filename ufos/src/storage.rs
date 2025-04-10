@@ -1,18 +1,11 @@
 // use crate::store_types::CountsValue;
 use crate::{error::StorageError, ConsumerInfo, Cursor, EventBatch, TopCollections, UFOsRecord};
 use jetstream::exports::{Did, Nsid};
-use schemars::JsonSchema;
-use serde::Serialize;
 use std::path::Path;
 
 pub type StorageResult<T> = Result<T, StorageError>;
 
-pub trait StorageWhatever<R, W, C, S>
-where
-    R: StoreReader<S>,
-    W: StoreWriter,
-    S: Serialize + JsonSchema,
-{
+pub trait StorageWhatever<R: StoreReader, W: StoreWriter, C> {
     fn init(
         path: impl AsRef<Path>,
         endpoint: String,
@@ -34,8 +27,8 @@ pub trait StoreWriter {
     fn delete_account(&mut self, did: &Did) -> StorageResult<usize>;
 }
 
-pub trait StoreReader<S>: Clone {
-    fn get_storage_stats(&self) -> StorageResult<S>;
+pub trait StoreReader: Send + Sync {
+    fn get_storage_stats(&self) -> StorageResult<serde_json::Value>;
 
     fn get_consumer_info(&self) -> StorageResult<ConsumerInfo>;
 
