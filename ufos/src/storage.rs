@@ -2,6 +2,7 @@
 use crate::{error::StorageError, ConsumerInfo, Cursor, EventBatch, TopCollections, UFOsRecord};
 use jetstream::exports::{Did, Nsid};
 use std::path::Path;
+use async_trait::async_trait;
 
 pub type StorageResult<T> = Result<T, StorageError>;
 
@@ -27,8 +28,10 @@ pub trait StoreWriter {
     fn delete_account(&mut self, did: &Did) -> StorageResult<usize>;
 }
 
+#[async_trait]
 pub trait StoreReader: Send + Sync {
     fn get_storage_stats(&self) -> StorageResult<serde_json::Value>;
+    async fn get_storage_stats_a(&self) -> StorageResult<serde_json::Value>;
 
     fn get_consumer_info(&self) -> StorageResult<ConsumerInfo>;
 

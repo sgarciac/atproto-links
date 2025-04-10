@@ -26,6 +26,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 use tokio::sync::mpsc::Receiver;
 use tokio::time::{interval_at, sleep};
+use async_trait::async_trait;
 
 /// Commit the RW batch immediately if this number of events have been read off the mod queue
 const MAX_BATCHED_RW_EVENTS: usize = 18;
@@ -300,6 +301,7 @@ impl Iterator for RecordIterator {
     }
 }
 
+#[async_trait]
 impl StoreReader for FjallReader {
     fn get_storage_stats(&self) -> StorageResult<serde_json::Value> {
         let rollup_cursor =
@@ -312,6 +314,10 @@ impl StoreReader for FjallReader {
             "keyspace_sequence": self.keyspace.instant(),
             "rollup_cursor": rollup_cursor,
         }))
+    }
+    async fn get_storage_stats_a(&self) -> StorageResult<serde_json::Value> {
+        let s = self.clone();
+        tokio::task::spawn_blocking(move || FjallReader::get_storage_stats(&s)).await?
     }
 
     fn get_consumer_info(&self) -> StorageResult<ConsumerInfo> {

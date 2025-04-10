@@ -48,7 +48,7 @@ async fn get_meta_info(ctx: RequestContext<Context>) -> OkCorsResponse<MetaInfo>
     let failed_to_get =
         |what| move |e| HttpError::for_internal_error(format!("failed to get {what}: {e:?}"));
 
-    let storage_info = block_in_place(|| storage.get_storage_stats())
+    let storage_info = storage.get_storage_stats_a().await
         .map_err(failed_to_get("storage info"))?;
 
     let consumer = block_in_place(|| storage.get_consumer_info())

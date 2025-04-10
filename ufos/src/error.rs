@@ -36,4 +36,6 @@ pub enum StorageError {
     EncodingError(#[from] EncodingError),
     #[error("If you ever see this, there's a bug in the code. The error was stolen")]
     Stolen,
+    #[error("Failed to join tokio task: {0}")]
+    JoinError(#[from] tokio::task::JoinError),
 }
