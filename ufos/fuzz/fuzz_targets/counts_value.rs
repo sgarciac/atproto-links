@@ -5,6 +5,13 @@ use ufos::db_types::DbBytes;
 use ufos::store_types::CountsValue;
 use libfuzzer_sys::fuzz_target;
 
+#[cfg(not(target_env = "msvc"))]
+use tikv_jemallocator::Jemalloc;
+
+#[cfg(not(target_env = "msvc"))]
+#[global_allocator]
+static GLOBAL: Jemalloc = Jemalloc;
+
 fuzz_target!(|data: &[u8]| {
     if let Ok((counts_value, n)) = CountsValue::from_db_bytes(data) {
         assert!(n <= data.len());
@@ -14,10 +21,5 @@ fuzz_target!(|data: &[u8]| {
         assert_eq!(n_again, n);
         assert_eq!(and_back.records(), counts_value.records());
         assert_eq!(and_back.dids().estimate(), counts_value.dids().estimate());
-        // assert_eq!(serialized, data[..n]);
-        // counts_value.prefix.0 += 1;
-        // counts_value.suffix.0.insert(&Did::new("did:plc:blah".to_string()).unwrap());
-        // assert!(counts_value.records() > 0);
-        // assert!(counts_value.dids().estimate() > 0);
     }
 });

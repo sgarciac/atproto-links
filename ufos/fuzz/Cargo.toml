@@ -16,6 +16,9 @@ path = ".."
 [dependencies.jetstream]
 path = "../../jetstream"
 
+[target.'cfg(not(target_env = "msvc"))'.dependencies]
+tikv-jemallocator = "0.6.0"
+
 [[bin]]
 name = "counts_value"
 path = "fuzz_targets/counts_value.rs"

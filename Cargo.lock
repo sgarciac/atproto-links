@@ -3816,6 +3816,7 @@ version = "0.0.0"
 dependencies = [
  "jetstream",
  "libfuzzer-sys",
+ "tikv-jemallocator",
  "ufos",
 ]
 
