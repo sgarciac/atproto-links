@@ -11,13 +11,13 @@ use tokio::sync::mpsc::{channel, Receiver, Sender};
 use crate::error::{BatchInsertError, FirehoseEventError};
 use crate::{DeleteAccount, EventBatch, UFOsCommit};
 
-const MAX_BATCHED_RECORDS: usize = 128; // *non-blocking* limit. drops oldest batched record per collection once reached.
-const MAX_ACCOUNT_REMOVES: usize = 1024; // hard limit, extremely unlikely to reach, but just in case
-const MAX_BATCHED_COLLECTIONS: usize = 64; // hard limit, MAX_BATCHED_RECORDS applies per-collection
-const MIN_BATCH_SPAN_SECS: f64 = 2.; // breathe
-const MAX_BATCH_SPAN_SECS: f64 = 60.; // hard limit, pause consumer if we're unable to send by now
-const SEND_TIMEOUT_S: f64 = 15.; // if the channel is blocked longer than this, something is probably up
-const BATCH_QUEUE_SIZE: usize = 1; // nearly-rendez-vous
+pub const MAX_BATCHED_RECORDS: usize = 128; // *non-blocking* limit. drops oldest batched record per collection once reached.
+pub const MAX_ACCOUNT_REMOVES: usize = 1024; // hard limit, extremely unlikely to reach, but just in case
+pub const MAX_BATCHED_COLLECTIONS: usize = 64; // hard limit, MAX_BATCHED_RECORDS applies per-collection
+pub const MIN_BATCH_SPAN_SECS: f64 = 2.; // breathe
+pub const MAX_BATCH_SPAN_SECS: f64 = 60.; // hard limit, pause consumer if we're unable to send by now
+pub const SEND_TIMEOUT_S: f64 = 15.; // if the channel is blocked longer than this, something is probably up
+pub const BATCH_QUEUE_SIZE: usize = 1; // nearly-rendez-vous
 
 pub type LimitedBatch = EventBatch<MAX_BATCHED_RECORDS>;
 
@@ -28,7 +28,7 @@ struct CurrentBatch {
 }
 
 #[derive(Debug)]
-struct Batcher {
+pub struct Batcher {
     jetstream_receiver: JetstreamReceiver,
     batch_sender: Sender<LimitedBatch>,
     current_batch: CurrentBatch,
@@ -66,7 +66,7 @@ pub async fn consume(
 }
 
 impl Batcher {
-    fn new(jetstream_receiver: JetstreamReceiver, batch_sender: Sender<LimitedBatch>) -> Self {
+    pub fn new(jetstream_receiver: JetstreamReceiver, batch_sender: Sender<LimitedBatch>) -> Self {
         Self {
             jetstream_receiver,
             batch_sender,
@@ -74,7 +74,7 @@ impl Batcher {
         }
     }
 
-    async fn run(&mut self) -> anyhow::Result<()> {
+    pub async fn run(&mut self) -> anyhow::Result<()> {
         loop {
             if let Some(event) = self.jetstream_receiver.recv().await {
                 self.handle_event(event).await?

@@ -1,6 +1,7 @@
 pub mod consumer;
 pub mod db_types;
 pub mod error;
+pub mod file_consumer;
 pub mod server;
 pub mod storage;
 pub mod storage_fjall;

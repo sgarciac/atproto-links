@@ -659,7 +659,7 @@ impl MemWriter {
 
         log::warn!("about to loop....");
         for (i, kv) in timelies.enumerate() {
-            // log::warn!("loop {i}...");
+            log::warn!("loop {i} {kv:?}...");
             if i >= rollup_limit {
                 break;
             }

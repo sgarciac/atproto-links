@@ -49,7 +49,6 @@ pub enum EncodingError {
 }
 
 fn bincode_conf() -> impl Config {
-    log::trace!("bincode conf");
     standard()
         .with_big_endian()
         .with_fixed_int_encoding()

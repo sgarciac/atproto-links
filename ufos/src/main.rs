@@ -1,8 +1,9 @@
 use clap::Parser;
 use std::path::PathBuf;
 use ufos::consumer;
+use ufos::file_consumer;
 use ufos::error::StorageError;
-use ufos::server;
+// use ufos::server;
 use jetstream::events::Cursor;
 use ufos::storage::{StorageWhatever, StoreReader, StoreWriter};
 use ufos::storage_fjall::FjallStorage;
@@ -45,6 +46,9 @@ struct Args {
     /// DEBUG: use an in-memory store instead of fjall
     #[arg(long, action)]
     in_mem: bool,
+    /// DEBUG: interpret jetstream as a file fixture
+    #[arg(long, action)]
+    jetstream_fixture: bool,
 }
 
 // #[tokio::main(flavor = "current_thread")] // TODO: move this to config via args
@@ -61,7 +65,7 @@ async fn main() -> anyhow::Result<()> {
             args.jetstream_force,
             Default::default(),
         )?;
-        go(args.jetstream, args.pause_writer, read_store, write_store, cursor).await?;
+        go(args.jetstream, args.jetstream_fixture, args.pause_writer, read_store, write_store, cursor).await?;
     } else {
         let (read_store, write_store, cursor) = FjallStorage::init(
             args.data,
@@ -69,7 +73,7 @@ async fn main() -> anyhow::Result<()> {
             args.jetstream_force,
             Default::default(),
         )?;
-        go(args.jetstream, args.pause_writer, read_store, write_store, cursor).await?;
+        go(args.jetstream, args.jetstream_fixture, args.pause_writer, read_store, write_store, cursor).await?;
     }
 
     Ok(())
@@ -77,18 +81,19 @@ async fn main() -> anyhow::Result<()> {
 
 async fn go(
     jetstream: String,
+    jetstream_fixture: bool,
     pause_writer: bool,
-    read_store: impl StoreReader + 'static,
+    _read_store: impl StoreReader + 'static,
     mut write_store: impl StoreWriter + 'static,
     cursor: Option<Cursor>,
 ) -> anyhow::Result<()> {
-    println!("starting server with storage...");
-    let serving = server::serve(read_store);
+    // println!("starting server with storage...");
+    // let serving = server::serve(read_store);
 
-    let t1 = tokio::task::spawn(async {
-        let r = serving.await;
-        log::warn!("serving ended with: {r:?}");
-    });
+    // let t1 = tokio::task::spawn(async {
+    //     let r = serving.await;
+    //     log::warn!("serving ended with: {r:?}");
+    // });
 
     let t2: tokio::task::JoinHandle<anyhow::Result<()>> = tokio::task::spawn({
         async move {
@@ -97,8 +102,11 @@ async fn go(
                     "starting consumer with cursor: {cursor:?} from {:?} ago",
                     cursor.map(|c| c.elapsed())
                 );
-                let mut batches =
-                    consumer::consume(&jetstream, cursor, false).await?;
+                let mut batches = if jetstream_fixture {
+                    file_consumer::consume(jetstream.into()).await?
+                } else {
+                    consumer::consume(&jetstream, cursor, false).await?
+                };
 
                 log::info!("started consumer, got chan etc...");
 
@@ -142,7 +150,7 @@ async fn go(
 
     log::trace!("tasks running. waiting.");
     tokio::select! {
-        z = t1 => log::warn!("serve task ended: {z:?}"),
+        // z = t1 => log::warn!("serve task ended: {z:?}"),
         z = t2 => log::warn!("storage task ended: {z:?}"),
     };
 
