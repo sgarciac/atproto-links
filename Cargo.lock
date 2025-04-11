@@ -3814,6 +3814,8 @@ dependencies = [
 name = "ufos-fuzz"
 version = "0.0.0"
 dependencies = [
+ "bincode 2.0.1",
+ "cardinality-estimator",
  "jetstream",
  "libfuzzer-sys",
  "tikv-jemallocator",

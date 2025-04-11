@@ -9,12 +9,10 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-
-[dependencies.ufos]
-path = ".."
-
-[dependencies.jetstream]
-path = "../../jetstream"
+ufos = { path = ".." }
+jetstream = { path = "../../jetstream" }
+bincode = { version = "2.0.1", features = ["serde"] }
+cardinality-estimator = { version = "1.0.2", features = ["with_serde"] }
 
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 tikv-jemallocator = "0.6.0"
@@ -22,6 +20,20 @@ tikv-jemallocator = "0.6.0"
 [[bin]]
 name = "counts_value"
 path = "fuzz_targets/counts_value.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "estimated_dids_value"
+path = "fuzz_targets/estimated_dids_value.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "cardinality_estimator"
+path = "fuzz_targets/cardinality_estimator.rs"
 test = false
 doc = false
 bench = false
