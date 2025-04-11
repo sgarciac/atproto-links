@@ -211,10 +211,12 @@ pub struct EstimatedDidsValue(pub CardinalityEstimator<Did>);
 impl SerdeBytes for EstimatedDidsValue {}
 impl DbBytes for EstimatedDidsValue {
     fn to_db_bytes(&self) -> Result<Vec<u8>, EncodingError> {
-        SerdeBytes::to_bytes(self)
+        Ok(vec![1, 2, 3])
+        // SerdeBytes::to_bytes(self)
     }
-    fn from_db_bytes(bytes: &[u8]) -> Result<(Self, usize), EncodingError> {
-        SerdeBytes::from_bytes(bytes)
+    fn from_db_bytes(_bytes: &[u8]) -> Result<(Self, usize), EncodingError> {
+        Ok((Self(CardinalityEstimator::new()), 3))
+        // SerdeBytes::from_bytes(bytes)
     }
 }
 
@@ -398,6 +400,15 @@ mod test {
         let mut estimator = CardinalityEstimator::new();
         for i in 0..10 {
             estimator.insert(&Did::new(format!("did:plc:inze6wrmsm7pjl7yta3oig7{i}")).unwrap());
+        }
+        let original = CountsValue::new(123, estimator.clone());
+        let serialized = original.to_db_bytes()?;
+        let (restored, bytes_consumed) = CountsValue::from_db_bytes(&serialized)?;
+        assert_eq!(restored, original);
+        assert_eq!(bytes_consumed, serialized.len());
+
+        for i in 10..10_000 {
+            estimator.insert(&Did::new(format!("did:plc:inze6wrmsm7pjl7yta3oig{i}")).unwrap());
         }
         let original = CountsValue::new(123, estimator);
         let serialized = original.to_db_bytes()?;

@@ -17,11 +17,13 @@ pub trait StorageWhatever<R: StoreReader, W: StoreWriter, C> {
         Self: Sized;
 }
 
-pub trait StoreWriter {
+pub trait StoreWriter: Send + Sync {
     fn insert_batch<const LIMIT: usize>(
         &mut self,
         event_batch: EventBatch<LIMIT>,
     ) -> StorageResult<()>;
+
+    fn step_rollup(&mut self) -> StorageResult<usize>;
 
     fn trim_collection(&mut self, collection: &Nsid, limit: usize) -> StorageResult<()>;
 

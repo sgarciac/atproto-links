@@ -1,3 +1,8 @@
+use std::sync::Arc;
+use std::ops::Bound;
+
+use std::sync::RwLock;
+use std::sync::Mutex;
 use crate::db_types::{db_complete, DbBytes, DbStaticStr, StaticStr};
 use crate::error::StorageError;
 use crate::storage::{StorageResult, StorageWhatever, StoreReader, StoreWriter};
@@ -11,11 +16,13 @@ use crate::store_types::{
 };
 use crate::{CommitAction, ConsumerInfo, Did, EventBatch, Nsid, TopCollections, UFOsRecord};
 use async_trait::async_trait;
-use fjall::{Batch as FjallBatch, Config, Keyspace, PartitionCreateOptions, PartitionHandle};
 use jetstream::events::Cursor;
 use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::SystemTime;
+use lsm_tree::range::prefix_to_range;
+
 
 const MAX_BATCHED_CLEANUP_SIZE: usize = 1024; // try to commit progress for longer feeds
 const MAX_BATCHED_ACCOUNT_DELETE_RECORDS: usize = 1024;
@@ -88,10 +95,10 @@ const MAX_BATCHED_ROLLUP_COUNTS: usize = 256;
 /// TODO: moderation actions
 /// TODO: account privacy preferences. Might wait for the protocol-level (PDS-level?) stuff to land. Will probably do lazy fetching + caching on read.
 #[derive(Debug)]
-pub struct FjallStorage {}
+pub struct MemStorage {}
 
 #[derive(Debug, Default)]
-pub struct FjallConfig {
+pub struct MemConfig {
     /// drop the db when the storage is dropped
     ///
     /// this is only meant for tests
@@ -99,27 +106,169 @@ pub struct FjallConfig {
     pub temp: bool,
 }
 
-impl StorageWhatever<FjallReader, FjallWriter, FjallConfig> for FjallStorage {
-    fn init(
-        path: impl AsRef<Path>,
-        endpoint: String,
-        force_endpoint: bool,
-        _config: FjallConfig,
-    ) -> StorageResult<(FjallReader, FjallWriter, Option<Cursor>)> {
-        let keyspace = {
-            let config = Config::new(path);
+////////////
+////////////
+////////////
+////////////
+////////////
+////////////
 
-            #[cfg(not(test))]
-            let config = config.fsync_ms(Some(4_000));
+struct BatchSentinel {}
 
-            config.open()?
+#[derive(Clone)]
+struct MemKeyspace {
+    keyspace_guard: Arc<RwLock<BatchSentinel>>,
+}
+
+impl MemKeyspace {
+    pub fn open() -> Self {
+        Self { keyspace_guard: Arc::new(RwLock::new(BatchSentinel {})) }
+    }
+    pub fn open_partition(&self, _name: &str) -> StorageResult<MemPartion> {
+        Ok(MemPartion {
+            // name: name.to_string(),
+            keyspace_guard: self.keyspace_guard.clone(),
+            contents: Default::default(),
+        })
+    }
+    pub fn batch(&self) -> MemBatch {
+        MemBatch {
+            keyspace_guard: self.keyspace_guard.clone(),
+            tasks: Vec::new(),
+        }
+    }
+    pub fn instant(&self) -> () {}
+}
+
+enum BatchTask {
+    Insert {
+        p: MemPartion,
+        key: Vec<u8>,
+        val: Vec<u8>,
+    },
+    Remove {
+        p: MemPartion,
+        key: Vec<u8>,
+    },
+}
+struct MemBatch {
+    keyspace_guard: Arc<RwLock<BatchSentinel>>,
+    tasks: Vec<BatchTask>,
+}
+impl MemBatch {
+    pub fn insert(&mut self, p: &MemPartion, key: &[u8], val: &[u8]) {
+        self.tasks.push(BatchTask::Insert {
+            p: p.clone(),
+            key: key.to_vec(),
+            val: val.to_vec(),
+        });
+    }
+    pub fn remove(&mut self, p: &MemPartion, key: &[u8]) {
+        self.tasks.push(BatchTask::Remove {
+            p: p.clone(),
+            key: key.to_vec(),
+        });
+    }
+    pub fn len(&self) -> usize {
+        self.tasks.len()
+    }
+    pub fn commit(&mut self) -> StorageResult<()> {
+        let _guard = self.keyspace_guard.write().unwrap();
+        for task in &mut self.tasks {
+            match task {
+                BatchTask::Insert { p, key, val } =>
+                    p.contents
+                        .try_lock()
+                        .unwrap()
+                        .insert(key.to_vec(), val.to_vec()),
+                BatchTask::Remove { p, key } =>
+                    p.contents
+                        .try_lock()
+                        .unwrap()
+                        .remove(key),
+            };
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone)]
+struct MemPartion {
+    // name: String,
+    keyspace_guard: Arc<RwLock<BatchSentinel>>,
+    contents: Arc<Mutex<BTreeMap<Vec<u8>, Vec<u8>>>>,
+}
+impl MemPartion {
+    pub fn get(&self, key: &[u8]) -> StorageResult<Option<Vec<u8>>> {
+        let _guard = self.keyspace_guard.read().unwrap();
+        Ok(self.contents
+            .lock()
+            .unwrap()
+            .get(key)
+            .cloned())
+    }
+    pub fn prefix(&self, pre: &[u8]) -> Vec<StorageResult<(Vec<u8>, Vec<u8>)>> {
+        // let prefix_bytes = prefix.to_db_bytes()?;
+        let (_, Bound::Excluded(range_end)) = prefix_to_range(&pre) else {
+            panic!("bad range thing");
         };
 
-        let global = keyspace.open_partition("global", PartitionCreateOptions::default())?;
-        let feeds = keyspace.open_partition("feeds", PartitionCreateOptions::default())?;
-        let records = keyspace.open_partition("records", PartitionCreateOptions::default())?;
-        let rollups = keyspace.open_partition("rollups", PartitionCreateOptions::default())?;
-        let queues = keyspace.open_partition("queues", PartitionCreateOptions::default())?;
+        return self.range(pre.to_vec()..range_end.to_vec()).into()
+    }
+    pub fn range(&self, r: std::ops::Range<Vec<u8>>) -> Vec<StorageResult<(Vec<u8>, Vec<u8>)>> {
+        let _guard = self.keyspace_guard.read().unwrap();
+        self.contents
+            .lock()
+            .unwrap()
+            .range(r)
+            .map(|(k, v)| Ok((k.clone(), v.clone())))
+            .collect()
+    }
+    pub fn insert(&self, key: &[u8], val: &[u8]) -> StorageResult<()> {
+        let _guard = self.keyspace_guard.read().unwrap();
+        self.contents
+            .lock()
+            .unwrap()
+            .insert(key.to_vec(), val.to_vec());
+        Ok(())
+    }
+    // pub fn remove(&self, key: &[u8]) -> StorageResult<()> {
+    //     let _guard = self.keyspace_guard.read().unwrap();
+    //     self.contents
+    //         .lock()
+    //         .unwrap()
+    //         .remove(key);
+    //     Ok(())
+    // }
+    pub fn snapshot_at(&self, _instant: ()) -> Self {
+        self.clone()
+    }
+    pub fn snapshot(&self) -> Self {
+        self.clone()
+    }
+}
+
+////////////
+////////////
+////////////
+////////////
+////////////
+////////////
+
+impl StorageWhatever<MemReader, MemWriter, MemConfig> for MemStorage {
+    fn init(
+        _path: impl AsRef<Path>,
+        endpoint: String,
+        force_endpoint: bool,
+        _config: MemConfig,
+    ) -> StorageResult<(MemReader, MemWriter, Option<Cursor>)> {
+        let keyspace = MemKeyspace::open();
+
+        let global = keyspace.open_partition("global")?;
+        let feeds = keyspace.open_partition("feeds")?;
+        let records = keyspace.open_partition("records")?;
+        let rollups = keyspace.open_partition("rollups")?;
+        let queues = keyspace.open_partition("queues")?;
 
         let js_cursor = get_static_neu::<JetstreamCursorKey, JetstreamCursorValue>(&global)?;
 
@@ -152,14 +301,14 @@ impl StorageWhatever<FjallReader, FjallWriter, FjallConfig> for FjallStorage {
             insert_static_neu::<NewRollupCursorKey>(&global, Cursor::from_start())?;
         }
 
-        let reader = FjallReader {
+        let reader = MemReader {
             keyspace: keyspace.clone(),
             global: global.clone(),
             feeds: feeds.clone(),
             records: records.clone(),
             rollups: rollups.clone(),
         };
-        let writer = FjallWriter {
+        let writer = MemWriter {
             keyspace,
             global,
             feeds,
@@ -171,33 +320,33 @@ impl StorageWhatever<FjallReader, FjallWriter, FjallConfig> for FjallStorage {
     }
 }
 
-type FjallRKV = fjall::Result<(fjall::Slice, fjall::Slice)>;
+type MemRKV = StorageResult<(Vec<u8>, Vec<u8>)>;
 
 #[derive(Clone)]
-pub struct FjallReader {
-    keyspace: Keyspace,
-    global: PartitionHandle,
-    feeds: PartitionHandle,
-    records: PartitionHandle,
-    rollups: PartitionHandle,
+pub struct MemReader {
+    keyspace: MemKeyspace,
+    global: MemPartion,
+    feeds: MemPartion,
+    records: MemPartion,
+    rollups: MemPartion,
 }
 
 /// An iterator that knows how to skip over deleted/invalidated records
 struct RecordIterator {
-    db_iter: Box<dyn Iterator<Item = FjallRKV>>,
-    records: PartitionHandle,
+    db_iter: Box<dyn Iterator<Item = MemRKV>>,
+    records: MemPartion,
     limit: usize,
     fetched: usize,
 }
 impl RecordIterator {
     pub fn new(
-        feeds: &PartitionHandle,
-        records: PartitionHandle,
+        feeds: &MemPartion,
+        records: MemPartion,
         collection: &Nsid,
         limit: usize,
     ) -> StorageResult<Self> {
         let prefix = NsidRecordFeedKey::from_prefix_to_db_bytes(collection)?;
-        let db_iter = feeds.prefix(prefix).rev();
+        let db_iter = feeds.prefix(&prefix).into_iter().rev();
         Ok(Self {
             db_iter: Box::new(db_iter),
             records,
@@ -205,13 +354,13 @@ impl RecordIterator {
             fetched: 0,
         })
     }
-    fn get_record(&self, db_next: FjallRKV) -> StorageResult<Option<UFOsRecord>> {
+    fn get_record(&self, db_next: MemRKV) -> StorageResult<Option<UFOsRecord>> {
         let (key_bytes, val_bytes) = db_next?;
         let feed_key = db_complete::<NsidRecordFeedKey>(&key_bytes)?;
         let feed_val = db_complete::<NsidRecordFeedVal>(&val_bytes)?;
         let location_key: RecordLocationKey = (&feed_key, &feed_val).into();
 
-        let Some(location_val_bytes) = self.records.get(location_key.to_db_bytes()?)? else {
+        let Some(location_val_bytes) = self.records.get(&location_key.to_db_bytes()?)? else {
             // record was deleted (hopefully)
             return Ok(None);
         };
@@ -264,16 +413,13 @@ impl Iterator for RecordIterator {
     }
 }
 
-impl FjallReader {
+impl MemReader {
     fn get_storage_stats(&self) -> StorageResult<serde_json::Value> {
         let rollup_cursor =
             get_static_neu::<NewRollupCursorKey, NewRollupCursorValue>(&self.global)?
                 .map(|c| c.to_raw_u64());
 
         Ok(serde_json::json!({
-            "keyspace_disk_space": self.keyspace.disk_space(),
-            "keyspace_journal_count": self.keyspace.journal_count(),
-            "keyspace_sequence": self.keyspace.instant(),
             "rollup_cursor": rollup_cursor,
         }))
     }
@@ -429,23 +575,23 @@ impl FjallReader {
 }
 
 #[async_trait]
-impl StoreReader for FjallReader {
+impl StoreReader for MemReader {
     async fn get_storage_stats(&self) -> StorageResult<serde_json::Value> {
         let s = self.clone();
-        tokio::task::spawn_blocking(move || FjallReader::get_storage_stats(&s)).await?
+        tokio::task::spawn_blocking(move || MemReader::get_storage_stats(&s)).await?
     }
     async fn get_consumer_info(&self) -> StorageResult<ConsumerInfo> {
         let s = self.clone();
-        tokio::task::spawn_blocking(move || FjallReader::get_consumer_info(&s)).await?
+        tokio::task::spawn_blocking(move || MemReader::get_consumer_info(&s)).await?
     }
     async fn get_top_collections(&self) -> Result<TopCollections, StorageError> {
         let s = self.clone();
-        tokio::task::spawn_blocking(move || FjallReader::get_top_collections(&s)).await?
+        tokio::task::spawn_blocking(move || MemReader::get_top_collections(&s)).await?
     }
     async fn get_counts_by_collection(&self, collection: &Nsid) -> StorageResult<(u64, u64)> {
         let s = self.clone();
         let collection = collection.clone();
-        tokio::task::spawn_blocking(move || FjallReader::get_counts_by_collection(&s, &collection))
+        tokio::task::spawn_blocking(move || MemReader::get_counts_by_collection(&s, &collection))
             .await?
     }
     async fn get_records_by_collections(
@@ -456,22 +602,22 @@ impl StoreReader for FjallReader {
         let s = self.clone();
         let collections = collections.to_vec();
         tokio::task::spawn_blocking(move || {
-            FjallReader::get_records_by_collections(&s, &collections, limit)
+            MemReader::get_records_by_collections(&s, &collections, limit)
         })
         .await?
     }
 }
 
-pub struct FjallWriter {
-    keyspace: Keyspace,
-    global: PartitionHandle,
-    feeds: PartitionHandle,
-    records: PartitionHandle,
-    rollups: PartitionHandle,
-    queues: PartitionHandle,
+pub struct MemWriter {
+    keyspace: MemKeyspace,
+    global: MemPartion,
+    feeds: MemPartion,
+    records: MemPartion,
+    rollups: MemPartion,
+    queues: MemPartion,
 }
 
-impl FjallWriter {
+impl MemWriter {
     fn rollup_delete_account(
         &mut self,
         cursor: Cursor,
@@ -489,7 +635,7 @@ impl FjallWriter {
 
     fn rollup_live_counts(
         &mut self,
-        timelies: impl Iterator<Item = Result<(fjall::Slice, fjall::Slice), fjall::Error>>,
+        timelies: impl Iterator<Item = Result<(Vec<u8>, Vec<u8>), StorageError>>,
         cursor_exclusive_limit: Option<Cursor>,
         rollup_limit: usize,
     ) -> StorageResult<usize> {
@@ -529,7 +675,7 @@ impl FjallWriter {
                 break;
             }
 
-            batch.remove(&self.rollups, key_bytes);
+            batch.remove(&self.rollups, &key_bytes);
             let val = db_complete::<CountsValue>(&val_bytes)
                     .inspect_err(|e| log::warn!("rlc: val: {e:?}"))?;
             counts_by_rollup
@@ -596,7 +742,7 @@ impl FjallWriter {
             assert_eq!(n, tripppin.len());
             assert_eq!(counts.prefix, and_back.prefix);
             assert_eq!(counts.dids().estimate(), and_back.dids().estimate());
-            if counts.records() > 20_000_000 {
+            if counts.records() > 20000000 {
                 panic!("COUNTS maybe wtf? {counts:?}")
             }
             // assert_eq!(rolled, and_back);
@@ -610,7 +756,7 @@ impl FjallWriter {
             assert_eq!(n, tripppin.len());
             assert_eq!(rolled.prefix, and_back.prefix);
             assert_eq!(rolled.dids().estimate(), and_back.dids().estimate());
-            if rolled.records() > 20_000_000 {
+            if rolled.records() > 20000000 {
                 panic!("maybe wtf? {rolled:?}")
             }
             // assert_eq!(rolled, and_back);
@@ -630,7 +776,7 @@ impl FjallWriter {
     }
 }
 
-impl StoreWriter for FjallWriter {
+impl StoreWriter for MemWriter {
     fn insert_batch<const LIMIT: usize>(
         &mut self,
         event_batch: EventBatch<LIMIT>,
@@ -658,8 +804,8 @@ impl StoreWriter for FjallWriter {
                             (&commit.did, &commit.rkey, commit.rev.as_str()).into();
                         batch.insert(
                             &self.feeds,
-                            feed_key.to_db_bytes()?,
-                            feed_val.to_db_bytes()?,
+                            &feed_key.to_db_bytes()?,
+                            &feed_val.to_db_bytes()?,
                         );
 
 
@@ -694,8 +840,8 @@ impl StoreWriter for FjallWriter {
 
         batch.insert(
             &self.global,
-            DbStaticStr::<JetstreamCursorKey>::default().to_db_bytes()?,
-            latest.to_db_bytes()?,
+            &DbStaticStr::<JetstreamCursorKey>::default().to_db_bytes()?,
+            &latest.to_db_bytes()?,
         );
 
         batch.commit()?;
@@ -712,13 +858,13 @@ impl StoreWriter for FjallWriter {
         // timelies
         let live_counts_range = LiveCountsKey::range_from_cursor(rollup_cursor)
             .inspect_err(|e| log::warn!("live counts range: {e:?}"))?;
-        let mut timely_iter = self.rollups.range(live_counts_range).peekable();
+        let mut timely_iter = self.rollups.range(live_counts_range).into_iter().peekable();
 
         let timely_next_cursor = timely_iter
             .peek_mut()
             .map(|kv| -> StorageResult<Cursor> {
                 match kv {
-                    Err(e) => Err(std::mem::replace(e, fjall::Error::Poisoned))?,
+                    Err(e) => Err(std::mem::replace(e, StorageError::Stolen))?,
                     Ok((key_bytes, _)) => {
                         let key = db_complete::<LiveCountsKey>(key_bytes)
                             .inspect_err(|e| log::warn!("failed getting key for next timely: {e:?}"))?;
@@ -736,6 +882,7 @@ impl StoreWriter for FjallWriter {
         let next_delete = self
             .queues
             .range(delete_accounts_range)
+            .into_iter()
             .next()
             .transpose()
             .inspect_err(|e| log::warn!("range for next delete: {e:?}"))?
@@ -791,7 +938,7 @@ impl StoreWriter for FjallWriter {
 
         let prefix = NsidRecordFeedKey::from_prefix_to_db_bytes(collection)?;
         let mut found = 0;
-        for kv in self.feeds.prefix(prefix).rev() {
+        for kv in self.feeds.prefix(&prefix).into_iter().rev() {
             let (key_bytes, val_bytes) = kv?;
             let feed_key = db_complete::<NsidRecordFeedKey>(&key_bytes)?;
             let feed_val = db_complete::<NsidRecordFeedVal>(&val_bytes)?;
@@ -846,9 +993,9 @@ impl StoreWriter for FjallWriter {
         let mut records_deleted = 0;
         let mut batch = self.keyspace.batch();
         let prefix = RecordLocationKey::from_prefix_to_db_bytes(did)?;
-        for kv in self.records.prefix(prefix) {
+        for kv in self.records.prefix(&prefix) {
             let (key_bytes, _) = kv?;
-            batch.remove(&self.records, key_bytes);
+            batch.remove(&self.records, &key_bytes);
             records_deleted += 1;
             if batch.len() >= MAX_BATCHED_ACCOUNT_DELETE_RECORDS {
                 batch.commit()?;
@@ -861,7 +1008,7 @@ impl StoreWriter for FjallWriter {
 }
 
 /// Get a value from a fixed key
-fn get_static_neu<K: StaticStr, V: DbBytes>(global: &PartitionHandle) -> StorageResult<Option<V>> {
+fn get_static_neu<K: StaticStr, V: DbBytes>(global: &MemPartion) -> StorageResult<Option<V>> {
     let key_bytes = DbStaticStr::<K>::default().to_db_bytes()?;
     let value = global
         .get(&key_bytes)?
@@ -872,7 +1019,7 @@ fn get_static_neu<K: StaticStr, V: DbBytes>(global: &PartitionHandle) -> Storage
 
 /// Get a value from a fixed key
 fn get_snapshot_static_neu<K: StaticStr, V: DbBytes>(
-    global: &fjall::Snapshot,
+    global: &MemPartion,
 ) -> StorageResult<Option<V>> {
     let key_bytes = DbStaticStr::<K>::default().to_db_bytes()?;
     let value = global
@@ -884,7 +1031,7 @@ fn get_snapshot_static_neu<K: StaticStr, V: DbBytes>(
 
 /// Set a value to a fixed key
 fn insert_static_neu<K: StaticStr>(
-    global: &PartitionHandle,
+    global: &MemPartion,
     value: impl DbBytes,
 ) -> StorageResult<()> {
     let key_bytes = DbStaticStr::<K>::default().to_db_bytes()?;
@@ -895,8 +1042,8 @@ fn insert_static_neu<K: StaticStr>(
 
 /// Set a value to a fixed key
 fn insert_batch_static_neu<K: StaticStr>(
-    batch: &mut FjallBatch,
-    global: &PartitionHandle,
+    batch: &mut MemBatch,
+    global: &MemPartion,
     value: impl DbBytes,
 ) -> StorageResult<()> {
     let key_bytes = DbStaticStr::<K>::default().to_db_bytes()?;
@@ -913,20 +1060,6 @@ pub struct StorageInfo {
     pub global_approximate_len: usize,
 }
 
-////////// temp stuff to remove:
-
-// fn summarize_batch<const LIMIT: usize>(batch: &EventBatch<LIMIT>) -> String {
-//     format!(
-//         "batch of {: >3} samples from {: >4} records in {: >2} collections from ~{: >4} DIDs, {} acct removes, cursor {: <12?}",
-//         batch.total_records(),
-//         batch.total_seen(),
-//         batch.total_collections(),
-//         batch.estimate_dids(),
-//         batch.account_removes(),
-//         batch.latest_cursor().map(|c| c.elapsed()),
-//     )
-// }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -935,12 +1068,12 @@ mod tests {
     use jetstream::exports::Cid;
     use serde_json::value::RawValue;
 
-    fn fjall_db() -> (FjallReader, FjallWriter) {
-        let (read, write, _) = FjallStorage::init(
+    fn fjall_db() -> (MemReader, MemWriter) {
+        let (read, write, _) = MemStorage::init(
             tempfile::tempdir().unwrap(),
             "offline test (no real jetstream endpoint)".to_string(),
             false,
-            FjallConfig { temp: true },
+            MemConfig { temp: true },
         )
         .unwrap();
         (read, write)

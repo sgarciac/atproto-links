@@ -11,7 +11,7 @@ cardinality-estimator = { version = "1.0.2", features = ["with_serde"] }
 clap = { version = "4.5.31", features = ["derive"] }
 dropshot = "0.16.0"
 env_logger = "0.11.7"
-fjall = { version = "2.8.0", features = ["lz4", "bytes"] }
+fjall = { version = "2.8.0", features = ["lz4"] }
 jetstream = { path = "../jetstream" }
 log = "0.4.26"
 lsm-tree = "2.6.6"

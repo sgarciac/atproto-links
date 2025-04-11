@@ -4,6 +4,7 @@ pub mod error;
 pub mod server;
 pub mod storage;
 pub mod storage_fjall;
+pub mod storage_mem;
 pub mod store_types;
 
 use crate::error::BatchInsertError;
