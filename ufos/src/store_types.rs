@@ -211,12 +211,12 @@ pub struct EstimatedDidsValue(pub CardinalityEstimator<Did>);
 impl SerdeBytes for EstimatedDidsValue {}
 impl DbBytes for EstimatedDidsValue {
     fn to_db_bytes(&self) -> Result<Vec<u8>, EncodingError> {
-        Ok(vec![1, 2, 3])
-        // SerdeBytes::to_bytes(self)
+        // Ok(vec![1, 2, 3])
+        SerdeBytes::to_bytes(self)
     }
-    fn from_db_bytes(_bytes: &[u8]) -> Result<(Self, usize), EncodingError> {
-        Ok((Self(CardinalityEstimator::new()), 3))
-        // SerdeBytes::from_bytes(bytes)
+    fn from_db_bytes(bytes: &[u8]) -> Result<(Self, usize), EncodingError> {
+        // Ok((Self(CardinalityEstimator::new()), 3))
+        SerdeBytes::from_bytes(bytes)
     }
 }
 

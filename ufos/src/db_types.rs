@@ -120,10 +120,15 @@ impl<P: DbBytes, S: DbBytes> DbBytes for DbConcat<P, S> {
         Self: Sized,
     {
         let (prefix, eaten) = P::from_db_bytes(bytes)?;
+        assert!(eaten <= bytes.len(), "eaten({}) < len({})", eaten, bytes.len());
         let Some(suffix_bytes) = bytes.get(eaten..) else {
             return Err(EncodingError::DecodeMissingSuffix);
         };
+        if suffix_bytes.len() == 0 {
+            return Err(EncodingError::DecodeMissingSuffix);
+        };
         let (suffix, also_eaten) = S::from_db_bytes(suffix_bytes)?;
+        assert!(also_eaten <= suffix_bytes.len(), "also eaten({}) < suffix len({})", also_eaten, suffix_bytes.len());
         Ok((Self { prefix, suffix }, eaten + also_eaten))
     }
 }
