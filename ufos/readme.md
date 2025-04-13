@@ -122,3 +122,18 @@ ipv6 is having some trouble. but also maybe there's a deadlock somewhere
 ```bash
 sudo sysctl -w net.ipv6.conf.default.disable_ipv6=1
 ```
+
+
+---
+
+## fuzzing
+
+got bit by https://github.com/cloudflare/cardinality-estimator/pull/12, so now we have a fuzz target.
+
+install cargo-fuzz and then
+
+```bash
+RUSTFLAGS="-Z sanitizer=address" cargo +nightly fuzz run cardinality_estimator
+```
+
+to fuzz the counts value things
