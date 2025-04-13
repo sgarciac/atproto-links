@@ -88,7 +88,7 @@ impl Batcher {
         if let Some(earliest) = &self.current_batch.initial_cursor {
             if event.cursor.duration_since(earliest)? > Duration::from_secs_f64(MAX_BATCH_SPAN_SECS)
             {
-                self.send_current_batch_now().await?;
+                self.send_current_batch_now(false).await?;
             }
         } else {
             self.current_batch.initial_cursor = Some(event.cursor);
@@ -118,8 +118,7 @@ impl Batcher {
             if event.cursor.duration_since(earliest)?.as_secs_f64() > MIN_BATCH_SPAN_SECS
                 && self.batch_sender.capacity() == BATCH_QUEUE_SIZE
             {
-                log::info!("queue empty: immediately sending batch.");
-                self.send_current_batch_now().await?;
+                self.send_current_batch_now(true).await?;
             }
         }
         Ok(())
@@ -133,7 +132,7 @@ impl Batcher {
         );
 
         if let Err(BatchInsertError::BatchFull(commit)) = optimistic_res {
-            self.send_current_batch_now().await?;
+            self.send_current_batch_now(false).await?;
             self.current_batch.batch.insert_commit_by_nsid(
                 &collection,
                 commit,
@@ -148,7 +147,7 @@ impl Batcher {
 
     async fn handle_delete_account(&mut self, did: Did, cursor: Cursor) -> anyhow::Result<()> {
         if self.current_batch.batch.account_removes.len() >= MAX_ACCOUNT_REMOVES {
-            self.send_current_batch_now().await?;
+            self.send_current_batch_now(false).await?;
         }
         self.current_batch
             .batch
@@ -159,9 +158,9 @@ impl Batcher {
 
     // holds up all consumer progress until it can send to the channel
     // use this when the current batch is too full to add more to it
-    async fn send_current_batch_now(&mut self) -> anyhow::Result<()> {
+    async fn send_current_batch_now(&mut self, small: bool) -> anyhow::Result<()> {
         log::info!(
-            "attempting to send batch now (capacity: {})",
+            "attempting to send batch now (small? {small}, capacity: {})",
             self.batch_sender.capacity()
         );
         let current = mem::take(&mut self.current_batch);

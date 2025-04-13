@@ -497,8 +497,6 @@ impl FjallWriter {
         // we *could* read+write every single batch to rollup.. but their merge is associative so
         // ...so save the db some work up front? is this worth it? who knows...
 
-        log::warn!("sup!!!");
-
         #[derive(Eq, Hash, PartialEq)]
         enum Rollup {
             Hourly(HourTruncatedCursor),
@@ -511,16 +509,13 @@ impl FjallWriter {
         let mut last_cursor = Cursor::from_start();
         let mut counts_by_rollup: HashMap<(Nsid, Rollup), CountsValue> = HashMap::new();
 
-        log::warn!("about to loop....");
         for (i, kv) in timelies.enumerate() {
-            // log::warn!("loop {i}...");
             if i >= rollup_limit {
                 break;
             }
 
             let (key_bytes, val_bytes) = kv?;
-            let key = db_complete::<LiveCountsKey>(&key_bytes)
-                    .inspect_err(|e| log::warn!("rlc: key: {e:?}"))?;
+            let key = db_complete::<LiveCountsKey>(&key_bytes)?;
 
             if cursor_exclusive_limit
                 .map(|limit| key.cursor() > limit)
@@ -530,8 +525,7 @@ impl FjallWriter {
             }
 
             batch.remove(&self.rollups, key_bytes);
-            let val = db_complete::<CountsValue>(&val_bytes)
-                    .inspect_err(|e| log::warn!("rlc: val: {e:?}"))?;
+            let val = db_complete::<CountsValue>(&val_bytes)?;
             counts_by_rollup
                 .entry((
                     key.collection().clone(),
@@ -554,41 +548,29 @@ impl FjallWriter {
             cursors_advanced += 1;
             last_cursor = key.cursor();
         }
-        log::warn!("done looping. looping cbr counts(?)..");
 
         for ((nsid, rollup), counts) in counts_by_rollup {
-            log::warn!("######################## cbr loop {nsid:?} {counts:?} ########################");
             let key_bytes = match rollup {
                 Rollup::Hourly(hourly_cursor) => {
                     let k = HourlyRollupKey::new(hourly_cursor, &nsid);
-                    log::info!("hrly k: {k:?}");
                     k.to_db_bytes()?
                 }
                 Rollup::Weekly(weekly_cursor) => {
                     let k = WeeklyRollupKey::new(weekly_cursor, &nsid);
-                    log::info!("weekly k: {k:?}");
                     k.to_db_bytes()?
                 }
                 Rollup::AllTime => {
                     let k = AllTimeRollupKey::new(&nsid);
-                    log::info!("alltime k: {k:?}");
                     k.to_db_bytes()?
                 }
             };
-            // log::info!("key bytes: {key_bytes:?}");
             let mut rolled: CountsValue = self
                 .rollups
                 .get(&key_bytes)?
-                .inspect(|v| {
-                    let lax = CountsValue::from_db_bytes(v);
-                    log::info!("val: len={}, lax={lax:?} first32={:?}", v.len(), v.get(..32));
-                })
                 .as_deref()
                 .map(db_complete::<CountsValue>)
-                .transpose()
-                .inspect_err(|e| log::warn!("oooh did we break on the rolled thing? {e:?}"))?
+                .transpose()?
                 .unwrap_or_default();
-
 
             // try to round-trip before inserting, for funsies
             let tripppin = counts.to_db_bytes()?;
@@ -599,33 +581,14 @@ impl FjallWriter {
             if counts.records() > 20_000_000 {
                 panic!("COUNTS maybe wtf? {counts:?}")
             }
-            // assert_eq!(rolled, and_back);
-
 
             rolled.merge(&counts);
-
-            // try to round-trip before inserting, for funsies
-            let tripppin = rolled.to_db_bytes()?;
-            let (and_back, n) = CountsValue::from_db_bytes(&tripppin)?;
-            assert_eq!(n, tripppin.len());
-            assert_eq!(rolled.prefix, and_back.prefix);
-            assert_eq!(rolled.dids().estimate(), and_back.dids().estimate());
-            if rolled.records() > 20_000_000 {
-                panic!("maybe wtf? {rolled:?}")
-            }
-            // assert_eq!(rolled, and_back);
-
             batch.insert(&self.rollups, &key_bytes, &rolled.to_db_bytes()?);
         }
 
-        log::warn!("done cbr loop.");
-
-        insert_batch_static_neu::<NewRollupCursorKey>(&mut batch, &self.global, last_cursor)
-            .inspect_err(|e| log::warn!("insert neu: {e:?}"))?;
+        insert_batch_static_neu::<NewRollupCursorKey>(&mut batch, &self.global, last_cursor)?;
 
         batch.commit()?;
-
-        log::warn!("ok finished rlc stuff. huh.");
         Ok(cursors_advanced)
     }
 }
@@ -661,7 +624,6 @@ impl StoreWriter for FjallWriter {
                             feed_key.to_db_bytes()?,
                             feed_val.to_db_bytes()?,
                         );
-
 
                         let location_val: RecordLocationVal =
                             (commit.cursor, commit.rev.as_str(), put_action).into();
@@ -702,16 +664,14 @@ impl StoreWriter for FjallWriter {
         Ok(())
     }
 
-     fn step_rollup(&mut self) -> StorageResult<usize> {
+    fn step_rollup(&mut self) -> StorageResult<usize> {
         let rollup_cursor =
             get_static_neu::<NewRollupCursorKey, NewRollupCursorValue>(&self.global)?.ok_or(
                 StorageError::BadStateError("Could not find current rollup cursor".to_string()),
-            )
-            .inspect_err(|e| log::warn!("failed getting rollup cursor: {e:?}"))?;
+            )?;
 
         // timelies
-        let live_counts_range = LiveCountsKey::range_from_cursor(rollup_cursor)
-            .inspect_err(|e| log::warn!("live counts range: {e:?}"))?;
+        let live_counts_range = LiveCountsKey::range_from_cursor(rollup_cursor)?;
         let mut timely_iter = self.rollups.range(live_counts_range).peekable();
 
         let timely_next_cursor = timely_iter
@@ -720,14 +680,12 @@ impl StoreWriter for FjallWriter {
                 match kv {
                     Err(e) => Err(std::mem::replace(e, fjall::Error::Poisoned))?,
                     Ok((key_bytes, _)) => {
-                        let key = db_complete::<LiveCountsKey>(key_bytes)
-                            .inspect_err(|e| log::warn!("failed getting key for next timely: {e:?}"))?;
+                        let key = db_complete::<LiveCountsKey>(key_bytes)?;
                         Ok(key.cursor())
                     }
                 }
             })
-            .transpose()
-            .inspect_err(|e| log::warn!("something about timely: {e:?}"))?;
+            .transpose()?;
 
         // delete accounts
         let delete_accounts_range =
@@ -737,15 +695,12 @@ impl StoreWriter for FjallWriter {
             .queues
             .range(delete_accounts_range)
             .next()
-            .transpose()
-            .inspect_err(|e| log::warn!("range for next delete: {e:?}"))?
+            .transpose()?
             .map(|(key_bytes, val_bytes)| {
                 db_complete::<DeleteAccountQueueKey>(&key_bytes)
-                    .inspect_err(|e| log::warn!("failed inside next delete thing????: {e:?}"))
                     .map(|k| (k.suffix, key_bytes, val_bytes))
             })
-            .transpose()
-            .inspect_err(|e| log::warn!("failed getting next delete: {e:?}"))?;
+            .transpose()?;
 
         let cursors_stepped = match (timely_next_cursor, next_delete) {
             (
@@ -757,20 +712,16 @@ impl StoreWriter for FjallWriter {
                         timely_iter,
                         Some(delete_cursor),
                         MAX_BATCHED_ROLLUP_COUNTS,
-                    )
-                    .inspect_err(|e| log::warn!("rolling up live counts: {e:?}"))?
+                    )?
                 } else {
-                    self.rollup_delete_account(delete_cursor, &delete_key_bytes, &delete_val_bytes)
-                    .inspect_err(|e| log::warn!("deleting acocunt: {e:?}"))?
+                    self.rollup_delete_account(delete_cursor, &delete_key_bytes, &delete_val_bytes)?
                 }
             }
             (Some(_), None) => {
-                self.rollup_live_counts(timely_iter, None, MAX_BATCHED_ROLLUP_COUNTS)
-                    .inspect_err(|e| log::warn!("rolling up (lasjdflkajs): {e:?}"))?
+                self.rollup_live_counts(timely_iter, None, MAX_BATCHED_ROLLUP_COUNTS)?
             }
             (None, Some((delete_cursor, delete_key_bytes, delete_val_bytes))) => {
-                self.rollup_delete_account(delete_cursor, &delete_key_bytes, &delete_val_bytes)
-                    .inspect_err(|e| log::warn!("deleting acocunt other branch: {e:?}"))?
+                self.rollup_delete_account(delete_cursor, &delete_key_bytes, &delete_val_bytes)?
             }
             (None, None) => 0,
         };

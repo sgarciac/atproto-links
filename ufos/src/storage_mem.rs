@@ -1,8 +1,6 @@
-use std::sync::Arc;
 use std::ops::Bound;
+use std::sync::Arc;
 
-use std::sync::RwLock;
-use std::sync::Mutex;
 use crate::db_types::{db_complete, DbBytes, DbStaticStr, StaticStr};
 use crate::error::StorageError;
 use crate::storage::{StorageResult, StorageWhatever, StoreReader, StoreWriter};
@@ -17,12 +15,13 @@ use crate::store_types::{
 use crate::{CommitAction, ConsumerInfo, Did, EventBatch, Nsid, TopCollections, UFOsRecord};
 use async_trait::async_trait;
 use jetstream::events::Cursor;
-use std::collections::HashMap;
-use std::collections::BTreeMap;
-use std::path::Path;
-use std::time::SystemTime;
 use lsm_tree::range::prefix_to_range;
-
+use std::collections::BTreeMap;
+use std::collections::HashMap;
+use std::path::Path;
+use std::sync::Mutex;
+use std::sync::RwLock;
+use std::time::SystemTime;
 
 const MAX_BATCHED_CLEANUP_SIZE: usize = 1024; // try to commit progress for longer feeds
 const MAX_BATCHED_ACCOUNT_DELETE_RECORDS: usize = 1024;
@@ -122,7 +121,9 @@ struct MemKeyspace {
 
 impl MemKeyspace {
     pub fn open() -> Self {
-        Self { keyspace_guard: Arc::new(RwLock::new(BatchSentinel {})) }
+        Self {
+            keyspace_guard: Arc::new(RwLock::new(BatchSentinel {})),
+        }
     }
     pub fn open_partition(&self, _name: &str) -> StorageResult<MemPartion> {
         Ok(MemPartion {
@@ -137,7 +138,9 @@ impl MemKeyspace {
             tasks: Vec::new(),
         }
     }
-    pub fn instant(&self) -> () {}
+    pub fn instant(&self) -> u64 {
+        1
+    }
 }
 
 enum BatchTask {
@@ -176,16 +179,12 @@ impl MemBatch {
         let _guard = self.keyspace_guard.write().unwrap();
         for task in &mut self.tasks {
             match task {
-                BatchTask::Insert { p, key, val } =>
-                    p.contents
-                        .try_lock()
-                        .unwrap()
-                        .insert(key.to_vec(), val.to_vec()),
-                BatchTask::Remove { p, key } =>
-                    p.contents
-                        .try_lock()
-                        .unwrap()
-                        .remove(key),
+                BatchTask::Insert { p, key, val } => p
+                    .contents
+                    .try_lock()
+                    .unwrap()
+                    .insert(key.to_vec(), val.to_vec()),
+                BatchTask::Remove { p, key } => p.contents.try_lock().unwrap().remove(key),
             };
         }
         Ok(())
@@ -201,19 +200,15 @@ struct MemPartion {
 impl MemPartion {
     pub fn get(&self, key: &[u8]) -> StorageResult<Option<Vec<u8>>> {
         let _guard = self.keyspace_guard.read().unwrap();
-        Ok(self.contents
-            .lock()
-            .unwrap()
-            .get(key)
-            .cloned())
+        Ok(self.contents.lock().unwrap().get(key).cloned())
     }
     pub fn prefix(&self, pre: &[u8]) -> Vec<StorageResult<(Vec<u8>, Vec<u8>)>> {
         // let prefix_bytes = prefix.to_db_bytes()?;
-        let (_, Bound::Excluded(range_end)) = prefix_to_range(&pre) else {
+        let (_, Bound::Excluded(range_end)) = prefix_to_range(pre) else {
             panic!("bad range thing");
         };
 
-        return self.range(pre.to_vec()..range_end.to_vec()).into()
+        return self.range(pre.to_vec()..range_end.to_vec());
     }
     pub fn range(&self, r: std::ops::Range<Vec<u8>>) -> Vec<StorageResult<(Vec<u8>, Vec<u8>)>> {
         let _guard = self.keyspace_guard.read().unwrap();
@@ -240,7 +235,7 @@ impl MemPartion {
     //         .remove(key);
     //     Ok(())
     // }
-    pub fn snapshot_at(&self, _instant: ()) -> Self {
+    pub fn snapshot_at(&self, _instant: u64) -> Self {
         self.clone()
     }
     pub fn snapshot(&self) -> Self {
@@ -666,7 +661,7 @@ impl MemWriter {
 
             let (key_bytes, val_bytes) = kv?;
             let key = db_complete::<LiveCountsKey>(&key_bytes)
-                    .inspect_err(|e| log::warn!("rlc: key: {e:?}"))?;
+                .inspect_err(|e| log::warn!("rlc: key: {e:?}"))?;
 
             if cursor_exclusive_limit
                 .map(|limit| key.cursor() > limit)
@@ -677,7 +672,7 @@ impl MemWriter {
 
             batch.remove(&self.rollups, &key_bytes);
             let val = db_complete::<CountsValue>(&val_bytes)
-                    .inspect_err(|e| log::warn!("rlc: val: {e:?}"))?;
+                .inspect_err(|e| log::warn!("rlc: val: {e:?}"))?;
             counts_by_rollup
                 .entry((
                     key.collection().clone(),
@@ -703,7 +698,9 @@ impl MemWriter {
         log::warn!("done looping. looping cbr counts(?)..");
 
         for ((nsid, rollup), counts) in counts_by_rollup {
-            log::warn!("######################## cbr loop {nsid:?} {counts:?} ########################");
+            log::warn!(
+                "######################## cbr loop {nsid:?} {counts:?} ########################"
+            );
             let key_bytes = match rollup {
                 Rollup::Hourly(hourly_cursor) => {
                     let k = HourlyRollupKey::new(hourly_cursor, &nsid);
@@ -727,14 +724,17 @@ impl MemWriter {
                 .get(&key_bytes)?
                 .inspect(|v| {
                     let lax = CountsValue::from_db_bytes(v);
-                    log::info!("val: len={}, lax={lax:?} first32={:?}", v.len(), v.get(..32));
+                    log::info!(
+                        "val: len={}, lax={lax:?} first32={:?}",
+                        v.len(),
+                        v.get(..32)
+                    );
                 })
                 .as_deref()
                 .map(db_complete::<CountsValue>)
                 .transpose()
                 .inspect_err(|e| log::warn!("oooh did we break on the rolled thing? {e:?}"))?
                 .unwrap_or_default();
-
 
             // try to round-trip before inserting, for funsies
             let tripppin = counts.to_db_bytes()?;
@@ -746,7 +746,6 @@ impl MemWriter {
                 panic!("COUNTS maybe wtf? {counts:?}")
             }
             // assert_eq!(rolled, and_back);
-
 
             rolled.merge(&counts);
 
@@ -808,7 +807,6 @@ impl StoreWriter for MemWriter {
                             &feed_val.to_db_bytes()?,
                         );
 
-
                         let location_val: RecordLocationVal =
                             (commit.cursor, commit.rev.as_str(), put_action).into();
                         batch.insert(
@@ -848,12 +846,13 @@ impl StoreWriter for MemWriter {
         Ok(())
     }
 
-     fn step_rollup(&mut self) -> StorageResult<usize> {
+    fn step_rollup(&mut self) -> StorageResult<usize> {
         let rollup_cursor =
-            get_static_neu::<NewRollupCursorKey, NewRollupCursorValue>(&self.global)?.ok_or(
-                StorageError::BadStateError("Could not find current rollup cursor".to_string()),
-            )
-            .inspect_err(|e| log::warn!("failed getting rollup cursor: {e:?}"))?;
+            get_static_neu::<NewRollupCursorKey, NewRollupCursorValue>(&self.global)?
+                .ok_or(StorageError::BadStateError(
+                    "Could not find current rollup cursor".to_string(),
+                ))
+                .inspect_err(|e| log::warn!("failed getting rollup cursor: {e:?}"))?;
 
         // timelies
         let live_counts_range = LiveCountsKey::range_from_cursor(rollup_cursor)
@@ -866,8 +865,9 @@ impl StoreWriter for MemWriter {
                 match kv {
                     Err(e) => Err(std::mem::replace(e, StorageError::Stolen))?,
                     Ok((key_bytes, _)) => {
-                        let key = db_complete::<LiveCountsKey>(key_bytes)
-                            .inspect_err(|e| log::warn!("failed getting key for next timely: {e:?}"))?;
+                        let key = db_complete::<LiveCountsKey>(key_bytes).inspect_err(|e| {
+                            log::warn!("failed getting key for next timely: {e:?}")
+                        })?;
                         Ok(key.cursor())
                     }
                 }
@@ -908,17 +908,15 @@ impl StoreWriter for MemWriter {
                     .inspect_err(|e| log::warn!("rolling up live counts: {e:?}"))?
                 } else {
                     self.rollup_delete_account(delete_cursor, &delete_key_bytes, &delete_val_bytes)
-                    .inspect_err(|e| log::warn!("deleting acocunt: {e:?}"))?
+                        .inspect_err(|e| log::warn!("deleting acocunt: {e:?}"))?
                 }
             }
-            (Some(_), None) => {
-                self.rollup_live_counts(timely_iter, None, MAX_BATCHED_ROLLUP_COUNTS)
-                    .inspect_err(|e| log::warn!("rolling up (lasjdflkajs): {e:?}"))?
-            }
-            (None, Some((delete_cursor, delete_key_bytes, delete_val_bytes))) => {
-                self.rollup_delete_account(delete_cursor, &delete_key_bytes, &delete_val_bytes)
-                    .inspect_err(|e| log::warn!("deleting acocunt other branch: {e:?}"))?
-            }
+            (Some(_), None) => self
+                .rollup_live_counts(timely_iter, None, MAX_BATCHED_ROLLUP_COUNTS)
+                .inspect_err(|e| log::warn!("rolling up (lasjdflkajs): {e:?}"))?,
+            (None, Some((delete_cursor, delete_key_bytes, delete_val_bytes))) => self
+                .rollup_delete_account(delete_cursor, &delete_key_bytes, &delete_val_bytes)
+                .inspect_err(|e| log::warn!("deleting acocunt other branch: {e:?}"))?,
             (None, None) => 0,
         };
 
@@ -1030,10 +1028,7 @@ fn get_snapshot_static_neu<K: StaticStr, V: DbBytes>(
 }
 
 /// Set a value to a fixed key
-fn insert_static_neu<K: StaticStr>(
-    global: &MemPartion,
-    value: impl DbBytes,
-) -> StorageResult<()> {
+fn insert_static_neu<K: StaticStr>(global: &MemPartion, value: impl DbBytes) -> StorageResult<()> {
     let key_bytes = DbStaticStr::<K>::default().to_db_bytes()?;
     let value_bytes = value.to_db_bytes()?;
     global.insert(&key_bytes, &value_bytes)?;

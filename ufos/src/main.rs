@@ -1,10 +1,10 @@
 use clap::Parser;
+use jetstream::events::Cursor;
 use std::path::PathBuf;
 use ufos::consumer;
-use ufos::file_consumer;
 use ufos::error::StorageError;
-// use ufos::server;
-use jetstream::events::Cursor;
+use ufos::file_consumer;
+use ufos::server;
 use ufos::storage::{StorageWhatever, StoreReader, StoreWriter};
 use ufos::storage_fjall::FjallStorage;
 use ufos::storage_mem::MemStorage;
@@ -65,7 +65,15 @@ async fn main() -> anyhow::Result<()> {
             args.jetstream_force,
             Default::default(),
         )?;
-        go(args.jetstream, args.jetstream_fixture, args.pause_writer, read_store, write_store, cursor).await?;
+        go(
+            args.jetstream,
+            args.jetstream_fixture,
+            args.pause_writer,
+            read_store,
+            write_store,
+            cursor,
+        )
+        .await?;
     } else {
         let (read_store, write_store, cursor) = FjallStorage::init(
             args.data,
@@ -73,7 +81,15 @@ async fn main() -> anyhow::Result<()> {
             args.jetstream_force,
             Default::default(),
         )?;
-        go(args.jetstream, args.jetstream_fixture, args.pause_writer, read_store, write_store, cursor).await?;
+        go(
+            args.jetstream,
+            args.jetstream_fixture,
+            args.pause_writer,
+            read_store,
+            write_store,
+            cursor,
+        )
+        .await?;
     }
 
     Ok(())
@@ -83,17 +99,17 @@ async fn go(
     jetstream: String,
     jetstream_fixture: bool,
     pause_writer: bool,
-    _read_store: impl StoreReader + 'static,
+    read_store: impl StoreReader + 'static,
     mut write_store: impl StoreWriter + 'static,
     cursor: Option<Cursor>,
 ) -> anyhow::Result<()> {
-    // println!("starting server with storage...");
-    // let serving = server::serve(read_store);
+    println!("starting server with storage...");
+    let serving = server::serve(read_store);
 
-    // let t1 = tokio::task::spawn(async {
-    //     let r = serving.await;
-    //     log::warn!("serving ended with: {r:?}");
-    // });
+    let t1 = tokio::task::spawn(async {
+        let r = serving.await;
+        log::warn!("serving ended with: {r:?}");
+    });
 
     let t2: tokio::task::JoinHandle<anyhow::Result<()>> = tokio::task::spawn({
         async move {
@@ -108,23 +124,17 @@ async fn go(
                     consumer::consume(&jetstream, cursor, false).await?
                 };
 
-                log::info!("started consumer, got chan etc...");
-
                 tokio::task::spawn_blocking(move || {
                     while let Some(event_batch) = batches.blocking_recv() {
-                        log::info!("got batch, putting to storage...");
                         write_store.insert_batch(event_batch)?;
-                        log::info!("inserted batch...");
-                        write_store.step_rollup()
+                        write_store
+                            .step_rollup()
                             .inspect_err(|e| log::error!("laksjdfl: {e:?}"))?;
-                        log::info!("inserted and stepped rollup. ready for next...");
                     }
-                    log::warn!("??????????????????????");
                     Ok::<(), StorageError>(())
                 })
                 .await??;
 
-                // let r = storage.receive(batches).await;
                 log::warn!("storage.receive ended with");
             } else {
                 log::info!("not starting jetstream or the write loop.");
@@ -133,33 +143,10 @@ async fn go(
         }
     });
 
-    // let t3 = tokio::task::spawn(async move {
-    //     if !args.pause_rw {
-    //         let r = storage.rw_loop().await;
-    //         log::warn!("storage.rw_loop ended with: {r:?}");
-    //     } else {
-    //         log::info!("not starting rw loop.");
-    //     }
-    // });
-
-    // tokio::select! {
-    //     // v = serving => eprintln!("serving ended: {v:?}"),
-    //     v = storage.receive(batches) => eprintln!("storage consumer ended: {v:?}"),
-    //     v = storage.rw_loop() => eprintln!("storage rw-loop ended: {v:?}"),
-    // };
-
-    log::trace!("tasks running. waiting.");
     tokio::select! {
-        // z = t1 => log::warn!("serve task ended: {z:?}"),
+        z = t1 => log::warn!("serve task ended: {z:?}"),
         z = t2 => log::warn!("storage task ended: {z:?}"),
     };
-
-    // t1.await?;
-    // log::trace!("serve task ended.");
-    // t2.await??;
-    // log::trace!("storage receive task ended.");
-    // // t3.await?;
-    // // log::trace!("storage rw task ended.");
 
     println!("bye!");
 

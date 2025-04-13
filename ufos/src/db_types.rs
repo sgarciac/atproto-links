@@ -1,4 +1,3 @@
-use std::fmt;
 use crate::{Cursor, Did, Nsid, RecordKey};
 use bincode::{
     config::{standard, Config},
@@ -9,6 +8,7 @@ use bincode::{
     error::{DecodeError, EncodeError},
 };
 use lsm_tree::range::prefix_to_range;
+use std::fmt;
 use std::marker::PhantomData;
 use std::ops::{Bound, Range};
 use thiserror::Error;
@@ -119,15 +119,25 @@ impl<P: DbBytes, S: DbBytes> DbBytes for DbConcat<P, S> {
         Self: Sized,
     {
         let (prefix, eaten) = P::from_db_bytes(bytes)?;
-        assert!(eaten <= bytes.len(), "eaten({}) < len({})", eaten, bytes.len());
+        assert!(
+            eaten <= bytes.len(),
+            "eaten({}) < len({})",
+            eaten,
+            bytes.len()
+        );
         let Some(suffix_bytes) = bytes.get(eaten..) else {
             return Err(EncodingError::DecodeMissingSuffix);
         };
-        if suffix_bytes.len() == 0 {
+        if suffix_bytes.is_empty() {
             return Err(EncodingError::DecodeMissingSuffix);
         };
         let (suffix, also_eaten) = S::from_db_bytes(suffix_bytes)?;
-        assert!(also_eaten <= suffix_bytes.len(), "also eaten({}) < suffix len({})", also_eaten, suffix_bytes.len());
+        assert!(
+            also_eaten <= suffix_bytes.len(),
+            "also eaten({}) < suffix len({})",
+            also_eaten,
+            suffix_bytes.len()
+        );
         Ok((Self { prefix, suffix }, eaten + also_eaten))
     }
 }
@@ -192,23 +202,22 @@ where
     T: BincodeEncode + BincodeDecode<()> + UseBincodePlz + Sized + std::fmt::Debug,
 {
     fn to_db_bytes(&self) -> Result<Vec<u8>, EncodingError> {
-        log::info!("bincode to_db_bytes: {self:?}");
         Ok(encode_to_vec(self, bincode_conf())?)
     }
     fn from_db_bytes(bytes: &[u8]) -> Result<(Self, usize), EncodingError> {
-        log::info!("bincode from_db_bytes...");
         Ok(decode_from_slice(bytes, bincode_conf())?)
     }
 }
 
 /// helper trait: impl on a type to get helpers to implement DbBytes
 pub trait SerdeBytes: serde::Serialize + for<'a> serde::Deserialize<'a> {
-    fn to_bytes(&self) -> Result<Vec<u8>, EncodingError> where Self: std::fmt::Debug {
-        log::info!("bincode serde to_db_bytes: {self:?}");
+    fn to_bytes(&self) -> Result<Vec<u8>, EncodingError>
+    where
+        Self: std::fmt::Debug,
+    {
         Ok(bincode::serde::encode_to_vec(self, bincode_conf())?)
     }
     fn from_bytes(bytes: &[u8]) -> Result<(Self, usize), EncodingError> {
-        log::info!("bincode serde from_db_bytes...");
         Ok(bincode::serde::decode_from_slice(bytes, bincode_conf())?)
     }
 }
@@ -217,11 +226,9 @@ pub trait SerdeBytes: serde::Serialize + for<'a> serde::Deserialize<'a> {
 
 impl DbBytes for Vec<u8> {
     fn to_db_bytes(&self) -> Result<Vec<u8>, EncodingError> {
-        log::info!("bincode vec to_db_bytes");
         Ok(self.to_vec())
     }
     fn from_db_bytes(bytes: &[u8]) -> Result<(Self, usize), EncodingError> {
-        log::info!("bincode vec from_db_bytes...");
         Ok((bytes.to_owned(), bytes.len()))
     }
 }
@@ -258,39 +265,33 @@ impl DbBytes for String {
 
 impl DbBytes for Did {
     fn from_db_bytes(bytes: &[u8]) -> Result<(Self, usize), EncodingError> {
-        log::info!("bincode did dbbytes from_db_bytes...");
         let (s, n) = decode_from_slice(bytes, bincode_conf())?;
         let me = Self::new(s).map_err(EncodingError::BadAtriumStringType)?;
         Ok((me, n))
     }
     fn to_db_bytes(&self) -> Result<Vec<u8>, EncodingError> {
-        log::info!("bincode did dbbytes to_db_bytes {self:?}");
         Ok(encode_to_vec(self.as_ref(), bincode_conf())?)
     }
 }
 
 impl DbBytes for Nsid {
     fn from_db_bytes(bytes: &[u8]) -> Result<(Self, usize), EncodingError> {
-        log::info!("bincode nsid dbbytes from_db_bytes...");
         let (s, n) = decode_from_slice(bytes, bincode_conf())?;
         let me = Self::new(s).map_err(EncodingError::BadAtriumStringType)?;
         Ok((me, n))
     }
     fn to_db_bytes(&self) -> Result<Vec<u8>, EncodingError> {
-        log::info!("bincode nsid dbbytes to_db_bytes {self:?}");
         Ok(encode_to_vec(self.as_ref(), bincode_conf())?)
     }
 }
 
 impl DbBytes for RecordKey {
     fn from_db_bytes(bytes: &[u8]) -> Result<(Self, usize), EncodingError> {
-        log::info!("bincode rkey dbbytes from_db_bytes...");
         let (s, n) = decode_from_slice(bytes, bincode_conf())?;
         let me = Self::new(s).map_err(EncodingError::BadAtriumStringType)?;
         Ok((me, n))
     }
     fn to_db_bytes(&self) -> Result<Vec<u8>, EncodingError> {
-        log::info!("bincode rkey dbbytes to_db_bytes {self:?}");
         Ok(encode_to_vec(self.as_ref(), bincode_conf())?)
     }
 }
@@ -404,7 +405,6 @@ mod test {
             (1234, "", "empty string"),
             (789, "aaaaa", "string and cursor"),
         ] {
-            eprintln!("{desc}");
             let original = TwoThings {
                 prefix: Cursor::from_raw_u64(tired_prefix),
                 suffix: sad_suffix.to_string(),
