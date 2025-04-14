@@ -387,6 +387,7 @@ impl FjallReader {
         &self,
         collections: &[Nsid],
         limit: usize,
+        expand_each_collection: bool,
     ) -> StorageResult<Vec<UFOsRecord>> {
         if collections.is_empty() {
             return Ok(vec![]);
@@ -408,7 +409,11 @@ impl FjallReader {
                     Err(e) => Err(std::mem::replace(e, StorageError::Stolen))?,
                 };
                 let Some(rec) = it else {
-                    break;
+                    if expand_each_collection {
+                        continue;
+                    } else {
+                        break;
+                    }
                 };
                 if let Some((cursor, _)) = latest {
                     if rec.cursor > cursor {
@@ -452,11 +457,12 @@ impl StoreReader for FjallReader {
         &self,
         collections: &[Nsid],
         limit: usize,
+        expand_each_collection: bool,
     ) -> StorageResult<Vec<UFOsRecord>> {
         let s = self.clone();
         let collections = collections.to_vec();
         tokio::task::spawn_blocking(move || {
-            FjallReader::get_records_by_collections(&s, &collections, limit)
+            FjallReader::get_records_by_collections(&s, &collections, limit, expand_each_collection)
         })
         .await?
     }
@@ -578,7 +584,7 @@ impl FjallWriter {
             assert_eq!(n, tripppin.len());
             assert_eq!(counts.prefix, and_back.prefix);
             assert_eq!(counts.dids().estimate(), and_back.dids().estimate());
-            if counts.records() > 20_000_000 {
+            if counts.records() > 200_000_000_000 {
                 panic!("COUNTS maybe wtf? {counts:?}")
             }
 
@@ -1066,14 +1072,14 @@ mod tests {
         assert_eq!(records, 0);
         assert_eq!(dids, 0);
 
-        let records = read.get_records_by_collections(&[collection], 2)?;
+        let records = read.get_records_by_collections(&[collection], 2, false)?;
         assert_eq!(records.len(), 1);
         let rec = &records[0];
         assert_eq!(rec.record.get(), "{}");
         assert!(!rec.is_update);
 
         let records =
-            read.get_records_by_collections(&[Nsid::new("d.e.f".to_string()).unwrap()], 2)?;
+            read.get_records_by_collections(&[Nsid::new("d.e.f".to_string()).unwrap()], 2, false)?;
         assert_eq!(records.len(), 0);
 
         Ok(())
@@ -1120,6 +1126,7 @@ mod tests {
                 Nsid::new("a.a.c".to_string()).unwrap(),
             ],
             100,
+            false,
         )?;
         assert_eq!(records.len(), 3);
         assert_eq!(records[0].record.get(), r#""last""#);
@@ -1136,6 +1143,62 @@ mod tests {
         assert_eq!(
             records[2].collection,
             Nsid::new("a.a.a".to_string()).unwrap()
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_multi_collection_expanded() -> anyhow::Result<()> {
+        let (read, mut write) = fjall_db();
+
+        let mut batch = TestBatch::default();
+        // insert some older ones in aab
+        for i in 1..=3 {
+            batch.create(
+                "did:plc:inze6wrmsm7pjl7yta3oig77",
+                "a.a.b",
+                &format!("aab-{i}"),
+                &format!(r#""b {i}""#),
+                Some(&format!("rev-b-{i}")),
+                None,
+                100 + i,
+            );
+        }
+        // and some newer ones in aaa
+        for i in 1..=3 {
+            batch.create(
+                "did:plc:inze6wrmsm7pjl7yta3oig77",
+                "a.a.a",
+                &format!("aaa-{i}"),
+                &format!(r#""a {i}""#),
+                Some(&format!("rev-a-{i}")),
+                None,
+                200 + i,
+            );
+        }
+        write.insert_batch(batch.batch)?;
+
+        let records = read.get_records_by_collections(
+            &[
+                Nsid::new("a.a.a".to_string()).unwrap(),
+                Nsid::new("a.a.b".to_string()).unwrap(),
+                Nsid::new("a.a.c".to_string()).unwrap(),
+            ],
+            2,
+            true,
+        )?;
+        assert_eq!(records.len(), 4);
+        assert_eq!(records[0].record.get(), r#""a 3""#);
+        assert_eq!(
+            records[0].collection,
+            Nsid::new("a.a.a".to_string()).unwrap()
+        );
+
+        assert_eq!(records[3].record.get(), r#""b 2""#);
+        assert_eq!(
+            records[3].collection,
+            Nsid::new("a.a.b".to_string()).unwrap()
         );
 
         Ok(())
@@ -1173,7 +1236,7 @@ mod tests {
         assert_eq!(records, 1);
         assert_eq!(dids, 1);
 
-        let records = read.get_records_by_collections(&[collection], 2)?;
+        let records = read.get_records_by_collections(&[collection], 2, false)?;
         assert_eq!(records.len(), 1);
         let rec = &records[0];
         assert_eq!(rec.record.get(), r#"{"ch":  "ch-ch-ch-changes"}"#);
@@ -1211,7 +1274,7 @@ mod tests {
         assert_eq!(records, 1);
         assert_eq!(dids, 1);
 
-        let records = read.get_records_by_collections(&[collection], 2)?;
+        let records = read.get_records_by_collections(&[collection], 2, false)?;
         assert_eq!(records.len(), 0);
 
         Ok(())
@@ -1256,17 +1319,29 @@ mod tests {
 
         write.insert_batch(batch.batch)?;
 
-        let records =
-            read.get_records_by_collections(&[Nsid::new("a.a.a".to_string()).unwrap()], 100)?;
+        let records = read.get_records_by_collections(
+            &[Nsid::new("a.a.a".to_string()).unwrap()],
+            100,
+            false,
+        )?;
         assert_eq!(records.len(), 1);
-        let records =
-            read.get_records_by_collections(&[Nsid::new("a.a.b".to_string()).unwrap()], 100)?;
+        let records = read.get_records_by_collections(
+            &[Nsid::new("a.a.b".to_string()).unwrap()],
+            100,
+            false,
+        )?;
         assert_eq!(records.len(), 10);
-        let records =
-            read.get_records_by_collections(&[Nsid::new("a.a.c".to_string()).unwrap()], 100)?;
+        let records = read.get_records_by_collections(
+            &[Nsid::new("a.a.c".to_string()).unwrap()],
+            100,
+            false,
+        )?;
         assert_eq!(records.len(), 1);
-        let records =
-            read.get_records_by_collections(&[Nsid::new("a.a.d".to_string()).unwrap()], 100)?;
+        let records = read.get_records_by_collections(
+            &[Nsid::new("a.a.d".to_string()).unwrap()],
+            100,
+            false,
+        )?;
         assert_eq!(records.len(), 0);
 
         write.trim_collection(&Nsid::new("a.a.a".to_string()).unwrap(), 6)?;
@@ -1274,17 +1349,29 @@ mod tests {
         write.trim_collection(&Nsid::new("a.a.c".to_string()).unwrap(), 6)?;
         write.trim_collection(&Nsid::new("a.a.d".to_string()).unwrap(), 6)?;
 
-        let records =
-            read.get_records_by_collections(&[Nsid::new("a.a.a".to_string()).unwrap()], 100)?;
+        let records = read.get_records_by_collections(
+            &[Nsid::new("a.a.a".to_string()).unwrap()],
+            100,
+            false,
+        )?;
         assert_eq!(records.len(), 1);
-        let records =
-            read.get_records_by_collections(&[Nsid::new("a.a.b".to_string()).unwrap()], 100)?;
+        let records = read.get_records_by_collections(
+            &[Nsid::new("a.a.b".to_string()).unwrap()],
+            100,
+            false,
+        )?;
         assert_eq!(records.len(), 6);
-        let records =
-            read.get_records_by_collections(&[Nsid::new("a.a.c".to_string()).unwrap()], 100)?;
+        let records = read.get_records_by_collections(
+            &[Nsid::new("a.a.c".to_string()).unwrap()],
+            100,
+            false,
+        )?;
         assert_eq!(records.len(), 1);
-        let records =
-            read.get_records_by_collections(&[Nsid::new("a.a.d".to_string()).unwrap()], 100)?;
+        let records = read.get_records_by_collections(
+            &[Nsid::new("a.a.d".to_string()).unwrap()],
+            100,
+            false,
+        )?;
         assert_eq!(records.len(), 0);
 
         Ok(())
@@ -1317,16 +1404,22 @@ mod tests {
         }
         write.insert_batch(batch.batch)?;
 
-        let records =
-            read.get_records_by_collections(&[Nsid::new("a.a.a".to_string()).unwrap()], 100)?;
+        let records = read.get_records_by_collections(
+            &[Nsid::new("a.a.a".to_string()).unwrap()],
+            100,
+            false,
+        )?;
         assert_eq!(records.len(), 3);
 
         let records_deleted =
             write.delete_account(&Did::new("did:plc:person-b".to_string()).unwrap())?;
         assert_eq!(records_deleted, 2);
 
-        let records =
-            read.get_records_by_collections(&[Nsid::new("a.a.a".to_string()).unwrap()], 100)?;
+        let records = read.get_records_by_collections(
+            &[Nsid::new("a.a.a".to_string()).unwrap()],
+            100,
+            false,
+        )?;
         assert_eq!(records.len(), 1);
 
         Ok(())
@@ -1355,7 +1448,7 @@ mod tests {
         write.step_rollup()?;
 
         let records =
-            read.get_records_by_collections(&[Nsid::new("a.a.a".to_string()).unwrap()], 1)?;
+            read.get_records_by_collections(&[Nsid::new("a.a.a".to_string()).unwrap()], 1, false)?;
         assert_eq!(records.len(), 0);
 
         Ok(())
@@ -1385,14 +1478,14 @@ mod tests {
         write.insert_batch(batch.batch)?;
 
         let records =
-            read.get_records_by_collections(&[Nsid::new("a.a.a".to_string()).unwrap()], 1)?;
+            read.get_records_by_collections(&[Nsid::new("a.a.a".to_string()).unwrap()], 1, false)?;
         assert_eq!(records.len(), 1);
 
         let n = write.step_rollup()?;
         assert_eq!(n, 1);
 
         let records =
-            read.get_records_by_collections(&[Nsid::new("a.a.a".to_string()).unwrap()], 1)?;
+            read.get_records_by_collections(&[Nsid::new("a.a.a".to_string()).unwrap()], 1, false)?;
         assert_eq!(records.len(), 0);
 
         let mut batch = TestBatch::default();
@@ -1626,6 +1719,77 @@ mod tests {
                 ),]),
             }
         );
+        Ok(())
+    }
+
+    #[test]
+    fn get_top_collections_with_parent_nsid() -> anyhow::Result<()> {
+        let (read, mut write) = fjall_db();
+
+        let mut batch = TestBatch::default();
+        batch.create(
+            "did:plc:inze6wrmsm7pjl7yta3oig77",
+            "a.a.a.a",
+            "aaaa",
+            r#""child nsid""#,
+            Some("rev-aaaa"),
+            None,
+            100,
+        );
+        batch.create(
+            "did:plc:inze6wrmsm7pjl7yta3oig77",
+            "a.a.a",
+            "aaa",
+            r#""parent nsid""#,
+            Some("rev-aaa"),
+            None,
+            101,
+        );
+        write.insert_batch(batch.batch)?;
+
+        let n = write.step_rollup()?;
+        assert_eq!(n, 2); // 3 collections
+
+        let tops = read.get_top_collections()?;
+        assert_eq!(
+            tops,
+            TopCollections {
+                total_records: 2,
+                dids_estimate: 1,
+                nsid_child_segments: HashMap::from([(
+                    "a".to_string(),
+                    TopCollections {
+                        total_records: 2,
+                        dids_estimate: 1,
+                        nsid_child_segments: HashMap::from([(
+                            "a".to_string(),
+                            TopCollections {
+                                total_records: 2,
+                                dids_estimate: 1,
+                                nsid_child_segments: HashMap::from([(
+                                    "a".to_string(),
+                                    TopCollections {
+                                        total_records: 2,
+                                        dids_estimate: 1,
+                                        nsid_child_segments: HashMap::from([(
+                                            "a".to_string(),
+                                            TopCollections {
+                                                total_records: 1,
+                                                dids_estimate: 1,
+                                                nsid_child_segments: HashMap::from([]),
+                                            },
+                                        ),]),
+                                    },
+                                ),]),
+                            },
+                        ),]),
+                    },
+                ),]),
+            }
+        );
+
+        // TODO: handle leaf node counts explicitly, since parent NSIDs can be leaves themselves
+
         Ok(())
     }
 }

@@ -61,22 +61,20 @@ async fn get_meta_info(ctx: RequestContext<Context>) -> OkCorsResponse<MetaInfo>
         consumer,
     })
 }
+fn to_multiple_nsids(s: &str) -> Result<Vec<Nsid>, String> {
+    let mut out = Vec::new();
+    for collection in s.split(',') {
+        let Ok(nsid) = Nsid::new(collection.to_string()) else {
+            return Err(format!("collection {collection:?} was not a valid NSID"));
+        };
+        out.push(nsid);
+    }
+    Ok(out)
+}
 
 #[derive(Debug, Deserialize, JsonSchema)]
-struct CollectionsQuery {
-    collection: String, // JsonSchema not implemented for Nsid :(
-}
-impl CollectionsQuery {
-    fn to_multiple_nsids(&self) -> Result<Vec<Nsid>, String> {
-        let mut out = Vec::with_capacity(self.collection.len());
-        for collection in self.collection.split(',') {
-            let Ok(nsid) = Nsid::new(collection.to_string()) else {
-                return Err(format!("collection {collection:?} was not a valid NSID"));
-            };
-            out.push(nsid);
-        }
-        Ok(out)
-    }
+struct RecordsCollectionsQuery {
+    collection: Option<String>, // JsonSchema not implemented for Nsid :(
 }
 #[derive(Debug, Serialize, JsonSchema)]
 struct ApiRecord {
@@ -105,19 +103,38 @@ impl From<UFOsRecord> for ApiRecord {
     method = GET,
     path = "/records",
 }]
-async fn get_records_by_collection(
+async fn get_records_by_collections(
     ctx: RequestContext<Context>,
-    collection_query: Query<CollectionsQuery>,
+    collection_query: Query<RecordsCollectionsQuery>,
 ) -> OkCorsResponse<Vec<ApiRecord>> {
     let Context { storage, .. } = ctx.context();
+    let mut limit = 42;
+    let query = collection_query.into_inner();
+    let collections = if let Some(provided_collection) = query.collection {
+        to_multiple_nsids(&provided_collection)
+            .map_err(|reason| HttpError::for_bad_request(None, reason))?
+    } else {
+        let all_collections_should_be_nsids: Vec<String> = storage
+            .get_top_collections()
+            .await
+            .map_err(|e| {
+                HttpError::for_internal_error(format!("failed to get top collections: {e:?}"))
+            })?
+            .into();
+        let mut all_collections = Vec::with_capacity(all_collections_should_be_nsids.len());
+        for raw_nsid in all_collections_should_be_nsids {
+            let nsid = Nsid::new(raw_nsid).map_err(|e| {
+                HttpError::for_internal_error(format!("failed to parse nsid: {e:?}"))
+            })?;
+            all_collections.push(nsid);
+        }
 
-    let collections = collection_query
-        .into_inner()
-        .to_multiple_nsids()
-        .map_err(|reason| HttpError::for_bad_request(None, reason))?;
+        limit = 12;
+        all_collections
+    };
 
     let records = storage
-        .get_records_by_collections(&collections, 100)
+        .get_records_by_collections(&collections, limit, true)
         .await
         .map_err(|e| HttpError::for_internal_error(e.to_string()))?
         .into_iter()
@@ -127,6 +144,10 @@ async fn get_records_by_collection(
     ok_cors(records)
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+struct TotalSeenCollectionsQuery {
+    collection: String, // JsonSchema not implemented for Nsid :(
+}
 #[derive(Debug, Serialize, JsonSchema)]
 struct TotalCounts {
     total_records: u64,
@@ -139,13 +160,12 @@ struct TotalCounts {
 }]
 async fn get_records_total_seen(
     ctx: RequestContext<Context>,
-    collection_query: Query<CollectionsQuery>,
+    collection_query: Query<TotalSeenCollectionsQuery>,
 ) -> OkCorsResponse<HashMap<String, TotalCounts>> {
     let Context { storage, .. } = ctx.context();
 
-    let collections = collection_query
-        .into_inner()
-        .to_multiple_nsids()
+    let query = collection_query.into_inner();
+    let collections = to_multiple_nsids(&query.collection)
         .map_err(|reason| HttpError::for_bad_request(None, reason))?;
 
     let mut seen_by_collection = HashMap::with_capacity(collections.len());
@@ -194,7 +214,7 @@ pub async fn serve(storage: impl StoreReader + 'static) -> Result<(), String> {
 
     api.register(get_openapi).unwrap();
     api.register(get_meta_info).unwrap();
-    api.register(get_records_by_collection).unwrap();
+    api.register(get_records_by_collections).unwrap();
     api.register(get_records_total_seen).unwrap();
     api.register(get_top_collections).unwrap();
 

@@ -227,9 +227,56 @@ pub struct TopCollections {
     nsid_child_segments: HashMap<String, TopCollections>,
 }
 
+// this is not safe from ~DOS
+// todo: remove this and just iterate the all-time rollups to get nsids? (or recent rollups?)
+impl From<TopCollections> for Vec<String> {
+    fn from(tc: TopCollections) -> Self {
+        let mut me = vec![];
+        for (segment, children) in tc.nsid_child_segments {
+            let child_segments: Self = children.into();
+            if child_segments.is_empty() {
+                me.push(segment);
+            } else {
+                for ch in child_segments {
+                    let nsid = format!("{segment}.{ch}");
+                    me.push(nsid);
+                }
+            }
+        }
+        me
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_top_collections_to_nsids() {
+        let empty_tc = TopCollections::default();
+        assert_eq!(Into::<Vec<String>>::into(empty_tc), Vec::<String>::new());
+
+        let tc = TopCollections {
+            nsid_child_segments: HashMap::from([
+                (
+                    "a".to_string(),
+                    TopCollections {
+                        nsid_child_segments: HashMap::from([
+                            ("b".to_string(), TopCollections::default()),
+                            ("c".to_string(), TopCollections::default()),
+                        ]),
+                        ..Default::default()
+                    },
+                ),
+                ("z".to_string(), TopCollections::default()),
+            ]),
+            ..Default::default()
+        };
+
+        let mut nsids: Vec<String> = tc.into();
+        nsids.sort();
+        assert_eq!(nsids, ["a.b", "a.c", "z"]);
+    }
 
     #[test]
     fn test_truncating_insert_truncates() -> anyhow::Result<()> {

@@ -44,5 +44,6 @@ pub trait StoreReader: Send + Sync {
         &self,
         collections: &[Nsid],
         limit: usize,
+        expand_each_collection: bool,
     ) -> StorageResult<Vec<UFOsRecord>>;
 }

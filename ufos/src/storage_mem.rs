@@ -528,6 +528,7 @@ impl MemReader {
         &self,
         collections: &[Nsid],
         limit: usize,
+        _expand_each_collection: bool,
     ) -> StorageResult<Vec<UFOsRecord>> {
         if collections.is_empty() {
             return Ok(vec![]);
@@ -593,11 +594,12 @@ impl StoreReader for MemReader {
         &self,
         collections: &[Nsid],
         limit: usize,
+        expand_each_collection: bool,
     ) -> StorageResult<Vec<UFOsRecord>> {
         let s = self.clone();
         let collections = collections.to_vec();
         tokio::task::spawn_blocking(move || {
-            MemReader::get_records_by_collections(&s, &collections, limit)
+            MemReader::get_records_by_collections(&s, &collections, limit, expand_each_collection)
         })
         .await?
     }
@@ -1243,14 +1245,14 @@ mod tests {
         assert_eq!(records, 0);
         assert_eq!(dids, 0);
 
-        let records = read.get_records_by_collections(&[collection], 2)?;
+        let records = read.get_records_by_collections(&[collection], 2, false)?;
         assert_eq!(records.len(), 1);
         let rec = &records[0];
         assert_eq!(rec.record.get(), "{}");
         assert!(!rec.is_update);
 
         let records =
-            read.get_records_by_collections(&[Nsid::new("d.e.f".to_string()).unwrap()], 2)?;
+            read.get_records_by_collections(&[Nsid::new("d.e.f".to_string()).unwrap()], 2, false)?;
         assert_eq!(records.len(), 0);
 
         Ok(())
@@ -1297,6 +1299,7 @@ mod tests {
                 Nsid::new("a.a.c".to_string()).unwrap(),
             ],
             100,
+            false,
         )?;
         assert_eq!(records.len(), 3);
         assert_eq!(records[0].record.get(), r#""last""#);
@@ -1350,7 +1353,7 @@ mod tests {
         assert_eq!(records, 1);
         assert_eq!(dids, 1);
 
-        let records = read.get_records_by_collections(&[collection], 2)?;
+        let records = read.get_records_by_collections(&[collection], 2, false)?;
         assert_eq!(records.len(), 1);
         let rec = &records[0];
         assert_eq!(rec.record.get(), r#"{"ch":  "ch-ch-ch-changes"}"#);
@@ -1388,7 +1391,7 @@ mod tests {
         assert_eq!(records, 1);
         assert_eq!(dids, 1);
 
-        let records = read.get_records_by_collections(&[collection], 2)?;
+        let records = read.get_records_by_collections(&[collection], 2, false)?;
         assert_eq!(records.len(), 0);
 
         Ok(())
@@ -1433,17 +1436,29 @@ mod tests {
 
         write.insert_batch(batch.batch)?;
 
-        let records =
-            read.get_records_by_collections(&[Nsid::new("a.a.a".to_string()).unwrap()], 100)?;
+        let records = read.get_records_by_collections(
+            &[Nsid::new("a.a.a".to_string()).unwrap()],
+            100,
+            false,
+        )?;
         assert_eq!(records.len(), 1);
-        let records =
-            read.get_records_by_collections(&[Nsid::new("a.a.b".to_string()).unwrap()], 100)?;
+        let records = read.get_records_by_collections(
+            &[Nsid::new("a.a.b".to_string()).unwrap()],
+            100,
+            false,
+        )?;
         assert_eq!(records.len(), 10);
-        let records =
-            read.get_records_by_collections(&[Nsid::new("a.a.c".to_string()).unwrap()], 100)?;
+        let records = read.get_records_by_collections(
+            &[Nsid::new("a.a.c".to_string()).unwrap()],
+            100,
+            false,
+        )?;
         assert_eq!(records.len(), 1);
-        let records =
-            read.get_records_by_collections(&[Nsid::new("a.a.d".to_string()).unwrap()], 100)?;
+        let records = read.get_records_by_collections(
+            &[Nsid::new("a.a.d".to_string()).unwrap()],
+            100,
+            false,
+        )?;
         assert_eq!(records.len(), 0);
 
         write.trim_collection(&Nsid::new("a.a.a".to_string()).unwrap(), 6)?;
@@ -1451,17 +1466,29 @@ mod tests {
         write.trim_collection(&Nsid::new("a.a.c".to_string()).unwrap(), 6)?;
         write.trim_collection(&Nsid::new("a.a.d".to_string()).unwrap(), 6)?;
 
-        let records =
-            read.get_records_by_collections(&[Nsid::new("a.a.a".to_string()).unwrap()], 100)?;
+        let records = read.get_records_by_collections(
+            &[Nsid::new("a.a.a".to_string()).unwrap()],
+            100,
+            false,
+        )?;
         assert_eq!(records.len(), 1);
-        let records =
-            read.get_records_by_collections(&[Nsid::new("a.a.b".to_string()).unwrap()], 100)?;
+        let records = read.get_records_by_collections(
+            &[Nsid::new("a.a.b".to_string()).unwrap()],
+            100,
+            false,
+        )?;
         assert_eq!(records.len(), 6);
-        let records =
-            read.get_records_by_collections(&[Nsid::new("a.a.c".to_string()).unwrap()], 100)?;
+        let records = read.get_records_by_collections(
+            &[Nsid::new("a.a.c".to_string()).unwrap()],
+            100,
+            false,
+        )?;
         assert_eq!(records.len(), 1);
-        let records =
-            read.get_records_by_collections(&[Nsid::new("a.a.d".to_string()).unwrap()], 100)?;
+        let records = read.get_records_by_collections(
+            &[Nsid::new("a.a.d".to_string()).unwrap()],
+            100,
+            false,
+        )?;
         assert_eq!(records.len(), 0);
 
         Ok(())
@@ -1494,16 +1521,22 @@ mod tests {
         }
         write.insert_batch(batch.batch)?;
 
-        let records =
-            read.get_records_by_collections(&[Nsid::new("a.a.a".to_string()).unwrap()], 100)?;
+        let records = read.get_records_by_collections(
+            &[Nsid::new("a.a.a".to_string()).unwrap()],
+            100,
+            false,
+        )?;
         assert_eq!(records.len(), 3);
 
         let records_deleted =
             write.delete_account(&Did::new("did:plc:person-b".to_string()).unwrap())?;
         assert_eq!(records_deleted, 2);
 
-        let records =
-            read.get_records_by_collections(&[Nsid::new("a.a.a".to_string()).unwrap()], 100)?;
+        let records = read.get_records_by_collections(
+            &[Nsid::new("a.a.a".to_string()).unwrap()],
+            100,
+            false,
+        )?;
         assert_eq!(records.len(), 1);
 
         Ok(())
@@ -1532,7 +1565,7 @@ mod tests {
         write.step_rollup()?;
 
         let records =
-            read.get_records_by_collections(&[Nsid::new("a.a.a".to_string()).unwrap()], 1)?;
+            read.get_records_by_collections(&[Nsid::new("a.a.a".to_string()).unwrap()], 1, false)?;
         assert_eq!(records.len(), 0);
 
         Ok(())
@@ -1562,14 +1595,14 @@ mod tests {
         write.insert_batch(batch.batch)?;
 
         let records =
-            read.get_records_by_collections(&[Nsid::new("a.a.a".to_string()).unwrap()], 1)?;
+            read.get_records_by_collections(&[Nsid::new("a.a.a".to_string()).unwrap()], 1, false)?;
         assert_eq!(records.len(), 1);
 
         let n = write.step_rollup()?;
         assert_eq!(n, 1);
 
         let records =
-            read.get_records_by_collections(&[Nsid::new("a.a.a".to_string()).unwrap()], 1)?;
+            read.get_records_by_collections(&[Nsid::new("a.a.a".to_string()).unwrap()], 1, false)?;
         assert_eq!(records.len(), 0);
 
         let mut batch = TestBatch::default();
