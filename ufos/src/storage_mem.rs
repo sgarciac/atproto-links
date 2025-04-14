@@ -572,6 +572,9 @@ impl MemReader {
 
 #[async_trait]
 impl StoreReader for MemReader {
+    fn name(&self) -> String {
+        "in-memory store".into()
+    }
     async fn get_storage_stats(&self) -> StorageResult<serde_json::Value> {
         let s = self.clone();
         tokio::task::spawn_blocking(move || MemReader::get_storage_stats(&s)).await?

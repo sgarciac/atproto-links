@@ -32,6 +32,8 @@ pub trait StoreWriter: Send + Sync {
 
 #[async_trait]
 pub trait StoreReader: Send + Sync {
+    fn name(&self) -> String;
+
     async fn get_storage_stats(&self) -> StorageResult<serde_json::Value>;
 
     async fn get_consumer_info(&self) -> StorageResult<ConsumerInfo>;

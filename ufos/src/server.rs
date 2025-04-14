@@ -33,6 +33,7 @@ async fn get_openapi(ctx: RequestContext<Context>) -> OkCorsResponse<serde_json:
 
 #[derive(Debug, Serialize, JsonSchema)]
 struct MetaInfo {
+    storage_name: String,
     storage: serde_json::Value,
     consumer: ConsumerInfo,
 }
@@ -57,6 +58,7 @@ async fn get_meta_info(ctx: RequestContext<Context>) -> OkCorsResponse<MetaInfo>
         .map_err(failed_to_get("consumer info"))?;
 
     ok_cors(MetaInfo {
+        storage_name: storage.name(),
         storage: storage_info,
         consumer,
     })

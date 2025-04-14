@@ -435,6 +435,9 @@ impl FjallReader {
 
 #[async_trait]
 impl StoreReader for FjallReader {
+    fn name(&self) -> String {
+        "fjall storage v2".into()
+    }
     async fn get_storage_stats(&self) -> StorageResult<serde_json::Value> {
         let s = self.clone();
         tokio::task::spawn_blocking(move || FjallReader::get_storage_stats(&s)).await?
