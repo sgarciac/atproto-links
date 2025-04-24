@@ -425,8 +425,16 @@ async fn websocket_task(
             Some(Ok(message)) => {
                 match message {
                     Message::Text(json) => {
-                        let event: JetstreamEvent = serde_json::from_str(&json)
-                            .map_err(JetstreamEventError::ReceivedMalformedJSON)?;
+                        let event: JetstreamEvent = match serde_json::from_str(&json) {
+                            Ok(ev) => ev,
+                            Err(e) => {
+                                log::warn!(
+                                    "failed to parse json: {e:?} (from {})",
+                                    json.get(..24).unwrap_or(&json)
+                                );
+                                continue;
+                            }
+                        };
                         let event_cursor = event.cursor;
 
                         if let Some(last) = last_cursor {
@@ -456,8 +464,13 @@ async fn websocket_task(
                         )
                         .map_err(JetstreamEventError::CompressionDictionaryError)?;
 
-                        let event: JetstreamEvent = serde_json::from_reader(decoder)
-                            .map_err(JetstreamEventError::ReceivedMalformedJSON)?;
+                        let event: JetstreamEvent = match serde_json::from_reader(decoder) {
+                            Ok(ev) => ev,
+                            Err(e) => {
+                                log::warn!("failed to parse json: {e:?}");
+                                continue;
+                            }
+                        };
                         let event_cursor = event.cursor;
 
                         if let Some(last) = last_cursor {
