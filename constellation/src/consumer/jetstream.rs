@@ -174,6 +174,10 @@ pub fn consume_jetstream(
                     println!("jetstream: closing the connection: {f:?}");
                     continue;
                 }
+                Ok(Message::Ping(bytes)) => {
+                    let _ = socket.send(Message::Pong(bytes));
+                    continue;
+                }
                 Ok(m) => {
                     counter!("jetstream_read_fail", "url" => stream.clone(), "reason" => "unexpected message", "message" => format!("{m:?}")).increment(1);
                     eprintln!("jetstream: unexpected from read (ignoring): {m:?}");
