@@ -293,6 +293,9 @@ scrape_configs:
         location /stub_status {
                 stub_status;
         }
+        location / {
+                return 404;
+        }
       }
       ```
 
@@ -378,3 +381,116 @@ some todos
 - [x] nginx: enable cache
 - [x] nginx: rate-limit
 - [ ] nginx: get metrics
+
+
+
+
+---
+
+nginx cors for constellation + small burst bump
+
+```nginx
+upstream cozy_constellation {
+  server <tailnet ip>:6789;  # bootes; ip so that we don't race on reboot with tailscale coming up, which nginx doesn't like
+  keepalive 16;
+}
+
+server {
+  server_name constellation.microcosm.blue;
+
+  proxy_cache cozy_zone;
+  proxy_cache_background_update on;
+  proxy_cache_key "$scheme$proxy_host$uri$is_args$args$http_accept";
+  proxy_cache_lock on; # make simlutaneous requests for the same uri wait for it to appear in cache instead of hitting origin
+  proxy_cache_lock_age 1s;
+  proxy_cache_lock_timeout 2s;
+  proxy_cache_valid 10s; # default -- should be explicitly set in the response headers
+  proxy_cache_valid any 2s; # non-200s default
+  proxy_read_timeout 5s;
+  proxy_send_timeout 15s;
+  proxy_socket_keepalive on;
+
+  # take over cors responsibility from upsteram. `always` applies it to error responses.
+  proxy_hide_header 'Access-Control-Allow-Origin';
+  proxy_hide_header 'Access-Control-Allowed-Methods';
+  proxy_hide_header 'Access-Control-Allow-Headers';
+  add_header 'Access-Control-Allow-Origin' '*' always;
+  add_header 'Access-Control-Allow-Methods' 'GET' always;
+  add_header 'Access-Control-Allow-Headers' '*' always;
+
+
+  limit_req zone=cozy_ip_limit nodelay burst=150;
+  limit_req zone=cozy_global_limit burst=1800;
+  limit_req_status 429;
+
+  location / {
+    proxy_pass http://cozy_constellation;
+    include proxy_params;
+    proxy_http_version 1.1;
+    proxy_set_header Connection ""; # for keepalive
+  }
+
+
+    listen 443 ssl; # managed by Certbot
+    ssl_certificate /etc/letsencrypt/live/constellation.microcosm.blue/fullchain.pem; # managed by Certbot
+    ssl_certificate_key /etc/letsencrypt/live/constellation.microcosm.blue/privkey.pem; # managed by Certbot
+    include /etc/letsencrypt/options-ssl-nginx.conf; # managed by Certbot
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem; # managed by Certbot
+
+}
+
+server {
+    if ($host = constellation.microcosm.blue) {
+        return 301 https://$host$request_uri;
+    } # managed by Certbot
+
+
+  server_name constellation.microcosm.blue;
+    listen 80;
+    return 404; # managed by Certbot
+}
+```
+
+re-reading about `nodelay`, i should probably remove it -- nginx would then queue requests to upstream, but still service them at the configured limit. it's fine for my internet since the global limit isn't nodelay, but probably less "fair" to clients if there's contention around the global limit (earlier requests would get all of theirs serviced before later ones can get in the queue)
+
+leaving it for now though.
+
+
+### nginx logs to prom
+
+```bash
+curl -LO https://github.com/martin-helmich/prometheus-nginxlog-exporter/releases/download/v1.11.0/prometheus-nginxlog-exporter_1.11.0_linux_amd64.deb
+apt install ./prometheus-nginxlog-exporter_1.11.0_linux_amd64.deb
+systemctl enable prometheus-nginxlog-exporter.service
+
+```
+
+have it run as www-data (maybe not the best idea but...)
+file `/usr/lib/systemd/system/prometheus-nginxlog-exporter.service`
+set User under service and remove capabilities bounding
+
+```systemd
+User=www-data
+#CapabilityBoundingSet=
+```
+
+in `nginx.conf` in `http`:
+
+```nginx
+log_format constellation_format "$remote_addr - $remote_user [$time_local] \"$request\" $status $body_bytes_sent \"$http_referer\" \"$http_user_agent\" \"$http_x_forwarded_for\"";
+```
+
+in `sites-available/constellation.microcosm.blue` in `server`:
+
+```nginx
+# log format must match prometheus-nginx-log-exporter
+access_log /var/log/nginx/constellation-access.log constellation_format;
+```
+
+config at `/etc/prometheus-nginxlog-exporter.hcl`
+
+
+
+```bash
+systemctl start prometheus-nginxlog-exporter.service
+```
