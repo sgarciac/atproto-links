@@ -95,7 +95,7 @@ where
                 }
             }),
         )
-        .layer(tower_http::cors::CorsLayer::new().allow_origin(tower_http::cors::Any))
+        .layer(tower_http::cors::CorsLayer::permissive())
         .layer(middleware::from_fn(add_lables))
         .layer(MetricLayer::default());
 
