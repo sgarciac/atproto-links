@@ -3,7 +3,7 @@ use crate::db_types::{
 };
 use crate::{Cursor, Did, Nsid, PutAction, RecordKey, UFOsCommit};
 use bincode::{Decode, Encode};
-use cardinality_estimator::CardinalityEstimator;
+use cardinality_estimator_safe::CardinalityEstimator;
 use std::ops::Range;
 
 /// key format: ["js_cursor"]
@@ -221,14 +221,11 @@ impl DbBytes for EstimatedDidsValue {
 
     #[cfg(not(test))]
     fn to_db_bytes(&self) -> Result<Vec<u8>, EncodingError> {
-        Ok(vec![1, 2, 3]) // TODO: un-stub when their heap overflow is fixed
+        SerdeBytes::to_bytes(self)
     }
     #[cfg(not(test))]
     fn from_db_bytes(bytes: &[u8]) -> Result<(Self, usize), EncodingError> {
-        if bytes.len() < 3 {
-            return Err(EncodingError::DecodeNotEnoughBytes);
-        }
-        Ok((Self(CardinalityEstimator::new()), 3)) // TODO: un-stub when their heap overflow is fixed
+        SerdeBytes::from_bytes(bytes)
     }
 }
 

@@ -573,6 +573,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "cardinality-estimator-safe"
+version = "2.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3961c1d864c72d3d628d18b16ee64ca0e203ce9f0e9d701ecb7403e9da30927a"
+dependencies = [
+ "enum_dispatch",
+ "serde",
+ "wyhash",
+]
+
+[[package]]
 name = "cc"
 version = "1.2.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3792,7 +3803,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "bincode 2.0.1",
- "cardinality-estimator",
+ "cardinality-estimator-safe",
  "clap",
  "dropshot",
  "env_logger",

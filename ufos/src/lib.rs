@@ -9,7 +9,7 @@ pub mod storage_mem;
 pub mod store_types;
 
 use crate::error::BatchInsertError;
-use cardinality_estimator::CardinalityEstimator;
+use cardinality_estimator_safe::CardinalityEstimator;
 use error::FirehoseEventError;
 use jetstream::events::{CommitEvent, CommitOp, Cursor};
 use jetstream::exports::{Did, Nsid, RecordKey};
