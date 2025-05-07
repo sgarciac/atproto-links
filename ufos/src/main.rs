@@ -124,16 +124,6 @@ async fn go<B: StoreBackground>(
     let rolling = write_store.background_tasks()?.run();
     let storing = write_store.receive_batches(batches);
 
-    // let storing = tokio::task::spawn_blocking(move || {
-    //     while let Some(event_batch) = batches.blocking_recv() {
-    //         write_store.insert_batch(event_batch)?;
-    //         write_store
-    //             .step_rollup()
-    //             .inspect_err(|e| log::error!("rollup error: {e:?}"))?;
-    //     }
-    //     Ok::<(), StorageError>(())
-    // });
-
     tokio::select! {
         z = serving => log::warn!("serve task ended: {z:?}"),
         z = rolling => log::warn!("rollup task ended: {z:?}"),

@@ -42,7 +42,7 @@ impl TrimCollectionCursorKey {
         Self::from_pair(Default::default(), collection)
     }
 }
-pub type TrimCollectionCursorValue = Cursor;
+pub type TrimCollectionCursorVal = Cursor;
 
 /// key format: ["js_endpoint"]
 #[derive(Debug, PartialEq)]

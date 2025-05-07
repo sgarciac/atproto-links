@@ -862,16 +862,19 @@ impl StoreBackground for FjallBackground {
     async fn run(mut self) -> StorageResult<()> {
         let mut dirty_nsids = HashSet::new();
 
-        let mut rollup = tokio::time::interval(Duration::from_millis(240));
+        let mut rollup = tokio::time::interval(Duration::from_millis(81));
         rollup.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
-        let mut trim = tokio::time::interval(Duration::from_millis(3_000));
+        let mut trim = tokio::time::interval(Duration::from_millis(6_000));
         trim.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         loop {
             tokio::select! {
                 _ = rollup.tick() => {
                     let (n, dirty) = self.0.step_rollup().inspect_err(|e| log::error!("rollup error: {e:?}"))?;
+                    if n == 0 {
+                        rollup.reset_after(Duration::from_millis(1_200)); // we're caught up, take a break
+                    }
                     dirty_nsids.extend(dirty);
                     log::info!("rolled up {n} items ({} collections now dirty)", dirty_nsids.len());
                 },
