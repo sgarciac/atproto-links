@@ -246,9 +246,20 @@ pub async fn serve(storage: impl StoreReader + 'static) -> Result<(), String> {
 
     let context = Context {
         spec: Arc::new(
-            api.openapi("UFOs", semver::Version::new(0, 0, 0))
-                .json()
-                .map_err(|e| e.to_string())?,
+            api.openapi(
+                "UFOs: Every lexicon in the ATmosphere",
+                env!("CARGO_PKG_VERSION")
+                    .parse()
+                    .inspect_err(|e| {
+                        log::warn!("failed to parse cargo package version for openapi: {e:?}")
+                    })
+                    .unwrap_or(semver::Version::new(0, 0, 1)),
+            )
+            .description("Samples and statistics of atproto records by their collection NSID")
+            .contact_name("part of @microcosm.blue")
+            .contact_url("https://microcosm.blue")
+            .json()
+            .map_err(|e| e.to_string())?,
         ),
         storage: Box::new(storage),
     };

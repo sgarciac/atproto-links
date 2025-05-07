@@ -21,6 +21,10 @@ pub const INDEX_HTML: &str = r#"<!DOCTYPE html>
           SwaggerUIStandalonePreset
         ],
         layout: "StandaloneLayout",
+        deepLinking: true,
+        displayRequestDuration: true,
+        tryItOutEnabled: true,
+        requestSnippetsEnabled: true
       });
     };
   </script>
