@@ -511,10 +511,12 @@ impl FjallWriter {
         timelies: impl Iterator<Item = Result<(fjall::Slice, fjall::Slice), fjall::Error>>,
         cursor_exclusive_limit: Option<Cursor>,
         rollup_limit: usize,
-    ) -> StorageResult<usize> {
+    ) -> StorageResult<(usize, HashSet<Nsid>)> {
         // current strategy is to buffer counts in mem before writing the rollups
         // we *could* read+write every single batch to rollup.. but their merge is associative so
         // ...so save the db some work up front? is this worth it? who knows...
+
+        let mut dirty_nsids = HashSet::new();
 
         #[derive(Eq, Hash, PartialEq)]
         enum Rollup {
@@ -542,6 +544,8 @@ impl FjallWriter {
             {
                 break;
             }
+
+            dirty_nsids.insert(key.collection().clone());
 
             batch.remove(&self.rollups, key_bytes);
             let val = db_complete::<CountsValue>(&val_bytes)?;
@@ -608,7 +612,7 @@ impl FjallWriter {
         insert_batch_static_neu::<NewRollupCursorKey>(&mut batch, &self.global, last_cursor)?;
 
         batch.commit()?;
-        Ok(cursors_advanced)
+        Ok((cursors_advanced, dirty_nsids))
     }
 }
 
@@ -734,20 +738,21 @@ impl StoreWriter<FjallBackground> for FjallWriter {
         let cursors_stepped = match (timely_next, next_delete) {
             (Some(timely), Some((delete_cursor, delete_key_bytes, delete_val_bytes))) => {
                 if timely.cursor() < delete_cursor {
-                    let n = self.rollup_live_counts(
+                    let (n, dirty) = self.rollup_live_counts(
                         timely_iter,
                         Some(delete_cursor),
                         MAX_BATCHED_ROLLUP_COUNTS,
                     )?;
-                    dirty_nsids.insert(timely.collection().clone());
+                    dirty_nsids.extend(dirty);
                     n
                 } else {
                     self.rollup_delete_account(delete_cursor, &delete_key_bytes, &delete_val_bytes)?
                 }
             }
-            (Some(timely), None) => {
-                let n = self.rollup_live_counts(timely_iter, None, MAX_BATCHED_ROLLUP_COUNTS)?;
-                dirty_nsids.insert(timely.collection().clone());
+            (Some(_), None) => {
+                let (n, dirty) =
+                    self.rollup_live_counts(timely_iter, None, MAX_BATCHED_ROLLUP_COUNTS)?;
+                dirty_nsids.extend(dirty);
                 n
             }
             (None, Some((delete_cursor, delete_key_bytes, delete_val_bytes))) => {
