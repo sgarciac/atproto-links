@@ -28,6 +28,22 @@ impl StaticStr for NewRollupCursorKey {
 /// value format: [rollup_cursor(Cursor)|collection(Nsid)]
 pub type NewRollupCursorValue = Cursor;
 
+#[derive(Debug, PartialEq)]
+pub struct _TrimCollectionStaticStr {}
+impl StaticStr for _TrimCollectionStaticStr {
+    fn static_str() -> &'static str {
+        "trim_cursor"
+    }
+}
+type TrimCollectionCursorPrefix = DbStaticStr<_TrimCollectionStaticStr>;
+pub type TrimCollectionCursorKey = DbConcat<TrimCollectionCursorPrefix, Nsid>;
+impl TrimCollectionCursorKey {
+    pub fn new(collection: Nsid) -> Self {
+        Self::from_pair(Default::default(), collection)
+    }
+}
+pub type TrimCollectionCursorValue = Cursor;
+
 /// key format: ["js_endpoint"]
 #[derive(Debug, PartialEq)]
 pub struct TakeoffKey {}

@@ -7,7 +7,7 @@ use crate::store_types::{
     JetstreamEndpointKey, JetstreamEndpointValue, LiveCountsKey, NewRollupCursorKey,
     NewRollupCursorValue, NsidRecordFeedKey, NsidRecordFeedVal, RecordLocationKey,
     RecordLocationMeta, RecordLocationVal, RecordRawValue, TakeoffKey, TakeoffValue,
-    WeekTruncatedCursor, WeeklyRollupKey,
+    TrimCollectionCursorKey, WeekTruncatedCursor, WeeklyRollupKey,
 };
 use crate::{CommitAction, ConsumerInfo, Did, EventBatch, Nsid, TopCollections, UFOsRecord};
 use async_trait::async_trait;
@@ -46,6 +46,9 @@ const MAX_BATCHED_ROLLUP_COUNTS: usize = 256;
 ///      - key: "rollup_cursor" (literal)
 ///      - val: u64 (tracks behind js_cursor)
 ///
+///  - Feed trim cursor (bg work: delete oldest excess records)
+///      - key: "trim_cursor" || nullstr (nsid)
+///      - val: u64 (earliest previously-removed feed entry jetstream cursor)
 ///
 /// Partition: 'feed'
 ///
@@ -756,20 +759,26 @@ impl StoreWriter<FjallBackground> for FjallWriter {
         Ok((cursors_stepped, dirty_nsids))
     }
 
-    fn trim_collection(
-        &mut self,
-        collection: &Nsid,
-        limit: usize,
-        // TODO: could add a start cursor limit to avoid iterating deleted stuff at the start (/end)
-    ) -> StorageResult<()> {
+    fn trim_collection(&mut self, collection: &Nsid, limit: usize) -> StorageResult<()> {
         let mut dangling_feed_keys_cleaned = 0;
         let mut records_deleted = 0;
 
-        let mut batch = self.keyspace.batch();
+        let feed_trim_cursor_key =
+            TrimCollectionCursorKey::new(collection.clone()).to_db_bytes()?;
+        let trim_cursor = self
+            .global
+            .get(&feed_trim_cursor_key)?
+            .map(|value_bytes| db_complete(&value_bytes))
+            .transpose()?
+            .unwrap_or(Cursor::from_start());
 
-        let prefix = NsidRecordFeedKey::from_prefix_to_db_bytes(collection)?;
-        let mut found = 0;
-        for kv in self.feeds.prefix(prefix).rev() {
+        let live_range =
+            NsidRecordFeedKey::from_pair(collection.clone(), trim_cursor).range_to_prefix_end()?;
+
+        let mut live_records_found = 0;
+        let mut latest_expired_feed_cursor = None;
+        let mut batch = self.keyspace.batch();
+        for kv in self.feeds.range(live_range).rev() {
             let (key_bytes, val_bytes) = kv?;
             let feed_key = db_complete::<NsidRecordFeedKey>(&key_bytes)?;
             let feed_val = db_complete::<NsidRecordFeedVal>(&val_bytes)?;
@@ -805,9 +814,16 @@ impl StoreWriter<FjallBackground> for FjallWriter {
                 batch = self.keyspace.batch();
             }
 
-            found += 1;
-            if found <= limit {
+            live_records_found += 1;
+            if live_records_found <= limit {
                 continue;
+            } else if latest_expired_feed_cursor.is_none() {
+                latest_expired_feed_cursor = Some(feed_key.cursor());
+                batch.insert(
+                    &self.global,
+                    &TrimCollectionCursorKey::new(collection.clone()).to_db_bytes()?,
+                    &feed_key.cursor().to_db_bytes()?,
+                );
             }
 
             batch.remove(&self.feeds, key_bytes);
@@ -846,18 +862,18 @@ impl StoreBackground for FjallBackground {
     async fn run(mut self) -> StorageResult<()> {
         let mut dirty_nsids = HashSet::new();
 
-        let mut rollup = tokio::time::interval(Duration::from_millis(42));
+        let mut rollup = tokio::time::interval(Duration::from_millis(240));
         rollup.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
         let mut trim = tokio::time::interval(Duration::from_millis(3_000));
-        trim.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        trim.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         loop {
             tokio::select! {
                 _ = rollup.tick() => {
                     let (n, dirty) = self.0.step_rollup().inspect_err(|e| log::error!("rollup error: {e:?}"))?;
                     dirty_nsids.extend(dirty);
-                    log::info!("rolled up {n} items {dirty_nsids:?} ({} collections now dirty)", dirty_nsids.len());
+                    log::info!("rolled up {n} items ({} collections now dirty)", dirty_nsids.len());
                 },
                 _ = trim.tick() => {
                     log::info!("trimming {} nsids: {dirty_nsids:?}", dirty_nsids.len());
