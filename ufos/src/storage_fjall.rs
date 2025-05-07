@@ -1,6 +1,6 @@
 use crate::db_types::{db_complete, DbBytes, DbStaticStr, StaticStr};
 use crate::error::StorageError;
-use crate::storage::{StorageResult, StorageWhatever, StoreReader, StoreWriter};
+use crate::storage::{StorageResult, StorageWhatever, StoreBackground, StoreReader, StoreWriter};
 use crate::store_types::{
     AllTimeRollupKey, CountsValue, DeleteAccountQueueKey, DeleteAccountQueueVal,
     HourTruncatedCursor, HourlyRollupKey, JetstreamCursorKey, JetstreamCursorValue,
@@ -13,9 +13,13 @@ use crate::{CommitAction, ConsumerInfo, Did, EventBatch, Nsid, TopCollections, U
 use async_trait::async_trait;
 use fjall::{Batch as FjallBatch, Config, Keyspace, PartitionCreateOptions, PartitionHandle};
 use jetstream::events::Cursor;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::time::SystemTime;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
+use std::time::{Duration, Instant, SystemTime};
 
 const MAX_BATCHED_CLEANUP_SIZE: usize = 1024; // try to commit progress for longer feeds
 const MAX_BATCHED_ACCOUNT_DELETE_RECORDS: usize = 1024;
@@ -99,7 +103,7 @@ pub struct FjallConfig {
     pub temp: bool,
 }
 
-impl StorageWhatever<FjallReader, FjallWriter, FjallConfig> for FjallStorage {
+impl StorageWhatever<FjallReader, FjallWriter, FjallBackground, FjallConfig> for FjallStorage {
     fn init(
         path: impl AsRef<Path>,
         endpoint: String,
@@ -160,6 +164,7 @@ impl StorageWhatever<FjallReader, FjallWriter, FjallConfig> for FjallStorage {
             rollups: rollups.clone(),
         };
         let writer = FjallWriter {
+            bg_taken: Arc::new(AtomicBool::new(false)),
             keyspace,
             global,
             feeds,
@@ -471,7 +476,9 @@ impl StoreReader for FjallReader {
     }
 }
 
+#[derive(Clone)]
 pub struct FjallWriter {
+    bg_taken: Arc<AtomicBool>,
     keyspace: Keyspace,
     global: PartitionHandle,
     feeds: PartitionHandle,
@@ -602,7 +609,15 @@ impl FjallWriter {
     }
 }
 
-impl StoreWriter for FjallWriter {
+impl StoreWriter<FjallBackground> for FjallWriter {
+    fn background_tasks(&mut self) -> StorageResult<FjallBackground> {
+        if self.bg_taken.swap(true, Ordering::SeqCst) {
+            Err(StorageError::BackgroundAlreadyStarted)
+        } else {
+            Ok(FjallBackground(self.clone()))
+        }
+    }
+
     fn insert_batch<const LIMIT: usize>(
         &mut self,
         event_batch: EventBatch<LIMIT>,
@@ -673,7 +688,9 @@ impl StoreWriter for FjallWriter {
         Ok(())
     }
 
-    fn step_rollup(&mut self) -> StorageResult<usize> {
+    fn step_rollup(&mut self) -> StorageResult<(usize, HashSet<Nsid>)> {
+        let mut dirty_nsids = HashSet::new();
+
         let rollup_cursor =
             get_static_neu::<NewRollupCursorKey, NewRollupCursorValue>(&self.global)?.ok_or(
                 StorageError::BadStateError("Could not find current rollup cursor".to_string()),
@@ -683,14 +700,14 @@ impl StoreWriter for FjallWriter {
         let live_counts_range = LiveCountsKey::range_from_cursor(rollup_cursor)?;
         let mut timely_iter = self.rollups.range(live_counts_range).peekable();
 
-        let timely_next_cursor = timely_iter
+        let timely_next = timely_iter
             .peek_mut()
-            .map(|kv| -> StorageResult<Cursor> {
+            .map(|kv| -> StorageResult<LiveCountsKey> {
                 match kv {
                     Err(e) => Err(std::mem::replace(e, fjall::Error::Poisoned))?,
                     Ok((key_bytes, _)) => {
                         let key = db_complete::<LiveCountsKey>(key_bytes)?;
-                        Ok(key.cursor())
+                        Ok(key)
                     }
                 }
             })
@@ -711,23 +728,24 @@ impl StoreWriter for FjallWriter {
             })
             .transpose()?;
 
-        let cursors_stepped = match (timely_next_cursor, next_delete) {
-            (
-                Some(timely_next_cursor),
-                Some((delete_cursor, delete_key_bytes, delete_val_bytes)),
-            ) => {
-                if timely_next_cursor < delete_cursor {
-                    self.rollup_live_counts(
+        let cursors_stepped = match (timely_next, next_delete) {
+            (Some(timely), Some((delete_cursor, delete_key_bytes, delete_val_bytes))) => {
+                if timely.cursor() < delete_cursor {
+                    let n = self.rollup_live_counts(
                         timely_iter,
                         Some(delete_cursor),
                         MAX_BATCHED_ROLLUP_COUNTS,
-                    )?
+                    )?;
+                    dirty_nsids.insert(timely.collection().clone());
+                    n
                 } else {
                     self.rollup_delete_account(delete_cursor, &delete_key_bytes, &delete_val_bytes)?
                 }
             }
-            (Some(_), None) => {
-                self.rollup_live_counts(timely_iter, None, MAX_BATCHED_ROLLUP_COUNTS)?
+            (Some(timely), None) => {
+                let n = self.rollup_live_counts(timely_iter, None, MAX_BATCHED_ROLLUP_COUNTS)?;
+                dirty_nsids.insert(timely.collection().clone());
+                n
             }
             (None, Some((delete_cursor, delete_key_bytes, delete_val_bytes))) => {
                 self.rollup_delete_account(delete_cursor, &delete_key_bytes, &delete_val_bytes)?
@@ -735,7 +753,7 @@ impl StoreWriter for FjallWriter {
             (None, None) => 0,
         };
 
-        Ok(cursors_stepped)
+        Ok((cursors_stepped, dirty_nsids))
     }
 
     fn trim_collection(
@@ -760,7 +778,7 @@ impl StoreWriter for FjallWriter {
 
             let Some(location_val_bytes) = self.records.get(&location_key_bytes)? else {
                 // record was deleted (hopefully)
-                batch.remove(&self.feeds, &location_key_bytes);
+                batch.remove(&self.feeds, &*key_bytes);
                 dangling_feed_keys_cleaned += 1;
                 continue;
             };
@@ -769,14 +787,15 @@ impl StoreWriter for FjallWriter {
 
             if meta.cursor() != feed_key.cursor() {
                 // older/different version
-                batch.remove(&self.feeds, &location_key_bytes);
+                batch.remove(&self.feeds, &*key_bytes);
                 dangling_feed_keys_cleaned += 1;
                 continue;
             }
             if meta.rev != feed_val.rev() {
                 // weird...
                 log::warn!("record lookup: cursor match but rev did not...? removing.");
-                batch.remove(&self.feeds, &location_key_bytes);
+                batch.remove(&self.feeds, &*key_bytes);
+                batch.remove(&self.records, &location_key_bytes);
                 dangling_feed_keys_cleaned += 1;
                 continue;
             }
@@ -791,7 +810,7 @@ impl StoreWriter for FjallWriter {
                 continue;
             }
 
-            batch.remove(&self.feeds, &location_key_bytes);
+            batch.remove(&self.feeds, key_bytes);
             batch.remove(&self.records, &location_key_bytes);
             records_deleted += 1;
         }
@@ -817,6 +836,40 @@ impl StoreWriter for FjallWriter {
         }
         batch.commit()?;
         Ok(records_deleted)
+    }
+}
+
+pub struct FjallBackground(FjallWriter);
+
+#[async_trait]
+impl StoreBackground for FjallBackground {
+    async fn run(mut self) -> StorageResult<()> {
+        let mut dirty_nsids = HashSet::new();
+
+        let mut rollup = tokio::time::interval(Duration::from_millis(42));
+        rollup.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+        let mut trim = tokio::time::interval(Duration::from_millis(3_000));
+        trim.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+        loop {
+            tokio::select! {
+                _ = rollup.tick() => {
+                    let (n, dirty) = self.0.step_rollup().inspect_err(|e| log::error!("rollup error: {e:?}"))?;
+                    dirty_nsids.extend(dirty);
+                    log::info!("rolled up {n} items {dirty_nsids:?} ({} collections now dirty)", dirty_nsids.len());
+                },
+                _ = trim.tick() => {
+                    log::info!("trimming {} nsids: {dirty_nsids:?}", dirty_nsids.len());
+                    let t0 = Instant::now();
+                    for collection in &dirty_nsids {
+                        self.0.trim_collection(collection, 512).inspect_err(|e| log::error!("trim error: {e:?}"))?;
+                    }
+                    log::info!("finished trimming in {:?}", t0.elapsed());
+                    dirty_nsids.clear();
+                },
+            };
+        }
     }
 }
 
@@ -1473,7 +1526,7 @@ mod tests {
         );
         write.insert_batch(batch.batch)?;
 
-        let n = write.step_rollup()?;
+        let (n, _) = write.step_rollup()?;
         assert_eq!(n, 1);
 
         let mut batch = TestBatch::default();
@@ -1484,7 +1537,7 @@ mod tests {
             read.get_records_by_collections(&[Nsid::new("a.a.a".to_string()).unwrap()], 1, false)?;
         assert_eq!(records.len(), 1);
 
-        let n = write.step_rollup()?;
+        let (n, _) = write.step_rollup()?;
         assert_eq!(n, 1);
 
         let records =
@@ -1495,7 +1548,7 @@ mod tests {
         batch.delete_account("did:plc:person-a", 9_999);
         write.insert_batch(batch.batch)?;
 
-        let n = write.step_rollup()?;
+        let (n, _) = write.step_rollup()?;
         assert_eq!(n, 0);
 
         Ok(())
@@ -1529,10 +1582,10 @@ mod tests {
         );
         write.insert_batch(batch.batch)?;
 
-        let n = write.step_rollup()?;
+        let (n, _) = write.step_rollup()?;
         assert_eq!(n, 2);
 
-        let n = write.step_rollup()?;
+        let (n, _) = write.step_rollup()?;
         assert_eq!(n, 0);
 
         Ok(())
@@ -1586,7 +1639,7 @@ mod tests {
         assert_eq!(dids, 2);
 
         // first batch rolled up
-        let n = write.step_rollup()?;
+        let (n, _) = write.step_rollup()?;
         assert_eq!(n, 1);
 
         let (records, dids) =
@@ -1595,7 +1648,7 @@ mod tests {
         assert_eq!(dids, 2);
 
         // delete account rolled up
-        let n = write.step_rollup()?;
+        let (n, _) = write.step_rollup()?;
         assert_eq!(n, 1);
 
         let (records, dids) =
@@ -1604,7 +1657,7 @@ mod tests {
         assert_eq!(dids, 2);
 
         // second batch rolled up
-        let n = write.step_rollup()?;
+        let (n, _) = write.step_rollup()?;
         assert_eq!(n, 1);
 
         let (records, dids) =
@@ -1613,7 +1666,7 @@ mod tests {
         assert_eq!(dids, 2);
 
         // no more rollups left
-        let n = write.step_rollup()?;
+        let (n, _) = write.step_rollup()?;
         assert_eq!(n, 0);
 
         Ok(())
@@ -1662,7 +1715,7 @@ mod tests {
         );
         write.insert_batch(batch.batch)?;
 
-        let n = write.step_rollup()?;
+        let (n, _) = write.step_rollup()?;
         assert_eq!(n, 3); // 3 collections
 
         let tops = read.get_top_collections()?;
@@ -1750,7 +1803,7 @@ mod tests {
         );
         write.insert_batch(batch.batch)?;
 
-        let n = write.step_rollup()?;
+        let (n, _) = write.step_rollup()?;
         assert_eq!(n, 2); // 3 collections
 
         let tops = read.get_top_collections()?;

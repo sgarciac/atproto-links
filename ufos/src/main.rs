@@ -2,10 +2,9 @@ use clap::Parser;
 use jetstream::events::Cursor;
 use std::path::PathBuf;
 use ufos::consumer;
-use ufos::error::StorageError;
 use ufos::file_consumer;
 use ufos::server;
-use ufos::storage::{StorageWhatever, StoreReader, StoreWriter};
+use ufos::storage::{StorageWhatever, StoreBackground, StoreReader, StoreWriter};
 use ufos::storage_fjall::FjallStorage;
 use ufos::storage_mem::MemStorage;
 
@@ -51,7 +50,6 @@ struct Args {
     jetstream_fixture: bool,
 }
 
-// #[tokio::main(flavor = "current_thread")] // TODO: move this to config via args
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     env_logger::init();
@@ -95,57 +93,51 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn go(
+async fn go<B: StoreBackground>(
     jetstream: String,
     jetstream_fixture: bool,
     pause_writer: bool,
     read_store: impl StoreReader + 'static,
-    mut write_store: impl StoreWriter + 'static,
+    mut write_store: impl StoreWriter<B> + 'static,
     cursor: Option<Cursor>,
 ) -> anyhow::Result<()> {
     println!("starting server with storage...");
     let serving = server::serve(read_store);
 
-    let t1 = tokio::task::spawn(async {
-        let r = serving.await;
-        log::warn!("serving ended with: {r:?}");
-    });
+    if pause_writer {
+        log::info!("not starting jetstream or the write loop.");
+        serving.await.map_err(|e| anyhow::anyhow!(e))?;
+        return Ok(());
+    }
 
-    let t2: tokio::task::JoinHandle<anyhow::Result<()>> = tokio::task::spawn({
-        async move {
-            if !pause_writer {
-                println!(
-                    "starting consumer with cursor: {cursor:?} from {:?} ago",
-                    cursor.map(|c| c.elapsed())
-                );
-                let mut batches = if jetstream_fixture {
-                    file_consumer::consume(jetstream.into()).await?
-                } else {
-                    consumer::consume(&jetstream, cursor, false).await?
-                };
+    let batches = if jetstream_fixture {
+        log::info!("starting with jestream file fixture: {jetstream:?}");
+        file_consumer::consume(jetstream.into()).await?
+    } else {
+        log::info!(
+            "starting consumer with cursor: {cursor:?} from {:?} ago",
+            cursor.map(|c| c.elapsed())
+        );
+        consumer::consume(&jetstream, cursor, false).await?
+    };
 
-                tokio::task::spawn_blocking(move || {
-                    while let Some(event_batch) = batches.blocking_recv() {
-                        write_store.insert_batch(event_batch)?;
-                        write_store
-                            .step_rollup()
-                            .inspect_err(|e| log::error!("laksjdfl: {e:?}"))?;
-                    }
-                    Ok::<(), StorageError>(())
-                })
-                .await??;
+    let rolling = write_store.background_tasks()?.run();
+    let storing = write_store.receive_batches(batches);
 
-                log::warn!("storage.receive ended with");
-            } else {
-                log::info!("not starting jetstream or the write loop.");
-            }
-            Ok(())
-        }
-    });
+    // let storing = tokio::task::spawn_blocking(move || {
+    //     while let Some(event_batch) = batches.blocking_recv() {
+    //         write_store.insert_batch(event_batch)?;
+    //         write_store
+    //             .step_rollup()
+    //             .inspect_err(|e| log::error!("rollup error: {e:?}"))?;
+    //     }
+    //     Ok::<(), StorageError>(())
+    // });
 
     tokio::select! {
-        z = t1 => log::warn!("serve task ended: {z:?}"),
-        z = t2 => log::warn!("storage task ended: {z:?}"),
+        z = serving => log::warn!("serve task ended: {z:?}"),
+        z = rolling => log::warn!("rollup task ended: {z:?}"),
+        z = storing => log::warn!("storage task ended: {z:?}"),
     };
 
     println!("bye!");

@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use crate::db_types::{db_complete, DbBytes, DbStaticStr, StaticStr};
 use crate::error::StorageError;
-use crate::storage::{StorageResult, StorageWhatever, StoreReader, StoreWriter};
+use crate::storage::{StorageResult, StorageWhatever, StoreBackground, StoreReader, StoreWriter};
 use crate::store_types::{
     AllTimeRollupKey, CountsValue, DeleteAccountQueueKey, DeleteAccountQueueVal,
     HourTruncatedCursor, HourlyRollupKey, JetstreamCursorKey, JetstreamCursorValue,
@@ -18,6 +18,7 @@ use jetstream::events::Cursor;
 use lsm_tree::range::prefix_to_range;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Mutex;
 use std::sync::RwLock;
@@ -250,7 +251,7 @@ impl MemPartion {
 ////////////
 ////////////
 
-impl StorageWhatever<MemReader, MemWriter, MemConfig> for MemStorage {
+impl StorageWhatever<MemReader, MemWriter, MemBackground, MemConfig> for MemStorage {
     fn init(
         _path: impl AsRef<Path>,
         endpoint: String,
@@ -780,7 +781,11 @@ impl MemWriter {
     }
 }
 
-impl StoreWriter for MemWriter {
+impl StoreWriter<MemBackground> for MemWriter {
+    fn background_tasks(&mut self) -> StorageResult<MemBackground> {
+        Ok(MemBackground {})
+    }
+
     fn insert_batch<const LIMIT: usize>(
         &mut self,
         event_batch: EventBatch<LIMIT>,
@@ -851,7 +856,9 @@ impl StoreWriter for MemWriter {
         Ok(())
     }
 
-    fn step_rollup(&mut self) -> StorageResult<usize> {
+    fn step_rollup(&mut self) -> StorageResult<(usize, HashSet<Nsid>)> {
+        let mut dirty_nsids = HashSet::new();
+
         let rollup_cursor =
             get_static_neu::<NewRollupCursorKey, NewRollupCursorValue>(&self.global)?
                 .ok_or(StorageError::BadStateError(
@@ -864,16 +871,16 @@ impl StoreWriter for MemWriter {
             .inspect_err(|e| log::warn!("live counts range: {e:?}"))?;
         let mut timely_iter = self.rollups.range(live_counts_range).into_iter().peekable();
 
-        let timely_next_cursor = timely_iter
+        let timely_next = timely_iter
             .peek_mut()
-            .map(|kv| -> StorageResult<Cursor> {
+            .map(|kv| -> StorageResult<LiveCountsKey> {
                 match kv {
                     Err(e) => Err(std::mem::replace(e, StorageError::Stolen))?,
                     Ok((key_bytes, _)) => {
                         let key = db_complete::<LiveCountsKey>(key_bytes).inspect_err(|e| {
                             log::warn!("failed getting key for next timely: {e:?}")
                         })?;
-                        Ok(key.cursor())
+                        Ok(key)
                     }
                 }
             })
@@ -899,33 +906,37 @@ impl StoreWriter for MemWriter {
             .transpose()
             .inspect_err(|e| log::warn!("failed getting next delete: {e:?}"))?;
 
-        let cursors_stepped = match (timely_next_cursor, next_delete) {
-            (
-                Some(timely_next_cursor),
-                Some((delete_cursor, delete_key_bytes, delete_val_bytes)),
-            ) => {
-                if timely_next_cursor < delete_cursor {
-                    self.rollup_live_counts(
-                        timely_iter,
-                        Some(delete_cursor),
-                        MAX_BATCHED_ROLLUP_COUNTS,
-                    )
-                    .inspect_err(|e| log::warn!("rolling up live counts: {e:?}"))?
+        let cursors_stepped = match (timely_next, next_delete) {
+            (Some(timely), Some((delete_cursor, delete_key_bytes, delete_val_bytes))) => {
+                if timely.cursor() < delete_cursor {
+                    let n = self
+                        .rollup_live_counts(
+                            timely_iter,
+                            Some(delete_cursor),
+                            MAX_BATCHED_ROLLUP_COUNTS,
+                        )
+                        .inspect_err(|e| log::warn!("rolling up live counts: {e:?}"))?;
+                    dirty_nsids.insert(timely.collection().clone());
+                    n
                 } else {
                     self.rollup_delete_account(delete_cursor, &delete_key_bytes, &delete_val_bytes)
                         .inspect_err(|e| log::warn!("deleting acocunt: {e:?}"))?
                 }
             }
-            (Some(_), None) => self
-                .rollup_live_counts(timely_iter, None, MAX_BATCHED_ROLLUP_COUNTS)
-                .inspect_err(|e| log::warn!("rolling up (lasjdflkajs): {e:?}"))?,
+            (Some(timely), None) => {
+                let n = self
+                    .rollup_live_counts(timely_iter, None, MAX_BATCHED_ROLLUP_COUNTS)
+                    .inspect_err(|e| log::warn!("rolling up (lasjdflkajs): {e:?}"))?;
+                dirty_nsids.insert(timely.collection().clone());
+                n
+            }
             (None, Some((delete_cursor, delete_key_bytes, delete_val_bytes))) => self
                 .rollup_delete_account(delete_cursor, &delete_key_bytes, &delete_val_bytes)
                 .inspect_err(|e| log::warn!("deleting acocunt other branch: {e:?}"))?,
             (None, None) => 0,
         };
 
-        Ok(cursors_stepped)
+        Ok((cursors_stepped, dirty_nsids))
     }
 
     fn trim_collection(
@@ -1007,6 +1018,18 @@ impl StoreWriter for MemWriter {
         }
         batch.commit()?;
         Ok(records_deleted)
+    }
+}
+
+pub struct MemBackground;
+
+#[async_trait]
+impl StoreBackground for MemBackground {
+    async fn run(mut self) -> StorageResult<()> {
+        // noop for mem (is there a nicer way to do this?)
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs_f64(10.)).await;
+        }
     }
 }
 
@@ -1590,7 +1613,7 @@ mod tests {
         );
         write.insert_batch(batch.batch)?;
 
-        let n = write.step_rollup()?;
+        let (n, _) = write.step_rollup()?;
         assert_eq!(n, 1);
 
         let mut batch = TestBatch::default();
@@ -1601,7 +1624,7 @@ mod tests {
             read.get_records_by_collections(&[Nsid::new("a.a.a".to_string()).unwrap()], 1, false)?;
         assert_eq!(records.len(), 1);
 
-        let n = write.step_rollup()?;
+        let (n, _) = write.step_rollup()?;
         assert_eq!(n, 1);
 
         let records =
@@ -1612,7 +1635,7 @@ mod tests {
         batch.delete_account("did:plc:person-a", 9_999);
         write.insert_batch(batch.batch)?;
 
-        let n = write.step_rollup()?;
+        let (n, _) = write.step_rollup()?;
         assert_eq!(n, 0);
 
         Ok(())
@@ -1646,10 +1669,10 @@ mod tests {
         );
         write.insert_batch(batch.batch)?;
 
-        let n = write.step_rollup()?;
+        let (n, _) = write.step_rollup()?;
         assert_eq!(n, 2);
 
-        let n = write.step_rollup()?;
+        let (n, _) = write.step_rollup()?;
         assert_eq!(n, 0);
 
         Ok(())
@@ -1703,7 +1726,7 @@ mod tests {
         assert_eq!(dids, 2);
 
         // first batch rolled up
-        let n = write.step_rollup()?;
+        let (n, _) = write.step_rollup()?;
         assert_eq!(n, 1);
 
         let (records, dids) =
@@ -1712,7 +1735,7 @@ mod tests {
         assert_eq!(dids, 2);
 
         // delete account rolled up
-        let n = write.step_rollup()?;
+        let (n, _) = write.step_rollup()?;
         assert_eq!(n, 1);
 
         let (records, dids) =
@@ -1721,7 +1744,7 @@ mod tests {
         assert_eq!(dids, 2);
 
         // second batch rolled up
-        let n = write.step_rollup()?;
+        let (n, _) = write.step_rollup()?;
         assert_eq!(n, 1);
 
         let (records, dids) =
@@ -1730,7 +1753,7 @@ mod tests {
         assert_eq!(dids, 2);
 
         // no more rollups left
-        let n = write.step_rollup()?;
+        let (n, _) = write.step_rollup()?;
         assert_eq!(n, 0);
 
         Ok(())
@@ -1779,7 +1802,7 @@ mod tests {
         );
         write.insert_batch(batch.batch)?;
 
-        let n = write.step_rollup()?;
+        let (n, _) = write.step_rollup()?;
         assert_eq!(n, 3); // 3 collections
 
         let tops = read.get_top_collections()?;

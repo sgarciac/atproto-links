@@ -38,4 +38,6 @@ pub enum StorageError {
     Stolen,
     #[error("Failed to join tokio task: {0}")]
     JoinError(#[from] tokio::task::JoinError),
+    #[error("Background task already started")]
+    BackgroundAlreadyStarted,
 }

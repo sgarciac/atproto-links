@@ -1,12 +1,13 @@
-// use crate::store_types::CountsValue;
 use crate::{error::StorageError, ConsumerInfo, Cursor, EventBatch, TopCollections, UFOsRecord};
 use async_trait::async_trait;
 use jetstream::exports::{Did, Nsid};
+use std::collections::HashSet;
 use std::path::Path;
+use tokio::sync::mpsc::Receiver;
 
 pub type StorageResult<T> = Result<T, StorageError>;
 
-pub trait StorageWhatever<R: StoreReader, W: StoreWriter, C> {
+pub trait StorageWhatever<R: StoreReader, W: StoreWriter<B>, B: StoreBackground, C> {
     fn init(
         path: impl AsRef<Path>,
         endpoint: String,
@@ -17,17 +18,45 @@ pub trait StorageWhatever<R: StoreReader, W: StoreWriter, C> {
         Self: Sized;
 }
 
-pub trait StoreWriter: Send + Sync {
+pub trait StoreWriter<B: StoreBackground>: Send + Sync
+where
+    Self: 'static,
+{
+    fn background_tasks(&mut self) -> StorageResult<B>;
+
+    fn receive_batches<const LIMIT: usize>(
+        mut self,
+        mut batches: Receiver<EventBatch<LIMIT>>,
+    ) -> impl std::future::Future<Output = StorageResult<()>> + Send
+    where
+        Self: Sized,
+    {
+        async {
+            tokio::task::spawn_blocking(move || {
+                while let Some(event_batch) = batches.blocking_recv() {
+                    self.insert_batch(event_batch)?;
+                }
+                Ok::<(), StorageError>(())
+            })
+            .await?
+        }
+    }
+
     fn insert_batch<const LIMIT: usize>(
         &mut self,
         event_batch: EventBatch<LIMIT>,
     ) -> StorageResult<()>;
 
-    fn step_rollup(&mut self) -> StorageResult<usize>;
+    fn step_rollup(&mut self) -> StorageResult<(usize, HashSet<Nsid>)>;
 
     fn trim_collection(&mut self, collection: &Nsid, limit: usize) -> StorageResult<()>;
 
     fn delete_account(&mut self, did: &Did) -> StorageResult<usize>;
+}
+
+#[async_trait]
+pub trait StoreBackground: Send + Sync {
+    async fn run(mut self) -> StorageResult<()>;
 }
 
 #[async_trait]
