@@ -7,7 +7,7 @@ edition = "2021"
 anyhow = "1.0.97"
 async-trait = "0.1.88"
 bincode = { version = "2.0.1", features = ["serde"] }
-cardinality-estimator-safe = { version = "2.1.0", features = ["with_serde"] }
+cardinality-estimator-safe = { version = "2.1.1", features = ["with_serde"] }
 clap = { version = "4.5.31", features = ["derive"] }
 dropshot = "0.16.0"
 env_logger = "0.11.7"
