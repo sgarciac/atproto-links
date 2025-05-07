@@ -1,7 +1,9 @@
+use crate::index_html::INDEX_HTML;
 use crate::storage::StoreReader;
 use crate::{ConsumerInfo, Nsid, TopCollections, UFOsRecord};
 use dropshot::endpoint;
 use dropshot::ApiDescription;
+use dropshot::Body;
 use dropshot::ConfigDropshot;
 use dropshot::ConfigLogging;
 use dropshot::ConfigLoggingLevel;
@@ -11,6 +13,7 @@ use dropshot::HttpResponseOk;
 use dropshot::Query;
 use dropshot::RequestContext;
 use dropshot::ServerBuilder;
+use http::{Response, StatusCode};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -21,10 +24,30 @@ struct Context {
     storage: Box<dyn StoreReader>,
 }
 
+/// Serve index page as html
+#[endpoint {
+    method = GET,
+    path = "/",
+    /*
+     * not useful to have this in openapi
+     */
+    unpublished = true,
+}]
+async fn index(_ctx: RequestContext<Context>) -> Result<Response<Body>, HttpError> {
+    Ok(Response::builder()
+        .status(StatusCode::OK)
+        .header(http::header::CONTENT_TYPE, "text/html")
+        .body(INDEX_HTML.into())?)
+}
+
 /// Meta: get the openapi spec for this api
 #[endpoint {
     method = GET,
     path = "/openapi",
+    /*
+     * not useful to have this in openapi
+     */
+    unpublished = true,
 }]
 async fn get_openapi(ctx: RequestContext<Context>) -> OkCorsResponse<serde_json::Value> {
     let spec = (*ctx.context().spec).clone();
@@ -214,6 +237,7 @@ pub async fn serve(storage: impl StoreReader + 'static) -> Result<(), String> {
 
     let mut api = ApiDescription::new();
 
+    api.register(index).unwrap();
     api.register(get_openapi).unwrap();
     api.register(get_meta_info).unwrap();
     api.register(get_records_by_collections).unwrap();

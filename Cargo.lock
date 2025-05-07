@@ -3808,6 +3808,7 @@ dependencies = [
  "dropshot",
  "env_logger",
  "fjall",
+ "http",
  "jetstream",
  "log",
  "lsm-tree",

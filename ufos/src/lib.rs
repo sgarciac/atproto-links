@@ -2,6 +2,7 @@ pub mod consumer;
 pub mod db_types;
 pub mod error;
 pub mod file_consumer;
+pub mod index_html;
 pub mod server;
 pub mod storage;
 pub mod storage_fjall;
@@ -212,6 +213,7 @@ impl<const LIMIT: usize> EventBatch<LIMIT> {
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
 pub enum ConsumerInfo {
     Jetstream {
         endpoint: String,
