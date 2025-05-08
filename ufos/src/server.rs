@@ -122,7 +122,7 @@ impl From<UFOsRecord> for ApiRecord {
 }
 /// Get recent records by collection
 ///
-/// Multiple collections are supported. they will be delivered in one big array with no
+/// Multiple collections are supported. They will be delivered in one big array with no
 /// specified order.
 #[endpoint {
     method = GET,
@@ -214,6 +214,8 @@ async fn get_records_total_seen(
 }
 
 /// Get top collections
+///
+/// The format of this API response will be changing soon.
 #[endpoint {
     method = GET,
     path = "/collections"
