@@ -1,5 +1,4 @@
 pub mod consumer;
-pub mod server;
 pub mod storage;
 
 use links::CollectedLink;

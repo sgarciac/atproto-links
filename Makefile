@@ -5,7 +5,7 @@ test:
 	cargo test
 
 fmt:
-	cargo fmt --package links --package constellation --package ufos
+	cargo fmt --package links --package constellation
 	cargo +nightly fmt --package jetstream
 
 clippy:

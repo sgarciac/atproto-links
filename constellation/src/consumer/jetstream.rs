@@ -145,6 +145,7 @@ pub fn consume_jetstream(
         };
 
         loop {
+            println!("IN THE LOOP");
             if !socket.can_read() {
                 eprintln!("jetstream: socket says we cannot read -- flushing then breaking out.");
                 if let Err(e) = socket.flush() {

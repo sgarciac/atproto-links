@@ -1,8 +1,8 @@
-use super::{LinkReader, LinkStorage, PagedAppendingCollection, StorageStats};
-use crate::{ActionableEvent, CountsByCount, Did, RecordId};
+use super::AtprotoProcessor;
+use crate::{ActionableEvent, Did, RecordId};
 use anyhow::Result;
 use links::CollectedLink;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 // hopefully-correct simple hashmap version, intended only for tests to verify disk impl
@@ -110,7 +110,7 @@ impl Default for MemStorage {
     }
 }
 
-impl LinkStorage for MemStorage {
+impl AtprotoProcessor for MemStorage {
     fn push(&mut self, event: &ActionableEvent, _cursor: u64) -> Result<()> {
         match event {
             ActionableEvent::CreateLinks { record_id, links } => self.add_links(record_id, links),
@@ -124,215 +124,6 @@ impl LinkStorage for MemStorage {
             ActionableEvent::DeleteAccount(did) => self.delete_account(did),
         }
         Ok(())
-    }
-
-    fn to_readable(&mut self) -> impl LinkReader {
-        self.clone()
-    }
-}
-
-impl LinkReader for MemStorage {
-    fn get_count(&self, target: &str, collection: &str, path: &str) -> Result<u64> {
-        let data = self.0.lock().unwrap();
-        let Some(paths) = data.targets.get(&Target::new(target)) else {
-            return Ok(0);
-        };
-        let Some(linkers) = paths.get(&Source::new(collection, path)) else {
-            return Ok(0);
-        };
-        Ok(linkers.iter().flatten().count() as u64)
-    }
-
-    fn get_distinct_did_count(&self, target: &str, collection: &str, path: &str) -> Result<u64> {
-        let data = self.0.lock().unwrap();
-        let Some(paths) = data.targets.get(&Target::new(target)) else {
-            return Ok(0);
-        };
-        let Some(linkers) = paths.get(&Source::new(collection, path)) else {
-            return Ok(0);
-        };
-        Ok(linkers
-            .iter()
-            .flatten()
-            .map(|(did, _)| did)
-            .collect::<HashSet<_>>()
-            .len() as u64)
-    }
-
-    fn get_links(
-        &self,
-        target: &str,
-        collection: &str,
-        path: &str,
-        limit: u64,
-        until: Option<u64>,
-    ) -> Result<PagedAppendingCollection<RecordId>> {
-        let data = self.0.lock().unwrap();
-        let Some(paths) = data.targets.get(&Target::new(target)) else {
-            return Ok(PagedAppendingCollection {
-                version: (0, 0),
-                items: Vec::new(),
-                next: None,
-            });
-        };
-        let Some(did_rkeys) = paths.get(&Source::new(collection, path)) else {
-            return Ok(PagedAppendingCollection {
-                version: (0, 0),
-                items: Vec::new(),
-                next: None,
-            });
-        };
-
-        let total = did_rkeys.len();
-        let end = until
-            .map(|u| std::cmp::min(u as usize, total))
-            .unwrap_or(total);
-        let begin = end.saturating_sub(limit as usize);
-        let next = if begin == 0 { None } else { Some(begin as u64) };
-
-        let alive = did_rkeys.iter().flatten().count();
-        let gone = total - alive;
-
-        let items: Vec<_> = did_rkeys[begin..end]
-            .iter()
-            .rev()
-            .flatten()
-            .filter(|(did, _)| *data.dids.get(did).expect("did must be in dids"))
-            .map(|(did, rkey)| RecordId {
-                did: did.clone(),
-                rkey: rkey.0.clone(),
-                collection: collection.to_string(),
-            })
-            .collect();
-
-        Ok(PagedAppendingCollection {
-            version: (total as u64, gone as u64),
-            items,
-            next,
-        })
-    }
-
-    fn get_distinct_dids(
-        &self,
-        target: &str,
-        collection: &str,
-        path: &str,
-        limit: u64,
-        until: Option<u64>,
-    ) -> Result<PagedAppendingCollection<Did>> {
-        let data = self.0.lock().unwrap();
-        let Some(paths) = data.targets.get(&Target::new(target)) else {
-            return Ok(PagedAppendingCollection {
-                version: (0, 0),
-                items: Vec::new(),
-                next: None,
-            });
-        };
-        let Some(did_rkeys) = paths.get(&Source::new(collection, path)) else {
-            return Ok(PagedAppendingCollection {
-                version: (0, 0),
-                items: Vec::new(),
-                next: None,
-            });
-        };
-
-        let dids: Vec<Option<Did>> = {
-            let mut seen = HashSet::new();
-            did_rkeys
-                .iter()
-                .map(|o| {
-                    o.clone().and_then(|(did, _)| {
-                        if seen.contains(&did) {
-                            None
-                        } else {
-                            seen.insert(did.clone());
-                            Some(did)
-                        }
-                    })
-                })
-                .collect()
-        };
-
-        let total = dids.len();
-        let end = until
-            .map(|u| std::cmp::min(u as usize, total))
-            .unwrap_or(total);
-        let begin = end.saturating_sub(limit as usize);
-        let next = if begin == 0 { None } else { Some(begin as u64) };
-
-        let alive = dids.iter().flatten().count();
-        let gone = total - alive;
-
-        let items: Vec<Did> = dids[begin..end]
-            .iter()
-            .rev()
-            .flatten()
-            .filter(|did| *data.dids.get(did).expect("did must be in dids"))
-            .cloned()
-            .collect();
-
-        Ok(PagedAppendingCollection {
-            version: (total as u64, gone as u64),
-            items,
-            next,
-        })
-    }
-
-    fn get_all_record_counts(&self, target: &str) -> Result<HashMap<String, HashMap<String, u64>>> {
-        let data = self.0.lock().unwrap();
-        let mut out: HashMap<String, HashMap<String, u64>> = HashMap::new();
-        if let Some(asdf) = data.targets.get(&Target::new(target)) {
-            for (Source { collection, path }, linkers) in asdf {
-                let count = linkers.iter().flatten().count() as u64;
-                out.entry(collection.to_string())
-                    .or_default()
-                    .insert(path.to_string(), count);
-            }
-        }
-        Ok(out)
-    }
-
-    fn get_all_counts(
-        &self,
-        target: &str,
-    ) -> Result<HashMap<String, HashMap<String, CountsByCount>>> {
-        let data = self.0.lock().unwrap();
-        let mut out: HashMap<String, HashMap<String, CountsByCount>> = HashMap::new();
-        if let Some(asdf) = data.targets.get(&Target::new(target)) {
-            for (Source { collection, path }, linkers) in asdf {
-                let records = linkers.iter().flatten().count() as u64;
-                let distinct_dids = linkers
-                    .iter()
-                    .flatten()
-                    .map(|(did, _)| did)
-                    .collect::<HashSet<_>>()
-                    .len() as u64;
-                out.entry(collection.to_string()).or_default().insert(
-                    path.to_string(),
-                    CountsByCount {
-                        records,
-                        distinct_dids,
-                    },
-                );
-            }
-        }
-        Ok(out)
-    }
-
-    fn get_stats(&self) -> Result<StorageStats> {
-        let data = self.0.lock().unwrap();
-        let dids = data.dids.len() as u64;
-        let targetables = data
-            .targets
-            .values()
-            .map(|sources| sources.len())
-            .sum::<usize>() as u64;
-        let linking_records = data.links.values().map(|recs| recs.len()).sum::<usize>() as u64;
-        Ok(StorageStats {
-            dids,
-            targetables,
-            linking_records,
-        })
     }
 }
 

@@ -1,7 +1,7 @@
 mod jetstream;
 mod jsonl_file;
 
-use crate::storage::LinkStorage;
+use crate::storage::AtprotoProcessor;
 use crate::{ActionableEvent, RecordId};
 use anyhow::Result;
 use jetstream::consume_jetstream;
@@ -16,7 +16,7 @@ use tinyjson::JsonValue;
 use tokio_util::sync::CancellationToken;
 
 pub fn consume(
-    mut store: impl LinkStorage,
+    mut store: impl AtprotoProcessor,
     qsize: Arc<AtomicU32>,
     fixture: Option<PathBuf>,
     stream: String,

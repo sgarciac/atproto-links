@@ -4,6 +4,4 @@ members = [
     "links",
     "constellation",
     "jetstream",
-    "ufos",
-    "ufos/fuzz",
 ]
