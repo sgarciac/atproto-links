@@ -7,7 +7,6 @@ use anyhow::Result;
 use jetstream::consume_jetstream;
 use jsonl_file::consume_jsonl_file;
 use links::collect_links;
-use metrics::{counter, describe_counter, describe_histogram, histogram, Unit};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
@@ -22,27 +21,6 @@ pub fn consume(
     stream: String,
     staying_alive: CancellationToken,
 ) -> Result<()> {
-    describe_counter!(
-        "consumer_events_non_actionable",
-        Unit::Count,
-        "count of non-actionable events"
-    );
-    describe_counter!(
-        "consumer_events_actionable",
-        Unit::Count,
-        "count of action by type. *all* atproto record delete events are included"
-    );
-    describe_counter!(
-        "consumer_events_actionable_links",
-        Unit::Count,
-        "total links encountered"
-    );
-    describe_histogram!(
-        "consumer_events_actionable_links",
-        Unit::Count,
-        "number of links per message"
-    );
-
     let (receiver, consumer_handle) = if let Some(f) = fixture {
         let (sender, receiver) = flume::bounded(21);
         (
@@ -64,8 +42,6 @@ pub fn consume(
                 store.push(&action, ts).unwrap();
                 qsize.store(receiver.len().try_into().unwrap(), Ordering::Relaxed);
             }
-        } else {
-            counter!("consumer_events_non_actionable").increment(1);
         }
     }
 
@@ -100,17 +76,6 @@ pub fn get_actionable(event: &JsonValue) -> Option<(ActionableEvent, u64)> {
             match commit.get("operation")? {
                 JsonValue::String(op) if op == "create" => {
                     let links = collect_links(commit.get("record")?);
-                    counter!("consumer_events_actionable", "action_type" => "create_links", "collection" => collection.clone()).increment(1);
-                    histogram!("consumer_events_actionable_links", "action_type" => "create_links", "collection" => collection.clone()).record(links.len() as f64);
-                    for link in &links {
-                        counter!("consumer_events_actionable_links",
-                            "action_type" => "create_links",
-                            "collection" => collection.clone(),
-                            "path" => link.path.clone(),
-                            "link_type" => link.target.name(),
-                        )
-                        .increment(links.len() as u64);
-                    }
                     if links.is_empty() {
                         None
                     } else {
@@ -129,17 +94,6 @@ pub fn get_actionable(event: &JsonValue) -> Option<(ActionableEvent, u64)> {
                 }
                 JsonValue::String(op) if op == "update" => {
                     let links = collect_links(commit.get("record")?);
-                    counter!("consumer_events_actionable", "action_type" => "update_links", "collection" => collection.clone()).increment(1);
-                    histogram!("consumer_events_actionable_links", "action_type" => "update_links", "collection" => collection.clone()).record(links.len() as f64);
-                    for link in &links {
-                        counter!("consumer_events_actionable_links",
-                            "action_type" => "update_links",
-                            "collection" => collection.clone(),
-                            "path" => link.path.clone(),
-                            "link_type" => link.target.name(),
-                        )
-                        .increment(links.len() as u64);
-                    }
                     Some((
                         ActionableEvent::UpdateLinks {
                             record_id: RecordId {
@@ -152,17 +106,14 @@ pub fn get_actionable(event: &JsonValue) -> Option<(ActionableEvent, u64)> {
                         cursor,
                     ))
                 }
-                JsonValue::String(op) if op == "delete" => {
-                    counter!("consumer_events_actionable", "action_type" => "delete_record", "collection" => collection.clone()).increment(1);
-                    Some((
-                        ActionableEvent::DeleteRecord(RecordId {
-                            did: did.into(),
-                            collection: collection.clone(),
-                            rkey: rkey.clone(),
-                        }),
-                        cursor,
-                    ))
-                }
+                JsonValue::String(op) if op == "delete" => Some((
+                    ActionableEvent::DeleteRecord(RecordId {
+                        did: did.into(),
+                        collection: collection.clone(),
+                        rkey: rkey.clone(),
+                    }),
+                    cursor,
+                )),
                 _ => None,
             }
         }
@@ -174,19 +125,10 @@ pub fn get_actionable(event: &JsonValue) -> Option<(ActionableEvent, u64)> {
             };
             let did = account.get("did")?.get::<String>()?.clone();
             match (account.get("active")?.get::<bool>()?, account.get("status")) {
-                (true, None) => {
-                    counter!("consumer_events_actionable", "action_type" => "account", "action" => "activate").increment(1);
-                    Some((ActionableEvent::ActivateAccount(did.into()), cursor))
-                }
+                (true, None) => Some((ActionableEvent::ActivateAccount(did.into()), cursor)),
                 (false, Some(JsonValue::String(status))) => match status.as_ref() {
-                    "deactivated" => {
-                        counter!("consumer_events_actionable", "action_type" => "account", "action" => "deactivate").increment(1);
-                        Some((ActionableEvent::DeactivateAccount(did.into()), cursor))
-                    }
-                    "deleted" => {
-                        counter!("consumer_events_actionable", "action_type" => "account", "action" => "delete").increment(1);
-                        Some((ActionableEvent::DeleteAccount(did.into()), cursor))
-                    }
+                    "deactivated" => Some((ActionableEvent::DeactivateAccount(did.into()), cursor)),
+                    "deleted" => Some((ActionableEvent::DeleteAccount(did.into()), cursor)),
                     // TODO: are we missing handling for suspended and deactivated accounts?
                     _ => None,
                 },

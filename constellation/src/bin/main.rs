@@ -77,7 +77,7 @@ fn main() -> Result<()> {
 fn run(
     storage: impl AtprotoProcessor,
     fixture: Option<PathBuf>,
-    data_dir: Option<PathBuf>,
+    _data_dir: Option<PathBuf>,
     stream: String,
     stay_alive: CancellationToken,
 ) -> Result<()> {
