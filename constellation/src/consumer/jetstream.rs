@@ -39,14 +39,14 @@ pub fn consume_jetstream(
         let addr = match dest.to_socket_addrs().map(|mut d| d.next()) {
             Ok(Some(a)) => a,
             Ok(None) => {
-                eprintln!(
+                error!(
                     "jetstream: could not resolve an address for {dest:?}. retrying after a bit?"
                 );
                 thread::sleep(time::Duration::from_secs(15));
                 continue;
             }
             Err(e) => {
-                eprintln!("jetstream failed to resolve address {dest:?}: {e:?} waiting and then retrying...");
+                error!("jetstream failed to resolve address {dest:?}: {e:?} waiting and then retrying...");
                 thread::sleep(time::Duration::from_secs(3));
                 continue;
             }
@@ -57,16 +57,16 @@ pub fn consume_jetstream(
         ) {
             Ok(s) => s,
             Err(e) => {
-                eprintln!(
+                error!(
                     "jetstream failed to make tcp connection: {e:?}. (todo: clean up retry logic)"
                 );
                 connect_retries += 1;
                 if connect_retries >= 7 {
-                    eprintln!("jetstream: no more connect retries, breaking out.");
+                    error!("jetstream: no more connect retries, breaking out.");
                     break;
                 }
                 let backoff = time::Duration::from_secs(connect_retries.try_into().unwrap());
-                eprintln!("jetstream tcp failed to connect: {e:?}. backing off {backoff:?} before retrying...");
+                error!("jetstream tcp failed to connect: {e:?}. backing off {backoff:?} before retrying...");
                 thread::sleep(backoff);
                 continue;
             }
@@ -84,11 +84,11 @@ pub fn consume_jetstream(
             Err(e) => {
                 connect_retries += 1;
                 if connect_retries >= 7 {
-                    eprintln!("jetstream: no more connect retries, breaking out.");
+                    error!("jetstream: no more connect retries, breaking out.");
                     break;
                 }
                 let backoff = time::Duration::from_secs(connect_retries.try_into().unwrap());
-                eprintln!("jetstream failed to connect: {e:?}. backing off {backoff:?} before retrying...");
+                error!("jetstream failed to connect: {e:?}. backing off {backoff:?} before retrying...");
                 thread::sleep(backoff);
                 continue;
             }
@@ -97,15 +97,15 @@ pub fn consume_jetstream(
         loop {
             println!("IN THE LOOP");
             if !socket.can_read() {
-                eprintln!("jetstream: socket says we cannot read -- flushing then breaking out.");
+                error!("jetstream: socket says we cannot read -- flushing then breaking out.");
                 if let Err(e) = socket.flush() {
-                    eprintln!("error while flushing socket: {e:?}");
+                    error!("error while flushing socket: {e:?}");
                 }
                 break;
             }
 
             if staying_alive.is_cancelled() {
-                eprintln!("jetstream: cancelling");
+                error!("jetstream: cancelling");
                 // TODO: cleanly close the connection?
                 break 'outer;
             }
@@ -113,7 +113,7 @@ pub fn consume_jetstream(
             let b = match socket.read() {
                 Ok(Message::Binary(b)) => b,
                 Ok(Message::Text(_)) => {
-                    eprintln!("jetstream: unexpected text message, should be binary for compressed (ignoring)");
+                    error!("jetstream: unexpected text message, should be binary for compressed (ignoring)");
                     continue;
                 }
                 Ok(Message::Close(_)) => {
@@ -124,7 +124,7 @@ pub fn consume_jetstream(
                     continue;
                 }
                 Ok(m) => {
-                    eprintln!("jetstream: unexpected from read (ignoring): {m:?}");
+                    error!("jetstream: unexpected from read (ignoring): {m:?}");
                     continue;
                 }
                 Err(TError::ConnectionClosed) => {
@@ -133,21 +133,21 @@ pub fn consume_jetstream(
                     break;
                 }
                 Err(TError::AlreadyClosed) => {
-                    eprintln!(
+                    error!(
                         "jetstream: got AlreadyClosed trying to .read() websocket. probably a bug."
                     );
                     break;
                 }
                 Err(TError::Capacity(e)) => {
-                    eprintln!("jetstream: capacity error (ignoring): {e:?}");
+                    error!("jetstream: capacity error (ignoring): {e:?}");
                     continue;
                 }
                 Err(TError::Utf8) => {
-                    eprintln!("jetstream: utf8 error (ignoring)");
+                    error!("jetstream: utf8 error (ignoring)");
                     continue;
                 }
                 Err(e) => {
-                    eprintln!("jetstream: could not read message from socket. closing: {e:?}");
+                    error!("jetstream: could not read message from socket. closing: {e:?}");
                     if let TError::Io(io_err) = e {
                         if matches!(io_err.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) {
                             println!("jetstream socket timed out. bailing to reconnect -- should we be trying to close first?");
@@ -159,7 +159,7 @@ pub fn consume_jetstream(
                             println!("jetstream closed the websocket cleanly.");
                             break;
                         }
-                        r => eprintln!("jetstream: close result after error: {r:?}"),
+                        r => error!("jetstream: close result after error: {r:?}"),
                     }
                     // if we didn't immediately get ConnectionClosed, we should keep polling read
                     // until we get it.
@@ -172,7 +172,7 @@ pub fn consume_jetstream(
                 match zstd::stream::Decoder::with_prepared_dictionary(&mut cursor, &dict) {
                     Ok(d) => d,
                     Err(e) => {
-                        eprintln!("jetstream: failed to decompress zstd message: {e:?}");
+                        error!("jetstream: failed to decompress zstd message: {e:?}");
                         continue;
                     }
                 };
@@ -181,7 +181,7 @@ pub fn consume_jetstream(
             match decoder.read_to_string(&mut s) {
                 Ok(_) => {}
                 Err(e) => {
-                    eprintln!("jetstream: failed to decode zstd: {e:?}");
+                    error!("jetstream: failed to decode zstd: {e:?}");
                     continue;
                 }
             }
@@ -189,7 +189,7 @@ pub fn consume_jetstream(
             let v = match s.parse() {
                 Ok(v) => v,
                 Err(e) => {
-                    eprintln!("jetstream: failed to parse message as json: {e:?}");
+                    error!("jetstream: failed to parse message as json: {e:?}");
                     continue;
                 }
             };
@@ -198,19 +198,17 @@ pub fn consume_jetstream(
             let ts = match get_event_time(&v) {
                 Some(ts) => ts,
                 None => {
-                    eprintln!("jetstream: encountered an event without a timestamp: ignoring it.");
+                    error!("jetstream: encountered an event without a timestamp: ignoring it.");
                     continue;
                 }
             };
 
             if let Err(flume::SendError(_rejected)) = sender.send(v) {
                 if sender.is_disconnected() {
-                    eprintln!("jetstream: send channel disconnected -- nothing to do, bye.");
+                    error!("jetstream: send channel disconnected -- nothing to do, bye.");
                     bail!("jetstream: send channel disconnected");
                 }
-                eprintln!(
-                    "jetstream: failed to send on channel, dropping update! (FIXME / HANDLEME)"
-                );
+                error!("jetstream: failed to send on channel, dropping update! (FIXME / HANDLEME)");
             }
 
             // only actually update our cursor after we've managed to queue the event

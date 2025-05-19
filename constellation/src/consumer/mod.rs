@@ -8,15 +8,12 @@ use jetstream::consume_jetstream;
 use jsonl_file::consume_jsonl_file;
 use links::collect_links;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Arc;
 use std::thread;
 use tinyjson::JsonValue;
 use tokio_util::sync::CancellationToken;
 
 pub fn consume(
     mut store: impl AtprotoProcessor,
-    qsize: Arc<AtomicU32>,
     fixture: Option<PathBuf>,
     stream: String,
     staying_alive: CancellationToken,
@@ -40,7 +37,6 @@ pub fn consume(
         if let Some((action, ts)) = get_actionable(&update) {
             {
                 store.push(&action, ts).unwrap();
-                qsize.store(receiver.len().try_into().unwrap(), Ordering::Relaxed);
             }
         }
     }

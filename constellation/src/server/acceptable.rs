@@ -19,7 +19,7 @@ pub fn acceptable<T: Serialize + Template>(accept: ExtractAccept, thing: T) -> R
             match thing.render() {
                 Ok(content) => return Html(content).into_response(),
                 Err(e) => {
-                    eprintln!("template rendering failed: {e:?}");
+                    error!("template rendering failed: {e:?}");
                     return StatusCode::INTERNAL_SERVER_ERROR.into_response();
                 }
             }
