@@ -5,6 +5,8 @@ use std::thread;
 use std::time;
 use tinyjson::JsonValue;
 use tokio_util::sync::CancellationToken;
+use tracing::error;
+use tracing::info;
 use tungstenite::{client::IntoClientRequest, Error as TError, Message};
 use zstd::dict::DecoderDictionary;
 
@@ -24,7 +26,7 @@ pub fn consume_jetstream(
             "{stream}?compress=true{}",
             latest_cursor
                 .map(|c| {
-                    println!("starting with cursor from {:?} ago...", ts_age(c));
+                    info!("starting with cursor from {:?} ago...", ts_age(c));
                     format!("&cursor={c}")
                 })
                 .unwrap_or("".into())
@@ -74,10 +76,10 @@ pub fn consume_jetstream(
         tcp_stream.set_read_timeout(Some(time::Duration::from_secs(4)))?;
         tcp_stream.set_write_timeout(Some(time::Duration::from_secs(4)))?;
 
-        println!("jetstream connecting, attempt #{connect_retries}, {stream_url:?} with user-agent: {ua:?}");
+        info!("jetstream connecting, attempt #{connect_retries}, {stream_url:?} with user-agent: {ua:?}");
         let mut socket = match tungstenite::client_tls(req, tcp_stream) {
             Ok((socket, _)) => {
-                println!("jetstream connected.");
+                info!("jetstream connected.");
                 // connect_retries = 0; // only reset once we have received a message vvv
                 socket
             }
@@ -95,7 +97,7 @@ pub fn consume_jetstream(
         };
 
         loop {
-            println!("IN THE LOOP");
+            info!("IN THE LOOP");
             if !socket.can_read() {
                 error!("jetstream: socket says we cannot read -- flushing then breaking out.");
                 if let Err(e) = socket.flush() {
@@ -129,7 +131,7 @@ pub fn consume_jetstream(
                 }
                 Err(TError::ConnectionClosed) => {
                     // clean exit
-                    println!("jetstream closed the websocket cleanly.");
+                    info!("jetstream closed the websocket cleanly.");
                     break;
                 }
                 Err(TError::AlreadyClosed) => {
@@ -150,13 +152,13 @@ pub fn consume_jetstream(
                     error!("jetstream: could not read message from socket. closing: {e:?}");
                     if let TError::Io(io_err) = e {
                         if matches!(io_err.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) {
-                            println!("jetstream socket timed out. bailing to reconnect -- should we be trying to close first?");
+                            info!("jetstream socket timed out. bailing to reconnect -- should we be trying to close first?");
                             break;
                         }
                     }
                     match socket.close(None) {
                         Err(TError::ConnectionClosed) => {
-                            println!("jetstream closed the websocket cleanly.");
+                            info!("jetstream closed the websocket cleanly.");
                             break;
                         }
                         r => error!("jetstream: close result after error: {r:?}"),

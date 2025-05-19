@@ -3,7 +3,7 @@ use std::fs::File;
 use std::io::{self, BufRead};
 use std::path::PathBuf;
 use tinyjson::JsonValue;
-use tracing::error;
+use tracing::{error, info};
 
 pub fn consume_jsonl_file(f: PathBuf, sender: flume::Sender<JsonValue>) -> Result<()> {
     let file = File::open(f)?;
@@ -15,6 +15,6 @@ pub fn consume_jsonl_file(f: PathBuf, sender: flume::Sender<JsonValue>) -> Resul
             error!("fixture: failed to send on channel, dropping update! (FIXME / HANDLEME)");
         }
     }
-    println!("reached end of jsonl file");
+    info!("reached end of jsonl file");
     Ok(())
 }

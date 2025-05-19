@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::thread;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
-use tracing_subscriber;
+use tracing_subscriber::fmt;
 
 use constellation::consumer::consume;
 use constellation::storage::{AtprotoProcessor, MemStorage};
@@ -46,7 +46,7 @@ fn jetstream_url(provided: &str) -> String {
 
 fn main() -> Result<()> {
     // install global collector configured based on RUST_LOG env var.
-    tracing_subscriber::fmt::init();
+    fmt::init();
 
     let args = Args::parse();
 

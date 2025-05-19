@@ -6,6 +6,7 @@ use headers_accept::Accept;
 use mediatype::names::{APPLICATION, HTML, JSON, TEXT};
 use mediatype::MediaType;
 use serde::Serialize;
+use tracing::error;
 
 const TEXT_HTML: MediaType = MediaType::new(TEXT, HTML);
 const APPLICATION_JSON: MediaType = MediaType::new(APPLICATION, JSON);
