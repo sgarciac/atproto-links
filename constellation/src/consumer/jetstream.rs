@@ -5,8 +5,8 @@ use std::thread;
 use std::time;
 use tinyjson::JsonValue;
 use tokio_util::sync::CancellationToken;
-use tracing::error;
 use tracing::info;
+use tracing::{debug, error};
 use tungstenite::{client::IntoClientRequest, Error as TError, Message};
 use zstd::dict::DecoderDictionary;
 
@@ -32,7 +32,10 @@ pub fn consume_jetstream(
                 .unwrap_or("".into())
         );
         let mut req = (&stream_url).into_client_request()?;
-        let ua = format!("microcosm/constellation v{}", env!("CARGO_PKG_VERSION"));
+        let ua = format!(
+            "microcosm/constellation/sgarciac v{}",
+            env!("CARGO_PKG_VERSION")
+        );
         req.headers_mut().insert("user-agent", ua.parse()?);
 
         let host = req.uri().host().expect("jetstream request uri has a host");
@@ -97,7 +100,7 @@ pub fn consume_jetstream(
         };
 
         loop {
-            info!("IN THE LOOP");
+            debug!("jetstream: read");
             if !socket.can_read() {
                 error!("jetstream: socket says we cannot read -- flushing then breaking out.");
                 if let Err(e) = socket.flush() {
