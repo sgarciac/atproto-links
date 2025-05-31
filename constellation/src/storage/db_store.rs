@@ -1,88 +1,36 @@
 use super::AtprotoProcessor;
 use crate::{ActionableEvent, Did, RecordId};
 use anyhow::Result;
-use diesel::r2d2::Pool;
-use links::CollectedLink;
-use std::collections::HashMap;
+use diesel::r2d2::{ConnectionManager, Pool};
+use diesel::PgConnection;
 use std::sync::{Arc, Mutex};
+use tracing::info;
 
 // hopefully-correct simple hashmap version, intended only for tests to verify disk impl
 #[derive(Debug, Clone)]
-pub struct DbStorage(Arc<Mutex<DbStorageData>>);
+pub struct DbStorage(Arc<Mutex<Pool<ConnectionManager<PgConnection>>>>);
 
-type Linkers = Vec<Option<(Did, RKey)>>; // optional because we replace with None for deleted links to keep cursors stable
-
-#[derive(Debug, Default)]
-struct DbStorageData {
-    pool: Pool<ConnectionManager<PgConnection>>,
+impl Default for DbStorage {
+    fn default() -> Self {
+        Self::new(&std::env::var("DATABASE_URL").expect("DATABASE_URL must be set"))
+    }
 }
 
 impl DbStorage {
-    pub fn new() -> Self {
-        Self(Arc::new(Mutex::new(DbStorageData::default())))
+    pub fn new(database_url: &str) -> Self {
+        Self(Arc::new(Mutex::new(
+            Pool::builder()
+                .build(ConnectionManager::new(database_url))
+                .unwrap(),
+        )))
     }
 }
 
-impl Default for MemStorage {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl AtprotoProcessor for MemStorage {
+impl AtprotoProcessor for DbStorage {
     fn push(&mut self, _event: &ActionableEvent, cursor: u64) -> Result<()> {
         info!("pushing event: {:?}", cursor);
+        //let mut conn_result = self.0.lock().unwrap().get()
+
         Ok(())
-    }
-}
-
-#[derive(Debug, PartialEq, Hash, Eq, Clone)]
-struct Target(String);
-
-impl Target {
-    fn new(t: &str) -> Self {
-        Self(t.into())
-    }
-}
-
-#[derive(Debug, PartialEq, Hash, Eq, Clone)]
-struct Source {
-    collection: String,
-    path: String,
-}
-
-impl Source {
-    fn new(collection: &str, path: &str) -> Self {
-        Self {
-            collection: collection.into(),
-            path: path.into(),
-        }
-    }
-}
-
-#[derive(Debug, PartialEq, Hash, Eq, Clone)]
-struct RKey(String);
-
-#[derive(Debug, PartialEq, Hash, Eq, Clone)]
-struct RepoId {
-    collection: String,
-    rkey: RKey,
-}
-
-impl RepoId {
-    fn from_record_id(record_id: &RecordId) -> Self {
-        Self {
-            collection: record_id.collection.clone(),
-            rkey: RKey(record_id.rkey.clone()),
-        }
-    }
-}
-
-#[derive(Debug, PartialEq, Hash, Eq, Clone)]
-struct RecordPath(String);
-
-impl RecordPath {
-    fn new(rp: &str) -> Self {
-        Self(rp.into())
     }
 }

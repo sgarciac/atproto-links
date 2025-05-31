@@ -9,6 +9,8 @@ use tracing_subscriber::fmt;
 use constellation::consumer::consume;
 use constellation::storage::{AtprotoProcessor, DbStorage, MemStorage};
 
+const REQUIRED_ENV_VARS: [&str; 1] = ["DATABASE_URL"];
+
 /// Aggregate links in the at-mosphere
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -44,7 +46,15 @@ fn jetstream_url(provided: &str) -> String {
     }
 }
 
+#[dotenvy::load]
 fn main() -> Result<()> {
+    // Fail early if we can't get the required environment variables.
+    REQUIRED_ENV_VARS.iter().for_each(|var| {
+        if std::env::var(var).is_err() {
+            panic!("Environment variable {var} must be set");
+        }
+    });
+
     // install global collector configured based on RUST_LOG env var.
     fmt::init();
 
@@ -64,7 +74,7 @@ fn main() -> Result<()> {
 
     match args.backend {
         StorageBackend::Memory => run(MemStorage::new(), fixture, None, stream, stay_alive),
-        StorageBackend::Database => run(DbStorage::new(), fixture, None, stream, stay_alive),
+        StorageBackend::Database => run(DbStorage::default(), fixture, None, stream, stay_alive),
     }
 }
 
@@ -101,7 +111,7 @@ fn run(
         });
     });
 
-    info!("au revoir");
+    info!("adios");
 
     Ok(())
 }
