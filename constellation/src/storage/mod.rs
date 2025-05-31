@@ -3,6 +3,8 @@ use anyhow::Result;
 
 pub mod mem_store;
 pub use mem_store::MemStorage;
+pub mod db_store;
+pub use db_store::DbStorage;
 
 #[derive(Debug, PartialEq)]
 pub struct PagedAppendingCollection<T> {

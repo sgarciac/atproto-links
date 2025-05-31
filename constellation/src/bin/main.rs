@@ -7,7 +7,7 @@ use tracing::{error, info};
 use tracing_subscriber::fmt;
 
 use constellation::consumer::consume;
-use constellation::storage::{AtprotoProcessor, MemStorage};
+use constellation::storage::{AtprotoProcessor, DbStorage, MemStorage};
 
 /// Aggregate links in the at-mosphere
 #[derive(Parser, Debug)]
@@ -31,7 +31,7 @@ struct Args {
 #[derive(Debug, Clone, ValueEnum)]
 enum StorageBackend {
     Memory,
-    //   Database,
+    Database,
 }
 
 fn jetstream_url(provided: &str) -> String {
@@ -64,6 +64,7 @@ fn main() -> Result<()> {
 
     match args.backend {
         StorageBackend::Memory => run(MemStorage::new(), fixture, None, stream, stay_alive),
+        StorageBackend::Database => run(DbStorage::new(), fixture, None, stream, stay_alive),
     }
 }
 
