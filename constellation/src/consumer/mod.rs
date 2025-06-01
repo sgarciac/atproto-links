@@ -12,7 +12,7 @@ use std::thread;
 use tinyjson::JsonValue;
 use tokio_util::sync::CancellationToken;
 
-pub fn consume(
+pub async fn consume(
     mut store: impl AtprotoProcessor,
     fixture: Option<PathBuf>,
     stream: String,
@@ -26,7 +26,7 @@ pub fn consume(
         )
     } else {
         let (sender, receiver) = flume::bounded(32_768); // eek
-        let cursor = store.get_cursor().unwrap();
+        let cursor = store.get_cursor().await.unwrap();
         (
             receiver,
             thread::spawn(move || consume_jetstream(sender, cursor, stream, staying_alive)),
@@ -36,7 +36,7 @@ pub fn consume(
     for update in receiver.iter() {
         if let Some((action, ts)) = get_actionable(&update) {
             {
-                store.push(&action, ts).unwrap();
+                store.push(&action, ts).await.unwrap();
             }
         }
     }

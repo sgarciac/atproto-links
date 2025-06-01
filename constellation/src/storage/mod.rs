@@ -15,9 +15,9 @@ pub struct PagedAppendingCollection<T> {
 
 pub trait AtprotoProcessor: Send + Sync {
     /// jetstream cursor from last saved actions, if available
-    fn get_cursor(&mut self) -> Result<Option<u64>> {
+    async fn get_cursor(&mut self) -> Result<Option<u64>> {
         Ok(None)
     }
 
-    fn push(&mut self, event: &ActionableEvent, cursor: u64) -> Result<()>;
+    async fn push(&mut self, event: &ActionableEvent, cursor: u64) -> Result<()>;
 }

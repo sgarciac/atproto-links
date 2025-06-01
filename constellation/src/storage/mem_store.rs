@@ -111,7 +111,7 @@ impl Default for MemStorage {
 }
 
 impl AtprotoProcessor for MemStorage {
-    fn push(&mut self, event: &ActionableEvent, _cursor: u64) -> Result<()> {
+    async fn push(&mut self, event: &ActionableEvent, _cursor: u64) -> Result<()> {
         match event {
             ActionableEvent::CreateLinks { record_id, links } => self.add_links(record_id, links),
             ActionableEvent::UpdateLinks {

@@ -102,8 +102,8 @@ fn run(
         s.spawn({
             let stay_alive = stay_alive.clone();
             let staying_alive = stay_alive.clone();
-            move || {
-                if let Err(e) = consume(storage, fixture, stream, staying_alive) {
+            move || async {
+                if let Err(e) = consume(storage, fixture, stream, staying_alive).await {
                     error!("jetstream finished with error: {e}");
                 }
                 stay_alive.drop_guard();

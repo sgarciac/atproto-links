@@ -1,36 +1,28 @@
 use super::AtprotoProcessor;
-use crate::{ActionableEvent, Did, RecordId};
+use crate::ActionableEvent;
 use anyhow::Result;
-use diesel::r2d2::{ConnectionManager, Pool};
-use diesel::PgConnection;
+use diesel_async::pooled_connection::bb8::Pool;
+use diesel_async::pooled_connection::AsyncDieselConnectionManager;
+use diesel_async::AsyncPgConnection;
 use std::sync::{Arc, Mutex};
 use tracing::info;
 
 // hopefully-correct simple hashmap version, intended only for tests to verify disk impl
 #[derive(Debug, Clone)]
-pub struct DbStorage(Arc<Mutex<Pool<ConnectionManager<PgConnection>>>>);
-
-impl Default for DbStorage {
-    fn default() -> Self {
-        Self::new(&std::env::var("DATABASE_URL").expect("DATABASE_URL must be set"))
-    }
-}
+pub struct DbStorage(Pool<AsyncPgConnection>);
 
 impl DbStorage {
-    pub fn new(database_url: &str) -> Self {
-        Self(Arc::new(Mutex::new(
-            Pool::builder()
-                .build(ConnectionManager::new(database_url))
-                .unwrap(),
-        )))
+    pub async fn new(database_url: &str) -> Self {
+        let config =
+            AsyncDieselConnectionManager::<diesel_async::AsyncPgConnection>::new(database_url);
+        let pool = Pool::builder().build(config).await.unwrap();
+        Self(pool)
     }
 }
 
 impl AtprotoProcessor for DbStorage {
-    fn push(&mut self, _event: &ActionableEvent, cursor: u64) -> Result<()> {
+    async fn push(&mut self, _event: &ActionableEvent, cursor: u64) -> Result<()> {
         info!("pushing event: {:?}", cursor);
-        //let mut conn_result = self.0.lock().unwrap().get()
-
         Ok(())
     }
 }
