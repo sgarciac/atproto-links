@@ -1,7 +1,6 @@
 use anyhow::Result;
 use clap::{Parser, ValueEnum};
 use std::path::PathBuf;
-use std::thread;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 use tracing_subscriber::fmt;
@@ -47,7 +46,8 @@ fn jetstream_url(provided: &str) -> String {
 }
 
 #[dotenvy::load]
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     // Fail early if we can't get the required environment variables.
     REQUIRED_ENV_VARS.iter().for_each(|var| {
         if std::env::var(var).is_err() {
@@ -73,12 +73,21 @@ fn main() -> Result<()> {
     let stay_alive = CancellationToken::new();
 
     match args.backend {
-        StorageBackend::Memory => run(MemStorage::new(), fixture, None, stream, stay_alive),
-        StorageBackend::Database => run(DbStorage::default(), fixture, None, stream, stay_alive),
+        StorageBackend::Memory => run(MemStorage::new(), fixture, None, stream, stay_alive).await,
+        StorageBackend::Database => {
+            run(
+                DbStorage::new(&std::env::var("DATABASE_URL").unwrap()).await,
+                fixture,
+                None,
+                stream,
+                stay_alive,
+            )
+            .await
+        }
     }
 }
 
-fn run(
+async fn run(
     storage: impl AtprotoProcessor,
     fixture: Option<PathBuf>,
     _data_dir: Option<PathBuf>,
@@ -98,18 +107,14 @@ fn run(
         }
     })?;
 
-    thread::scope(|s| {
-        s.spawn({
-            let stay_alive = stay_alive.clone();
-            let staying_alive = stay_alive.clone();
-            move || async {
-                if let Err(e) = consume(storage, fixture, stream, staying_alive).await {
-                    error!("jetstream finished with error: {e}");
-                }
-                stay_alive.drop_guard();
-            }
-        });
-    });
+    let stay_alive = stay_alive.clone();
+    let staying_alive = stay_alive.clone();
+    move || async {
+        if let Err(e) = consume(storage, fixture, stream, staying_alive).await {
+            error!("jetstream finished with error: {e}");
+        }
+        stay_alive.drop_guard();
+    };
 
     info!("adios");
 
