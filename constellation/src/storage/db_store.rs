@@ -4,7 +4,6 @@ use anyhow::Result;
 use diesel_async::pooled_connection::bb8::Pool;
 use diesel_async::pooled_connection::AsyncDieselConnectionManager;
 use diesel_async::AsyncPgConnection;
-use std::sync::{Arc, Mutex};
 use tracing::info;
 
 // hopefully-correct simple hashmap version, intended only for tests to verify disk impl
