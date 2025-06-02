@@ -1,9 +1,9 @@
 use anyhow::{bail, Result};
 use std::io::{Cursor, ErrorKind, Read};
 use std::net::ToSocketAddrs;
-use std::thread;
 use std::time;
 use tinyjson::JsonValue;
+use tokio::sync::mpsc::error::SendError;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 use tracing::{debug, error};
@@ -12,8 +12,8 @@ use zstd::dict::DecoderDictionary;
 
 const JETSTREAM_ZSTD_DICTIONARY: &[u8] = include_bytes!("../../zstd/dictionary");
 
-pub fn consume_jetstream(
-    sender: flume::Sender<JsonValue>,
+pub async fn consume_jetstream(
+    sender: tokio::sync::mpsc::Sender<JsonValue>,
     cursor: Option<u64>,
     stream: String,
     staying_alive: CancellationToken,
@@ -21,6 +21,7 @@ pub fn consume_jetstream(
     let dict = DecoderDictionary::copy(JETSTREAM_ZSTD_DICTIONARY);
     let mut connect_retries = 0;
     let mut latest_cursor = cursor;
+    info!("entering the loop");
     'outer: loop {
         let stream_url = format!(
             "{stream}?compress=true{}",
@@ -47,12 +48,12 @@ pub fn consume_jetstream(
                 error!(
                     "jetstream: could not resolve an address for {dest:?}. retrying after a bit?"
                 );
-                thread::sleep(time::Duration::from_secs(15));
+                tokio::time::sleep(time::Duration::from_secs(15)).await;
                 continue;
             }
             Err(e) => {
                 error!("jetstream failed to resolve address {dest:?}: {e:?} waiting and then retrying...");
-                thread::sleep(time::Duration::from_secs(3));
+                tokio::time::sleep(time::Duration::from_secs(3)).await;
                 continue;
             }
         };
@@ -72,7 +73,7 @@ pub fn consume_jetstream(
                 }
                 let backoff = time::Duration::from_secs(connect_retries.try_into().unwrap());
                 error!("jetstream tcp failed to connect: {e:?}. backing off {backoff:?} before retrying...");
-                thread::sleep(backoff);
+                tokio::time::sleep(backoff).await;
                 continue;
             }
         };
@@ -94,7 +95,7 @@ pub fn consume_jetstream(
                 }
                 let backoff = time::Duration::from_secs(connect_retries.try_into().unwrap());
                 error!("jetstream failed to connect: {e:?}. backing off {backoff:?} before retrying...");
-                thread::sleep(backoff);
+                tokio::time::sleep(backoff).await;
                 continue;
             }
         };
@@ -208,12 +209,17 @@ pub fn consume_jetstream(
                 }
             };
 
-            if let Err(flume::SendError(_rejected)) = sender.send(v) {
-                if sender.is_disconnected() {
+            info!("about to send stuff through the channel");
+
+            if let Err(SendError(_rejected)) = sender.send(v).await {
+                error!("error sending stuff");
+                if sender.is_closed() {
                     error!("jetstream: send channel disconnected -- nothing to do, bye.");
                     bail!("jetstream: send channel disconnected");
                 }
                 error!("jetstream: failed to send on channel, dropping update! (FIXME / HANDLEME)");
+            } else {
+                info!("jetstream: sent stuff through the channel");
             }
 
             // only actually update our cursor after we've managed to queue the event
@@ -223,6 +229,7 @@ pub fn consume_jetstream(
             connect_retries = 0;
         }
     }
+    info!("Got out of the outer loop.");
     Ok(())
 }
 

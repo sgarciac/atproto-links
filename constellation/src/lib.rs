@@ -1,4 +1,6 @@
 pub mod consumer;
+pub mod models;
+pub mod schema;
 pub mod storage;
 
 use links::CollectedLink;

@@ -1,10 +1,11 @@
 // @generated automatically by Diesel CLI.
 
 diesel::table! {
-    jetstream_cursor (id) {
-        id -> Int4,
-        savepoint -> Int8,
-        created_at -> Timestamptz,
-        updated_at -> Timestamptz,
+    bigint_keyvals (name) {
+        #[max_length = 255]
+        name -> Varchar,
+        bivalue -> Int8,
+        created_at -> Nullable<Timestamptz>,
+        updated_at -> Nullable<Timestamptz>,
     }
 }
