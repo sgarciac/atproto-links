@@ -1,8 +1,11 @@
 mod jetstream;
 
+use std::collections::HashSet;
+
 use crate::storage::DbStorage;
 use crate::{ActionableEvent, RecordId};
 use anyhow::Result;
+use diesel_async::RunQueryDsl;
 use jetstream::consume_jetstream;
 use links::collect_links;
 use tinyjson::JsonValue;
@@ -16,7 +19,7 @@ pub async fn consume(
     staying_alive: CancellationToken,
 ) -> Result<()> {
     let (mut receiver, consumer_handle) = {
-        let (sender, receiver) = mpsc::channel(1_000);
+        let (sender, receiver) = mpsc::channel(100_000_000);
         let cursor = store.get_cursor().await.unwrap();
         (
             receiver,
@@ -30,15 +33,27 @@ pub async fn consume(
     };
 
     info!("consumer started");
+    let mut collections: HashSet<String> = HashSet::new();
+
     while let Some(update) = receiver.recv().await {
-        info!("consumer received update length: {}", receiver.len());
+        info!("queue size: {}", receiver.len());
         if let Some((action, ts)) = get_actionable(&update) {
+            if let ActionableEvent::CreateLinks {
+                record_id: record_id,
+                links: _,
+            } = &action
             {
-                store.push(&action, ts).await?
+                collections.insert(record_id.collection.clone());
+                info!("collection: {}", record_id.collection);
             }
+            store.push(&action, ts).await?
         } else {
-            info!("non actionable {:?}", update);
+            // info!("non actionable {:?}", update);
         }
+    }
+
+    for collection in collections {
+        info!("processing collection: {}", collection);
     }
     consumer_handle.await?;
     info!("consumer is finally done");

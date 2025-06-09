@@ -21,10 +21,9 @@ pub async fn consume_jetstream(
     let dict = DecoderDictionary::copy(JETSTREAM_ZSTD_DICTIONARY);
     let mut connect_retries = 0;
     let mut latest_cursor = cursor;
-    info!("entering the loop");
     'outer: loop {
         let stream_url = format!(
-            "{stream}?compress=true{}",
+            "{stream}?compress=true&wantedCollections=app.bsky.graph.follow{}",
             latest_cursor
                 .map(|c| {
                     info!("starting with cursor from {:?} ago...", ts_age(c));
@@ -209,8 +208,6 @@ pub async fn consume_jetstream(
                 }
             };
 
-            info!("about to send stuff through the channel");
-
             if let Err(SendError(_rejected)) = sender.send(v).await {
                 error!("error sending stuff");
                 if sender.is_closed() {
@@ -218,8 +215,6 @@ pub async fn consume_jetstream(
                     bail!("jetstream: send channel disconnected");
                 }
                 error!("jetstream: failed to send on channel, dropping update! (FIXME / HANDLEME)");
-            } else {
-                info!("jetstream: sent stuff through the channel");
             }
 
             // only actually update our cursor after we've managed to queue the event
