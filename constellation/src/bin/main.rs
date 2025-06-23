@@ -6,7 +6,7 @@ use tracing::{error, info};
 use tracing_subscriber::fmt;
 
 use constellation::consumer::consume;
-use constellation::storage::DbStorage;
+use constellation::storage::Controller;
 
 const REQUIRED_ENV_VARS: [&str; 1] = ["DATABASE_URL"];
 
@@ -60,7 +60,7 @@ async fn main() -> Result<()> {
 
     let stay_alive = CancellationToken::new();
     run(
-        DbStorage::new(&std::env::var("DATABASE_URL").unwrap()).await,
+        Controller::new(&std::env::var("DATABASE_URL").unwrap()).await,
         None,
         stream,
         stay_alive,
@@ -69,7 +69,7 @@ async fn main() -> Result<()> {
 }
 
 async fn run(
-    storage: DbStorage,
+    storage: Controller,
     _data_dir: Option<PathBuf>,
     stream: String,
     stay_alive: CancellationToken,

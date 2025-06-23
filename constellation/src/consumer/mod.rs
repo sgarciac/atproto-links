@@ -2,19 +2,19 @@ mod jetstream;
 
 use std::collections::HashSet;
 
-use crate::storage::DbStorage;
+use crate::storage::Controller;
 use crate::{ActionableEvent, RecordId};
 use anyhow::Result;
-use diesel_async::RunQueryDsl;
+//use diesel_async::RunQueryDsl;
 use jetstream::consume_jetstream;
 use links::collect_links;
 use tinyjson::JsonValue;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info};
+use tracing::info;
 
 pub async fn consume(
-    mut store: DbStorage,
+    mut store: Controller,
     stream: String,
     staying_alive: CancellationToken,
 ) -> Result<()> {
@@ -39,7 +39,7 @@ pub async fn consume(
         info!("queue size: {}", receiver.len());
         if let Some((action, ts)) = get_actionable(&update) {
             if let ActionableEvent::CreateLinks {
-                record_id: record_id,
+                record_id,
                 links: _,
             } = &action
             {

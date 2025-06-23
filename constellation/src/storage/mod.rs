@@ -1,2 +1,2 @@
-pub mod db_store;
-pub use db_store::DbStorage;
+pub mod controller;
+pub use controller::Controller;
