@@ -5,3 +5,8 @@ create table if not exists bigint_keyvals (
     created_at timestamp with time zone default now(),
     updated_at timestamp with time zone default now()
 );
+
+create table if not exists dids (
+    did text not null primary key,
+    id bigint not null
+);

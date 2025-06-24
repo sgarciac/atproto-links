@@ -17,15 +17,15 @@ use tracing::{debug, error, info};
 #[derive(Clone)]
 pub struct Controller(Arc<Mutex<AsyncPgConnection>>);
 
-//#[derive(Debug, Clone)]
-//pub struct Controller(Pool<AsyncPgConnection>);
+// Using a Pool:
+// #[derive(Debug, Clone)]
+// pub struct Controller(Pool<AsyncPgConnection>);
+// let config =
+//    AsyncDieselConnectionManager::<diesel_async::AsyncPgConnection>::new(database_url);
+// let pool = Pool::builder().max_size(30).build(config).await.unwrap();
 
 impl Controller {
     pub async fn new(database_url: &str) -> Self {
-        let config =
-            AsyncDieselConnectionManager::<diesel_async::AsyncPgConnection>::new(database_url);
-        let pool = Pool::builder().max_size(30).build(config).await.unwrap();
-
         let mut connection = AsyncPgConnection::establish(database_url).await.unwrap();
         info!("Created pool to database");
         Self(Arc::new(Mutex::new(connection)))

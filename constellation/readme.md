@@ -62,7 +62,7 @@ backfiller!
 
 ### Diesel
 
-```sh
+```sh generate the model
 # cargo install diesel_cli_ext
 diesel_ext --model
 ```
