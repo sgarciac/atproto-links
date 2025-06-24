@@ -8,5 +8,5 @@ create table if not exists bigint_keyvals (
 
 create table if not exists dids (
     did text not null primary key,
-    id bigint not null
+    id bigserial not null
 );

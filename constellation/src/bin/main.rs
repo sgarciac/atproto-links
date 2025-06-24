@@ -6,7 +6,7 @@ use tracing::{error, info};
 use tracing_subscriber::fmt;
 
 use constellation::consumer::consume;
-use constellation::storage::Controller;
+use constellation::controller::Controller;
 
 const REQUIRED_ENV_VARS: [&str; 1] = ["DATABASE_URL"];
 

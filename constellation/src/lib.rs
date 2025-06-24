@@ -1,7 +1,7 @@
 pub mod consumer;
+pub mod controller;
 pub mod models;
 pub mod schema;
-pub mod storage;
 
 use links::CollectedLink;
 use serde::{Deserialize, Serialize};

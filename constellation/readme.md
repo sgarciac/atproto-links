@@ -62,7 +62,16 @@ backfiller!
 
 ### Diesel
 
-```sh generate the model
+You will need `diesel` and `diesel_ext`. The first gives you commands to generate, run and revert migrations.
+
+```sh
+diesel generate <name>
+diesel run
+```
+
+Print the models and copy the necessary parts to src/models.rs
+
+```sh
 # cargo install diesel_cli_ext
 diesel_ext --model
 ```
